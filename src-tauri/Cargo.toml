@@ -1,6 +1,6 @@
 [package]
 name = "mc-launcher"
-version = "1.6.1"
+version = "1.6.2"
 description = "DOCL - Minecraft 第三方启动器"
 authors = ["deepseekwork"]
 license = "AGPL-3.0-only"

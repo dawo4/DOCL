@@ -65,13 +65,41 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            let window = app.get_webview_window("main");
             // 按配置恢复毛玻璃；失败静默跳过，设置页开关可以重试
             if cfg.window_vibrancy {
-                if let Some(window) = app.get_webview_window("main") {
-                    if let Err(e) = vibrancy::enable(&window) {
+                if let Some(window) = &window {
+                    if let Err(e) = vibrancy::enable(window) {
                         eprintln!("vibrancy: {e}");
                     }
                 }
+            }
+            // 记住窗口大小：启动时恢复，关闭时保存。用逻辑像素，随 DPI 缩放一致
+            if let Some(window) = window {
+                if cfg.remember_window && cfg.launcher_window_w >= 400 && cfg.launcher_window_h >= 300 {
+                    let _ = window.set_size(tauri::LogicalSize::new(
+                        cfg.launcher_window_w,
+                        cfg.launcher_window_h,
+                    ));
+                }
+                let saver = window.clone();
+                window.on_window_event(move |event| {
+                    if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                        // 最大化/全屏时尺寸不代表用户想要的窗口大小，保留上一次的值
+                        if saver.is_maximized().unwrap_or(false) || saver.is_fullscreen().unwrap_or(false) {
+                            return;
+                        }
+                        let mut cfg = config::load();
+                        if cfg.remember_window {
+                            if let Ok(size) = saver.inner_size() {
+                                let scale = saver.scale_factor().unwrap_or(1.0);
+                                cfg.launcher_window_w = (size.width as f64 / scale).round() as u32;
+                                cfg.launcher_window_h = (size.height as f64 / scale).round() as u32;
+                                let _ = config::save(&cfg);
+                            }
+                        }
+                    }
+                });
             }
             Ok(())
         })

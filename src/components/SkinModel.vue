@@ -144,7 +144,7 @@ function armFaces(slim: boolean) {
     top: [44, 16, fw, 4],
     bottom: [44 + fw, 16, fw, 4],
     front: [44, 20, fw, 12],
-    back: [48 + fw, 20, 4, 12],
+    back: [48 + fw, 20, fw, 12],
   };
   const leftArm: FaceRegions = {
     right: [32, 52, 4, 12],
@@ -152,7 +152,7 @@ function armFaces(slim: boolean) {
     top: [36, 48, fw, 4],
     bottom: [36 + fw, 48, fw, 4],
     front: [36, 52, fw, 12],
-    back: [40 + fw, 52, 4, 12],
+    back: [40 + fw, 52, fw, 12],
   };
   const sleeveRight: FaceRegions = {
     right: [40, 36, 4, 12],
@@ -160,7 +160,7 @@ function armFaces(slim: boolean) {
     top: [44, 32, fw, 4],
     bottom: [44 + fw, 32, fw, 4],
     front: [44, 36, fw, 12],
-    back: [48 + fw, 36, 4, 12],
+    back: [48 + fw, 36, fw, 12],
   };
   const sleeveLeft: FaceRegions = {
     right: [48, 52, 4, 12],
@@ -168,7 +168,7 @@ function armFaces(slim: boolean) {
     top: [52, 48, fw, 4],
     bottom: [52 + fw, 48, fw, 4],
     front: [52, 52, fw, 12],
-    back: [56 + fw, 52, 4, 12],
+    back: [56 + fw, 52, fw, 12],
   };
   return { rightArm, leftArm, sleeveRight, sleeveLeft };
 }
@@ -210,7 +210,8 @@ function faceTexture(
   source: HTMLCanvasElement,
   region: [number, number, number, number],
   flipY = false,
-  pad = false
+  pad = false,
+  flipX = false
 ) {
   const [x, y, w, h] = region;
   const canvas = document.createElement("canvas");
@@ -218,10 +219,10 @@ function faceTexture(
   canvas.height = h;
   const ctx = canvas.getContext("2d")!;
   ctx.imageSmoothingEnabled = false;
-  if (flipY) {
-    // 游戏内盒子底面的展开方向与 three.js 默认朝向上下相反，翻转后与游戏一致
-    ctx.translate(0, h);
-    ctx.scale(1, -1);
+  if (flipX || flipY) {
+    // 底面在皮肤展开图里是上下左右都反的（其余五个面都不需要翻转）
+    ctx.translate(flipX ? w : 0, flipY ? h : 0);
+    ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
   }
   ctx.drawImage(source, x, y, w, h, 0, 0, w, h);
   if (pad) padTransparent(ctx, w, h);
@@ -256,7 +257,8 @@ function part(
   const mats = order.map(
     (region, index) =>
       new THREE.MeshStandardMaterial({
-        map: faceTexture(source, region, index === 3, layer === 0),
+        // 底面（3）在皮肤展开图里上下左右都反，其余面按原方向贴
+        map: faceTexture(source, region, index === 3, layer === 0, index === 3),
         transparent: true,
         alphaTest: 0.02,
         roughness: 0.95,
@@ -329,8 +331,10 @@ async function build() {
   const jacketMesh = part(canvas, JACKET, 8.5, 12.5, 4.5, 1);
   jacketMesh.position.y = 24.25;
 
-  const armWidth = props.model === "slim" ? 3 : 4;
-  const arms = armFaces(props.model === "slim");
+  // 模型按皮肤站下发的 skin_model 渲染，与游戏内保持一致
+  const slim = props.model === "slim";
+  const armWidth = slim ? 3 : 4;
+  const arms = armFaces(slim);
   // 角色右手在 -X（面向 +Z 时），左手在 +X
   const armLeftGroup = new THREE.Group();
   armLeftGroup.position.set(4 + armWidth / 2, 24, 0);

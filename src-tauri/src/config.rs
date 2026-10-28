@@ -84,6 +84,18 @@ pub struct Config {
     pub window_vibrancy: bool,
     /// 从 MC 百科补全模组中文名（会访问 search.mcmod.cn，已做节流与缓存）
     pub mcmod_names: bool,
+    /// 记住启动器窗口大小：关闭时保存，下次打开恢复
+    #[serde(default = "default_true")]
+    pub remember_window: bool,
+    /// 上次关闭时的窗口尺寸（逻辑像素），0 表示还没记录过
+    #[serde(default)]
+    pub launcher_window_w: u32,
+    #[serde(default)]
+    pub launcher_window_h: u32,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Config {
@@ -130,6 +142,9 @@ impl Default for Config {
             // 便携版默认透出桌面：配合外带场景的玻璃质感；安装版保持实心
             window_vibrancy: is_portable(),
             mcmod_names: true,
+            remember_window: true,
+            launcher_window_w: 0,
+            launcher_window_h: 0,
         }
     }
 }

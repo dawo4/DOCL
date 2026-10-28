@@ -84,6 +84,17 @@ export const store = reactive({
     status: "loading" | "waiting" | "ok" | "err";
     message?: string;
   } | null,
+  /// Java 检查弹窗：missing = 没有可用运行时；mismatch = 手动指定的 Java 与版本需求不符
+  javaPrompt: null as null | {
+    kind: "missing" | "mismatch";
+    message: string;
+    required?: number;
+    current?: number;
+    /// 「仍然启动」时重跑这次启动（跳过预检）
+    retry?: () => void;
+  },
+  /// 打开设置页时要定位的分类（打开后被设置页消费并清空）
+  settingsFocus: null as string | null,
 });
 
 export const selectedVersion = computed<InstalledVersion | null>(() => {
@@ -602,7 +613,29 @@ export async function stopGame() {
   }
 }
 
-export async function launchVersion(id?: string) {
+/// 启动前的 Java 预检：手动指定的 Java 与版本需求不符时返回详情。
+/// 兼容规则与后端 find_java 保持一致：Java 8 时代的版本只认 8，更高版本允许向上兼容；
+/// 不符时后端会跳过手动路径改用匹配的运行时。
+async function javaMismatchFor(target: string) {
+  const required = store.installed.find((v) => v.id === target)?.java_major;
+  const javaPath = store.config?.java_path?.trim();
+  if (!required || !javaPath) return null;
+  if (!store.javaList.length) await refreshJava();
+  const manual = store.javaList.find((j) => j.path === javaPath);
+  if (!manual) return null;
+  if (manual.major >= required && (required > 8 || manual.major === required)) return null;
+  return { required, current: manual.major };
+}
+
+/// 版本不匹配时给用户看的说明：后端会自动换用匹配的运行时
+function javaMismatchMessage(target: string, required: number, current: number) {
+  return `「${target}」需要 Java ${required}，当前手动指定的是 Java ${current}，不适用。启动器会自动改用本机匹配的运行时；如果本机没有，启动会失败。`;
+}
+
+/// Java 预检是异步的，期间挡住重复点击，避免同时拉起两个进程
+let launchGuard = false;
+
+export async function launchVersion(id?: string, opts?: { skipJavaCheck?: boolean }) {
   const target = id ?? selectedVersion.value?.id;
   if (!target) {
     notify("请先安装一个游戏版本", "err");
@@ -613,6 +646,25 @@ export async function launchVersion(id?: string) {
     // 同一个按钮不能既启动又结束，避免误触把正在启动的游戏杀掉
     notify("游戏已在运行，停止请点「停止游戏」");
     return;
+  }
+  if (launchGuard) return;
+  if (!opts?.skipJavaCheck) {
+    let mismatch: Awaited<ReturnType<typeof javaMismatchFor>> = null;
+    launchGuard = true;
+    try {
+      mismatch = await javaMismatchFor(target);
+    } finally {
+      launchGuard = false;
+    }
+    if (mismatch) {
+      store.javaPrompt = {
+        kind: "mismatch",
+        message: javaMismatchMessage(target, mismatch.required, mismatch.current),
+        ...mismatch,
+        retry: () => void launchVersion(target, { skipJavaCheck: true }),
+      };
+      return;
+    }
   }
   store.runningVersionId = target;
   store.stoppedByUser = false;
@@ -625,15 +677,17 @@ export async function launchVersion(id?: string) {
     store.runningVersionId = null;
     const message = String(err);
     if (message.includes("LAUNCH_NO_JAVA")) {
-      notify(message.replace("LAUNCH_NO_JAVA:", ""), "err");
-      store.page = "settings";
+      store.javaPrompt = {
+        kind: "missing",
+        message: message.replace("LAUNCH_NO_JAVA:", ""),
+      };
     } else {
       notify(`启动失败：${message}`, "err");
     }
   }
 }
 
-export async function launchServer(address: string, id?: string) {
+export async function launchServer(address: string, id?: string, opts?: { skipJavaCheck?: boolean }) {
   const target = id ?? selectedVersion.value?.id;
   if (!target) {
     notify("请先安装一个游戏版本", "err");
@@ -643,6 +697,25 @@ export async function launchServer(address: string, id?: string) {
   if (store.gameRunning) {
     notify("游戏已在运行，请先停止", "err");
     return;
+  }
+  if (launchGuard) return;
+  if (!opts?.skipJavaCheck) {
+    let mismatch: Awaited<ReturnType<typeof javaMismatchFor>> = null;
+    launchGuard = true;
+    try {
+      mismatch = await javaMismatchFor(target);
+    } finally {
+      launchGuard = false;
+    }
+    if (mismatch) {
+      store.javaPrompt = {
+        kind: "mismatch",
+        message: javaMismatchMessage(target, mismatch.required, mismatch.current),
+        ...mismatch,
+        retry: () => void launchServer(address, target, { skipJavaCheck: true }),
+      };
+      return;
+    }
   }
   store.runningVersionId = target;
   store.stoppedByUser = false;
@@ -655,8 +728,10 @@ export async function launchServer(address: string, id?: string) {
     store.runningVersionId = null;
     const message = String(err);
     if (message.includes("LAUNCH_NO_JAVA")) {
-      notify(message.replace("LAUNCH_NO_JAVA:", ""), "err");
-      store.page = "settings";
+      store.javaPrompt = {
+        kind: "missing",
+        message: message.replace("LAUNCH_NO_JAVA:", ""),
+      };
     } else {
       notify(`连接失败：${message}`, "err");
     }

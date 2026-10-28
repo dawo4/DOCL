@@ -16,10 +16,14 @@ import SkinsView from "./views/SkinsView.vue";
 import InstanceView from "./views/InstanceView.vue";
 import MultiplayerView from "./views/MultiplayerView.vue";
 import SettingsView from "./views/SettingsView.vue";
+import WoodModal from "./components/WoodModal.vue";
+import WoodButton from "./components/WoodButton.vue";
 import { api, type DroppedItem } from "./api";
 import {
   applyTheme,
   initApp,
+  launchServer,
+  launchVersion,
   loadBackground,
   notify,
   startupUpdate,
@@ -190,6 +194,20 @@ async function handleDrop(paths: string[]) {
   }
 }
 
+/// 关掉 Java 提示并跳到设置页的 Java 分类
+function goJavaSettings() {
+  store.javaPrompt = null;
+  store.settingsFocus = "java";
+  store.page = "settings";
+}
+
+/// 用户明知版本不匹配仍要继续启动
+function retryLaunchWithJava() {
+  const retry = store.javaPrompt?.retry;
+  store.javaPrompt = null;
+  retry?.();
+}
+
 /// 按设置里的更新策略在启动时静默检查；失败不打扰用户。
 async function checkStartupUpdate() {
   const config = store.config;
@@ -298,6 +316,38 @@ const currentView = computed(() => views[store.page as Page]);
     <LogPanel />
     <CrashDialog />
 
+    <WoodModal
+      v-if="store.javaPrompt"
+      :title="store.javaPrompt.kind === 'missing' ? '缺少 Java 运行时' : 'Java 版本不匹配'"
+      :width="440"
+      :z-index="120"
+      @close="store.javaPrompt = null"
+    >
+      <p class="java-prompt__text">{{ store.javaPrompt.message }}</p>
+      <p class="java-prompt__hint muted small">
+        <template v-if="store.javaPrompt.kind === 'missing'">
+          可以到「设置 → Java 运行时」选择本机已有的 Java，或让启动器下载一个。
+        </template>
+        <template v-else>
+          建议到「设置 → Java 运行时」把 Java 路径改为自动，或改选匹配的版本。
+        </template>
+      </p>
+      <template #footer>
+        <WoodButton variant="ghost" size="sm" @click="store.javaPrompt = null">取消</WoodButton>
+        <WoodButton
+          v-if="store.javaPrompt.retry"
+          variant="soft"
+          size="sm"
+          @click="retryLaunchWithJava()"
+        >
+          仍然启动
+        </WoodButton>
+        <WoodButton variant="primary" size="sm" @click="goJavaSettings()">
+          前往设置
+        </WoodButton>
+      </template>
+    </WoodModal>
+
     <Transition name="drop">
       <div v-if="dropActive" class="drop-hint">
         <div class="drop-hint__card">
@@ -324,6 +374,18 @@ const currentView = computed(() => views[store.page as Page]);
 </template>
 
 <style scoped>
+.java-prompt__text {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+.java-prompt__hint {
+  margin: 0;
+  line-height: 1.7;
+}
+
 .drop-hint {
   position: fixed;
   inset: 0;

@@ -173,6 +173,10 @@ export interface Config {
   window_vibrancy: boolean;
   /// 从 MC 百科补全模组中文名
   mcmod_names: boolean;
+  /// 记住启动器窗口大小
+  remember_window: boolean;
+  launcher_window_w: number;
+  launcher_window_h: number;
 }
 
 export interface BackgroundInfo {

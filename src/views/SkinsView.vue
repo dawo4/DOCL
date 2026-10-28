@@ -531,8 +531,11 @@ onMounted(async () => {
         </label>
         <label v-if="applyAccountView?.kind === 'microsoft'" class="toggle-row">
           <WoodToggle v-model="applyUpload" />
-          <span>同步上传 Mojang（替换该账号的官方皮肤）</span>
+          <span>同步上传 Mojang（替换该账号的官方皮肤，游戏内生效）</span>
         </label>
+        <p v-else-if="applyAccountView?.kind === 'authlib'" class="muted small">
+          第三方账号的游戏内皮肤由皮肤站下发，启动器无法修改；请到皮肤站官网更换。这里应用后只影响启动器内的预览与导出。
+        </p>
         <p v-else class="muted small">
           离线账号的皮肤只用于启动器预览与导出，不会改变游戏内显示。
         </p>

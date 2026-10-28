@@ -342,25 +342,32 @@ onMounted(() => {
         </div>
 
         <div class="acc-actions">
-          <WoodButton variant="soft" @click="editSkin">编辑皮肤</WoodButton>
-          <WoodButton variant="soft" @click="exportSkin">
-            <AppIcon name="download" :size="15" />
+          <WoodButton variant="primary" size="sm" sheen @click="editSkin">
+            <AppIcon name="image" :size="14" />
+            编辑皮肤
+          </WoodButton>
+          <WoodButton variant="soft" size="sm" @click="exportSkin">
+            <AppIcon name="download" :size="14" />
             导出 PNG
           </WoodButton>
-          <WoodButton v-if="selectedAccount.kind === 'microsoft'" variant="soft" @click="refreshOfficial">
+          <WoodButton
+            v-if="selectedAccount.kind !== 'offline'"
+            variant="soft"
+            size="sm"
+            @click="refreshOfficial"
+          >
             <AppIcon name="refresh" :size="14" />
-            重新拉取官方皮肤
-          </WoodButton>
-          <WoodButton v-if="selectedAccount.kind === 'authlib'" variant="soft" @click="refreshOfficial">
-            <AppIcon name="refresh" :size="14" />
-            刷新皮肤站皮肤
+            刷新皮肤
           </WoodButton>
           <WoodButton
             v-if="selectedAccount.kind !== 'offline' && store.accountSkin?.source === 'local'"
-            variant="danger"
+            variant="ghost"
+            size="sm"
+            class="acc-actions__danger"
             @click="clearLocalSkin"
           >
-            清除本地覆盖
+            <AppIcon name="trash" :size="13" />
+            清除覆盖
           </WoodButton>
         </div>
 
@@ -830,9 +837,19 @@ onMounted(() => {
 .acc-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   padding-top: 10px;
   border-top: 1px solid var(--line);
+}
+
+/* 破坏性操作推到最右，平时和普通按钮一样轻，悬停才变红 */
+.acc-actions__danger {
+  margin-left: auto;
+}
+
+.acc-actions__danger:hover {
+  color: var(--danger);
 }
 
 .acc-note {

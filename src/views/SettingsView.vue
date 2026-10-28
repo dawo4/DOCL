@@ -77,6 +77,9 @@ const form = reactive<Config>({
   ui_density: "normal",
   window_vibrancy: false,
   mcmod_names: true,
+  remember_window: true,
+  launcher_window_w: 0,
+  launcher_window_h: 0,
 });
 
 /// 从 store 同步到表单期间要抑制自动保存，避免刚打开页面就写盘。
@@ -131,6 +134,7 @@ const autoSaveKeys: (keyof Config)[] = [
   "version_isolation",
   "window_vibrancy",
   "mcmod_names",
+  "remember_window",
 ];
 
 let autoTimer: number | undefined;
@@ -518,6 +522,11 @@ async function initUpdateSection() {
 }
 
 onMounted(() => {
+  // 从启动失败提示跳过来时直接定位到 Java 分类
+  if (store.settingsFocus === "java") {
+    settingsTab.value = "java";
+    store.settingsFocus = null;
+  }
   void initUpdateSection();
   void refreshMemory();
   memoryTimer = window.setInterval(refreshMemory, 2000);
@@ -1240,6 +1249,16 @@ async function removeJava(path: string) {
         </div>
         <div class="setting__control">
           <WoodToggle v-model="form.window_vibrancy" />
+        </div>
+      </div>
+
+      <div class="setting">
+        <div class="setting__label">
+          <strong>记住窗口大小</strong>
+          <span>关闭启动器时记录当前尺寸，下次打开自动恢复；关闭开关则每次都使用默认大小</span>
+        </div>
+        <div class="setting__control">
+          <WoodToggle v-model="form.remember_window" />
         </div>
       </div>
 

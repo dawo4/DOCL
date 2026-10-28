@@ -1,6 +1,6 @@
 {
-  "version": "1.6.1",
-  "url": "https://github.com/dawo4/DOCL/releases/download/v1.6.1/DOCL_1.6.1_x64-setup.exe",
-  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.6.1/DOCL_1.6.1_portable.zip",
-  "notes": "修复整合包实例的游戏版本与加载器识别，模组、资源包与光影搜索不再为空；新增实例文件自检，可列出损坏的 Mod，重新导入时也会自动检出并补下；下载遇到 5xx、超时或连接中断时改为指数退避重试并优先换源，修正重试造成的进度虚高；CurseForge 与 Modrinth 文件下载补齐哈希与大小校验；资源文件个别失败不再中断整个安装。"
+  "version": "1.6.2",
+  "url": "https://github.com/dawo4/DOCL/releases/download/v1.6.2/DOCL_1.6.2_x64-setup.exe",
+  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.6.2/DOCL_1.6.2_portable.zip",
+  "notes": "启动前新增 Java 预检：手动指定的 Java 与版本不匹配、或本机缺少所需运行时时弹窗提示，可一键跳到 Java 设置更换或下载；新增「记住窗口大小」，关闭时记录尺寸、下次自动恢复，可在外观设置里关掉；修正纤细皮肤预览的手臂背面贴图与底面方向；整理账号页按钮层级，皮肤应用说明区分离线、第三方与微软账号。"
 }
