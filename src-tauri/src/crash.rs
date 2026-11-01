@@ -151,6 +151,24 @@ const RULES: &[Rule] = &[
         category: "java",
     },
     Rule {
+        id: "duplicate-classpath",
+        title: "启动库重复",
+        summary: "版本清单里同一个库出现了两次，NeoForge 引导器构建文件系统时会直接报 Duplicate key 并退出。",
+        patterns: &[
+            "duplicate key",
+            "cpw.mods.niofs.union",
+            "jars-in-classpath",
+        ],
+        advice: &[
+            "更新到最新版 DOCL 后重新启动：新版已按文件路径去重，不会再崩。",
+            "或者打开 versions 下该版本的 json，删掉重复的 library 条目。",
+            "这种清单通常由其他启动器生成，导入别人做好的整合包时比较常见。",
+        ],
+        links: &[],
+        priority: 92,
+        category: "loader",
+    },
+    Rule {
         id: "missing-dependency",
         title: "缺少前置 Mod 或类",
         summary: "某个 Mod 依赖的前置没有安装、版本不满足，或类在运行时找不到。",
@@ -163,7 +181,8 @@ const RULES: &[Rule] = &[
             "requires version",
             "mod file is missing",
             "java.lang.noclassdeffounderror",
-            "java.lang.classnotfoundexception",
+            // 只保留 Error：Mixin 里大量 "Error loading class: ... ClassNotFoundException"
+            // 是可选目标的正常告警，按 Exception 匹配会误报成缺前置
             "java.lang.classnotfounderror",
         ],
         advice: &[
@@ -1099,9 +1118,38 @@ fn attach_suspects(matches: &mut [CrashMatch], suspects: &[CrashSuspect]) {
     }
 }
 
+/// 启动器日志里是否出现 JVM 启动阶段的致命错误
+fn launcher_fatal(text: &str) -> bool {
+    let lowered = text.to_lowercase();
+    [
+        "exception in thread",
+        "duplicate key",
+        "unsupportedclassversionerror",
+        "could not find or load main class",
+        "error occurred during initialization of vm",
+        "a fatal error has been detected",
+        "invalid maximum heap size",
+        "unrecognized option",
+    ]
+    .iter()
+    .any(|pattern| lowered.contains(pattern))
+}
+
 pub fn analyze(cfg: &Config, version_id: &str) -> Result<CrashReport> {
     let game_dir = instance::game_dir(cfg, version_id);
     let latest_log = game_dir.join("logs").join("latest.log");
+    // 启动器的 stderr 记录：JVM 在 Minecraft 日志初始化前失败（如类路径重复、
+    // Java 参数错误）时，错误只出现在这里，游戏目录里的 latest.log 是上一次运行
+    let launcher_log = crate::config::data_dir().join("logs").join("game.log");
+    let launcher_text = read_text(&launcher_log);
+    let launcher_for_version = launcher_text
+        .lines()
+        .next()
+        .map(|line| line.contains(version_id))
+        .unwrap_or(false);
+    // 只认启动阶段的致命错误；正常运行时 stderr 也可能有一些普通告警
+    let launcher_failed =
+        launcher_for_version && launcher_text.contains("[stderr]") && launcher_fatal(&launcher_text);
     let crash_report = newest_file(&game_dir.join("crash-reports"), |name| {
         name.starts_with("crash-") && name.ends_with(".txt")
     });
@@ -1123,6 +1171,9 @@ pub fn analyze(cfg: &Config, version_id: &str) -> Result<CrashReport> {
         crash_report.clone()
     } else if hs_err_fresh {
         hs_err.clone()
+    } else if launcher_failed {
+        // 比旧的 latest.log 更能反映这次启动失败的原因
+        Some(launcher_log.clone())
     } else if latest_log.exists() {
         Some(latest_log.clone())
     } else {
@@ -1130,13 +1181,14 @@ pub fn analyze(cfg: &Config, version_id: &str) -> Result<CrashReport> {
     };
 
     let mut scanned = Vec::new();
-    for (path, label) in [
-        (crash_report.as_ref(), "crash-report"),
-        (hs_err.as_ref(), "hs-err"),
-        (Some(&latest_log), "latest-log"),
+    for (path, label, exists) in [
+        (crash_report.as_ref(), "crash-report", crash_report.is_some()),
+        (hs_err.as_ref(), "hs-err", hs_err.is_some()),
+        (Some(&latest_log), "latest-log", latest_log.exists()),
+        (Some(&launcher_log), "launcher-log", launcher_failed),
     ] {
         if let Some(path) = path {
-            if path.exists() {
+            if exists && path.exists() {
                 scanned.push(format!("{} · {}", label, path.display()));
             }
         }
@@ -1165,6 +1217,8 @@ pub fn analyze(cfg: &Config, version_id: &str) -> Result<CrashReport> {
         "crash-report"
     } else if Some(&primary) == hs_err.as_ref() {
         "hs-err"
+    } else if launcher_failed && primary == launcher_log {
+        "launcher-log"
     } else {
         "latest-log"
     };
@@ -1174,6 +1228,10 @@ pub fn analyze(cfg: &Config, version_id: &str) -> Result<CrashReport> {
     if latest_log.exists() && latest_log != primary {
         combined.push('\n');
         combined.push_str(&read_text(&latest_log));
+    }
+    if launcher_failed && launcher_log != primary {
+        combined.push('\n');
+        combined.push_str(&launcher_text);
     }
     if let Some(path) = hs_err.as_ref() {
         if *path != primary {
@@ -1221,6 +1279,8 @@ pub fn analyze(cfg: &Config, version_id: &str) -> Result<CrashReport> {
             .unwrap_or_else(|| "检测到崩溃报告".into())
     } else if source_kind == "hs-err" {
         "检测到 Java 虚拟机崩溃日志".into()
+    } else if source_kind == "launcher-log" {
+        "启动阶段失败：Java 进程没有正常启动".into()
     } else if matches.is_empty() {
         "日志里没有发现明显错误".into()
     } else {
@@ -1292,6 +1352,12 @@ fn analysis_text(report: &CrashReport) -> String {
     out.push_str(&format!("\n结论：{}\n", report.headline));
     if let Some(description) = &report.description {
         out.push_str(&format!("崩溃描述：{description}\n"));
+    }
+    if !report.scanned.is_empty() {
+        out.push_str("\n扫描的日志：\n");
+        for item in &report.scanned {
+            out.push_str(&format!("  - {item}\n"));
+        }
     }
     out.push_str("\n可疑 Mod：\n");
     if report.suspects.is_empty() {
@@ -1384,6 +1450,16 @@ fn export_to(cfg: &Config, version_id: &str, dir: &Path) -> Result<String> {
     }) {
         log_paths.push(path);
     }
+    // 启动器 stderr 记录：启动阶段失败（JVM 没起来）时只有这里有错误
+    let launcher_log = crate::config::data_dir().join("logs").join("game.log");
+    let belongs_to_version = read_text(&launcher_log)
+        .lines()
+        .next()
+        .map(|line| line.contains(version_id))
+        .unwrap_or(false);
+    if belongs_to_version && !log_paths.iter().any(|path| path == &launcher_log) {
+        log_paths.push(launcher_log);
+    }
     for path in log_paths {
         if !path.is_file() {
             continue;
@@ -1436,6 +1512,33 @@ mod tests {
         assert!(ids.contains(&"graphics"));
         // 高优先级排前面
         assert_eq!(report[0].id, "out-of-memory");
+    }
+
+    /// 外部启动器生成的清单重复列库时，NeoForge 引导器直接报 Duplicate key
+    #[test]
+    fn detects_duplicate_classpath_libraries() {
+        let text = "Exception in thread \"main\" java.lang.IllegalStateException: Duplicate key D:\\libraries\\com\\google\\code\\gson\\gson\\2.10.1\\gson-2.10.1.jar\n\tat cpw.mods.niofs.union.UnionFileSystem.<init>(UnionFileSystem.java:134)";
+        let matches = matches_in(text);
+        assert_eq!(matches[0].id, "duplicate-classpath");
+        assert_eq!(matches[0].priority, 92);
+    }
+
+    /// Mixin 找不到可选目标的 ClassNotFoundException 是正常告警，不能报成缺前置
+    #[test]
+    fn mixin_optional_class_warnings_are_not_dependency_errors() {
+        let text = "[main/WARN] [mixin/]: Error loading class: xaero/common/patreon/Patreon (java.lang.ClassNotFoundException: xaero.common.patreon.Patreon)";
+        let matches = matches_in(text);
+        assert!(matches.iter().all(|item| item.id != "missing-dependency"));
+    }
+
+    #[test]
+    fn recognizes_fatal_launcher_output() {
+        assert!(launcher_fatal(
+            "[stderr] Exception in thread \"main\" java.lang.IllegalStateException: Duplicate key"
+        ));
+        assert!(!launcher_fatal(
+            "[stderr] WARN Could not find method in optional class"
+        ));
     }
 
     #[test]

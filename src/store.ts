@@ -74,6 +74,8 @@ export const store = reactive({
   lastProgress: null as ProgressSnapshot | null,
   lastJobTitle: "",
   lastJobError: null as string | null,
+  /// 任务完成但有文件没下载成功：界面显示「部分完成」而不是「安装失败」
+  lastJobPartial: false,
   accountSkin: null as AccountSkin | null,
   defaultSkin: "",
   skinLoading: false,
@@ -303,6 +305,7 @@ export async function shuffleBackground() {
 }
 
 function primeProgress(stage: string, message: string) {
+  store.lastJobPartial = false;
   store.progress = {
     stage,
     message,
@@ -476,6 +479,7 @@ export async function importModpack(
     );
     if (result.failed.length) {
       const shown = result.failed.slice(0, 5).join("；");
+      store.lastJobPartial = true;
       store.lastJobError =
         result.failed.length > 5 ? `${shown} 等 ${result.failed.length} 个` : shown;
     }

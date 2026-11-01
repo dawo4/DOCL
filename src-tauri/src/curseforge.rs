@@ -479,6 +479,78 @@ pub struct FileDownload {
     pub size: u64,
 }
 
+/// 解析 cursemaven 的 /test 调试输出：里面有服务端解析出来的直链与文件大小。
+/// 形如：
+/// ```
+/// Found: https://edge.forgecdn.net/files/7125/700/indestructible-20.13.0.jar
+///      Content-Length: 264932
+/// ```
+fn parse_cursemaven(text: &str) -> Option<(String, u64)> {
+    let mut url: Option<String> = None;
+    let mut size = 0u64;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("Found:") {
+            let value = rest.trim();
+            if value.starts_with("https://") || value.starts_with("http://") {
+                url = Some(value.to_string());
+            }
+        } else if let Some(rest) = line.strip_prefix("Content-Length:") {
+            size = rest.trim().parse().unwrap_or(0);
+        }
+    }
+    url.map(|value| (value, size))
+}
+
+/// 只接受已知 CDN 主机：第三方解析结果不能随便把启动器引到任意地址下载
+fn trusted_cdn_url(url: &str) -> bool {
+    const PREFIXES: [&str; 5] = [
+        "https://edge.forgecdn.net/",
+        "https://mediafilez.forgecdn.net/",
+        "https://media.forgecdn.net/",
+        "https://mod.mcimirror.top/",
+        "https://cdn.modrinth.com/",
+    ];
+    PREFIXES.iter().any(|prefix| url.starts_with(prefix))
+}
+
+/// 兜底解析文件直链：cursemaven 服务端带 API Key 调官方接口，
+/// 能拿到 MCIM 未收录、国内又直连不了的文件的真实文件名。
+/// 这是国内可用网络下拿到「文件名」的最后一条路（文件本体走 MCIM CDN 代理）。
+async fn cursemaven_download(
+    client: &reqwest::Client,
+    mod_id: i64,
+    file_id: i64,
+) -> Option<FileDownload> {
+    let url = format!("https://cursemaven.com/test/{mod_id}/{file_id}");
+    let response = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let text = response.text().await.ok()?;
+    let (download_url, size) = parse_cursemaven(&text)?;
+    if !trusted_cdn_url(&download_url) {
+        return None;
+    }
+    let path = download_url.split('?').next().unwrap_or("").trim_end_matches('/');
+    let name = path.rsplit('/').next().unwrap_or_default().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    Some(FileDownload {
+        url: download_url,
+        name,
+        // cursemaven 不提供哈希；大小来自 CDN 的 Content-Length，拿不到时为 0（不校验）
+        sha1: None,
+        size,
+    })
+}
+
 /// 读取文件详情并取出下载直链。
 /// 403/404 属于服务端明确拒绝，原地重试没有意义，像 PCL 一样直接换源：
 /// 先试配置偏好的源，失败再换另一个；每个源内部仍有一次重试。
@@ -494,9 +566,18 @@ pub async fn file_download(
     }
 
     let path = format!("/mods/{mod_id}/files/{file_id}");
-    let file = get_json_api::<CfFileResponse>(client, &path, prefer_mirror)
-        .await?
-        .data;
+    let file = match get_json_api::<CfFileResponse>(client, &path, prefer_mirror).await {
+        Ok(response) => response.data,
+        Err(err) => {
+            // 两个信息源都拿不到时，试 cursemaven 的服务端解析（只影响极少数文件）
+            if let Some(file) = cursemaven_download(client, mod_id, file_id).await {
+                #[cfg(debug_assertions)]
+                eprintln!("[curseforge] {mod_id}/{file_id} 通过 cursemaven 兜底解析成功");
+                return Ok(file);
+            }
+            return Err(err);
+        }
+    };
 
     let file_name = file.file_name.clone();
     // 作者关闭第三方分发时接口会把 downloadUrl 置空，但 CDN 仍按 fileId 分段可直达。
@@ -618,4 +699,42 @@ pub async fn install_file(
         path: dest.to_string_lossy().to_string(),
         dependencies,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_cursemaven;
+
+    /// cursemaven 的调试输出里同时有直链和 Content-Length
+    #[test]
+    fn parses_cursemaven_output() {
+        let text = "Raw URL: /test/915201/7125700\n\
+ProjectDescriptor: 915201\n\
+FileIds: 7125700\n\
+Found: https://edge.forgecdn.net/files/7125/700/indestructible-20.13.0.jar\n\
+ - GET Response: 200\n\
+     Content-Type: application/java-archive\n\
+     Content-Length: 264932\n";
+        let (url, size) = parse_cursemaven(text).unwrap();
+        assert_eq!(url, "https://edge.forgecdn.net/files/7125/700/indestructible-20.13.0.jar");
+        assert_eq!(size, 264932);
+    }
+
+    /// 解析失败（例如接口返回错误信息）时不能返回假地址
+    #[test]
+    fn rejects_cursemaven_without_url() {
+        assert!(parse_cursemaven("Response: 404\nNot found").is_none());
+    }
+
+    /// 第三方解析结果只允许落到已知 CDN 主机
+    #[test]
+    fn only_trusts_known_cdn_hosts() {
+        assert!(super::trusted_cdn_url(
+            "https://edge.forgecdn.net/files/7125/700/indestructible-20.13.0.jar"
+        ));
+        assert!(super::trusted_cdn_url(
+            "https://mod.mcimirror.top/files/7125/700/indestructible-20.13.0.jar"
+        ));
+        assert!(!super::trusted_cdn_url("https://evil.example.com/steal.jar"));
+    }
 }

@@ -1539,14 +1539,29 @@ pub async fn import(
                         Ok(pair) => Ok(Some(pair)),
                         Err(err) => {
                             if required {
-                                // 带上 ID，失败时用户能定位到具体文件
+                                // 带上 ID，失败时用户能定位到具体文件。
+                                // 这里是「取文件信息」阶段：403 基本是国内直连 CurseForge 接口被 Cloudflare 拦截，
+                                // 不是作者限制下载（那种情况接口会给空 downloadUrl，由 CDN 兜底），提示要指向代理。
                                 let text = err.to_string();
                                 let reason = if text.contains("403") {
-                                    "CurseForge 拒绝访问，作者可能已限制第三方下载".to_string()
+                                    "无法访问 CurseForge 接口（国内网络需开启系统代理后重新导入）"
+                                } else if text.contains("404") {
+                                    "镜像未收录该文件（开启系统代理后重新导入即可补齐）"
                                 } else {
-                                    text
+                                    "获取下载信息失败，开启代理后重新导入可重试"
                                 };
-                                Err(anyhow!("{project_id}/{file_id}：{reason}"))
+                                // 顺带查一次项目名，让用户知道缺的是哪个 Mod（失败时才查）
+                                let name = curseforge::projects(&client, &[project_id])
+                                    .await
+                                    .into_iter()
+                                    .next()
+                                    .map(|project| project.name)
+                                    .unwrap_or_default();
+                                if name.is_empty() {
+                                    Err(anyhow!("{project_id}/{file_id}：{reason}"))
+                                } else {
+                                    Err(anyhow!("{name}（{project_id}/{file_id}）：{reason}"))
+                                }
                             } else {
                                 Ok(None)
                             }

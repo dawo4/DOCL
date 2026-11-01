@@ -13,7 +13,9 @@ let hideTimer: number | undefined;
 
 const snapshot = computed(() => store.progress ?? store.lastProgress);
 const active = computed(() => !!store.installingId);
-const failed = computed(() => !!store.lastJobError);
+/// 有文件没下载成功但任务本身跑完了：算「部分完成」，不算安装失败
+const partial = computed(() => !active.value && !!store.lastJobPartial);
+const failed = computed(() => !!store.lastJobError && !partial.value);
 const finished = computed(() => !active.value && !failed.value && !!store.lastProgress);
 
 const percent = computed(() => {
@@ -46,6 +48,7 @@ const stageLabel = computed(() => {
   const p = snapshot.value;
   if (!p) return "";
   if (failed.value) return "安装失败";
+  if (partial.value) return "部分完成";
   if (!active.value) return "安装完成";
   if (p.stage === "java") return "安装 Java 运行时";
   if (p.stage === "install") return "安装游戏文件";
@@ -180,7 +183,7 @@ onBeforeUnmount(() => {
               <header class="dl-task__head">
                 <span class="dl-task__label">任务明细</span>
                 <span class="dl-task__state" :class="{ 'dl-task__state--err': failed }">
-                  {{ failed ? "安装失败" : active ? "进行中" : "已完成" }}
+                  {{ failed ? "安装失败" : partial ? "部分完成" : active ? "进行中" : "已完成" }}
                 </span>
               </header>
 
@@ -215,7 +218,7 @@ onBeforeUnmount(() => {
                 · {{ formatDuration(snapshot?.elapsed_ms ?? 0) }}
               </div>
 
-              <p v-if="failed" class="dl-error">{{ store.lastJobError }}</p>
+              <p v-if="store.lastJobError" class="dl-error">{{ store.lastJobError }}</p>
             </section>
           </div>
 
@@ -261,7 +264,7 @@ onBeforeUnmount(() => {
             <span v-else>{{ formatBytes(snapshot?.bytes_done ?? 0) }}</span>
             <span>剩余 {{ eta }}</span>
           </div>
-          <p v-if="failed" class="dl-tip__err">{{ store.lastJobError }}</p>
+          <p v-if="store.lastJobError" class="dl-tip__err">{{ store.lastJobError }}</p>
           <button class="dl-tip__open" @click="openPanel">打开下载详情</button>
         </div>
       </transition>

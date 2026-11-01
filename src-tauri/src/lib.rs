@@ -9,6 +9,7 @@ mod download;
 
 mod dropzone;
 mod forge_native;
+mod gameopts;
 mod hall;
 mod http;
 mod install;
@@ -26,6 +27,7 @@ mod models;
 mod news;
 mod pclimport;
 mod ping;
+mod probes;
 mod server;
 mod skins;
 mod system;
@@ -170,6 +172,11 @@ pub fn run() {
             commands::modpack_export,
             commands::instance_context,
             commands::check_instance_files,
+            gameopts::game_options_presets,
+            gameopts::save_game_options_preset,
+            gameopts::apply_game_options_preset,
+            gameopts::delete_game_options_preset,
+            probes::probe_download_sources,
             commands::crash_analyze,
             commands::crash_export,
             commands::mod_updates,

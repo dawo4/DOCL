@@ -1,6 +1,6 @@
 {
-  "version": "1.6.2",
-  "url": "https://github.com/dawo4/DOCL/releases/download/v1.6.2/DOCL_1.6.2_x64-setup.exe",
-  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.6.2/DOCL_1.6.2_portable.zip",
-  "notes": "启动前新增 Java 预检：手动指定的 Java 与版本不匹配、或本机缺少所需运行时时弹窗提示，可一键跳到 Java 设置更换或下载；新增「记住窗口大小」，关闭时记录尺寸、下次自动恢复，可在外观设置里关掉；修正纤细皮肤预览的手臂背面贴图与底面方向；整理账号页按钮层级，皮肤应用说明区分离线、第三方与微软账号。"
+  "version": "1.6.3",
+  "url": "https://github.com/dawo4/DOCL/releases/download/v1.6.3/DOCL_1.6.3_x64-setup.exe",
+  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.6.3/DOCL_1.6.3_portable.zip",
+  "notes": "修复导入外部启动器整合包后启动崩溃：版本清单里重复列出的库会被自动去重，不再触发 NeoForge 的 Duplicate key；崩溃分析新增启动器启动日志来源，能识别「启动库重复」，并排除 Mixin 可选类的误报，导出包会附带启动器日志；CurseForge 文件信息取不到时改用 cursemaven 服务端解析直链，国内网络也能补齐文件；设置页新增「下载源测速」，显示官方与各镜像的延迟与可用性；新增按实例保存并应用游戏设置预设（options.txt：视野、视频、按键、音量）。"
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { confirm, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
   openExternal,
@@ -8,6 +8,7 @@ import {
   revealFile,
   savePackDialog,
   type ExportPreview,
+  type GameOptionsPreset,
   type InstanceCheck,
   type InstanceFile,
   type InstanceInfo,
@@ -40,6 +41,7 @@ import { ICON_PRESETS, formatBytes, formatDate, kindLabel } from "../utils";
 type Tab =
   | "overview"
   | "launch"
+  | "gameopts"
   | "mods"
   | "resourcepacks"
   | "shaderpacks"
@@ -58,6 +60,7 @@ const tabs: { key: Tab; label: string; icon: string; no: string }[] = [
   { key: "schematics", label: "投影", icon: "layers", no: "07" },
   { key: "saves", label: "存档", icon: "database", no: "08" },
   { key: "screenshots", label: "截图", icon: "folder", no: "09" },
+  { key: "gameopts", label: "游戏设置", icon: "sliders", no: "10" },
 ];
 
 const contentTabs: Tab[] = [
@@ -242,6 +245,74 @@ async function loadCustomIcon() {
 
 watch(() => form.icon, loadCustomIcon);
 
+/* ---------- 游戏设置预设：把 options.txt 存成模板，手动应用到版本 ---------- */
+const optionsPresets = ref<GameOptionsPreset[]>([]);
+const optionsName = ref("");
+const optionsBusy = ref(false);
+
+async function loadOptionsPresets() {
+  try {
+    optionsPresets.value = await api.gameOptionsPresets();
+  } catch (err) {
+    notify(`读取游戏设置预设失败：${String(err)}`, "err");
+  }
+}
+
+function presetDate(preset: GameOptionsPreset) {
+  return formatDate(new Date(preset.saved_at * 1000).toISOString());
+}
+
+async function saveOptionsPreset() {
+  if (!store.instanceId || optionsBusy.value) return;
+  optionsBusy.value = true;
+  try {
+    const saved = await api.saveGameOptionsPreset(
+      store.instanceId,
+      optionsName.value.trim() || "我的游戏设置"
+    );
+    await loadOptionsPresets();
+    optionsName.value = "";
+    notify(`已保存游戏设置预设「${saved.name}」`);
+  } catch (err) {
+    notify(String(err), "err");
+  } finally {
+    optionsBusy.value = false;
+  }
+}
+
+async function applyOptionsPreset(preset: GameOptionsPreset) {
+  if (!store.instanceId || optionsBusy.value) return;
+  // 游戏退出时会重写 options.txt，运行中应用只会白改
+  if (store.gameRunning) {
+    notify("游戏正在运行：请先退出游戏，否则退出时会覆盖刚应用的设置", "err");
+    return;
+  }
+  optionsBusy.value = true;
+  try {
+    await api.applyGameOptionsPreset(store.instanceId, preset.id);
+    notify(`已应用「${preset.name}」，原设置已备份为 options.txt.bak`);
+  } catch (err) {
+    notify(String(err), "err");
+  } finally {
+    optionsBusy.value = false;
+  }
+}
+
+async function deleteOptionsPreset(preset: GameOptionsPreset) {
+  const ok = await confirm(`确定删除预设「${preset.name}」？`, {
+    title: "删除游戏设置预设",
+    kind: "warning",
+  });
+  if (!ok) return;
+  try {
+    await api.deleteGameOptionsPreset(preset.id);
+    await loadOptionsPresets();
+    notify("已删除游戏设置预设");
+  } catch (err) {
+    notify(`删除失败：${String(err)}`, "err");
+  }
+}
+
 async function pickIconImage() {
   if (!store.instanceId) return;
   const source = await openDialog({
@@ -336,6 +407,7 @@ onMounted(async () => {
   }
   await loadAll();
   await loadCustomIcon();
+  await loadOptionsPresets();
 });
 
 watch(
@@ -350,6 +422,7 @@ watch(
 watch(tab, async (value) => {
   fileQuery.value = "";
   confirmName.value = null;
+  if (value === "gameopts") void loadOptionsPresets();
   if (!contentTabs.includes(value)) return;
   if (value === "schematics") void loadProjectionMods();
   if (value === "datapacks") {
@@ -1421,6 +1494,80 @@ function launch() {
             </div>
             <div class="setting__control">
               <WoodSelect v-model="form.fullscreen" :options="fullscreenOptions" />
+            </div>
+          </div>
+        </section>
+
+        <!-- 游戏设置预设 -->
+        <section v-else-if="tab === 'gameopts'" class="card card-pad group reveal">
+          <div class="group-head">
+            <span class="group-no display">10</span>
+            <div class="group-titles">
+              <div class="section-title">游戏设置预设</div>
+            </div>
+            <span class="group-line" />
+          </div>
+
+          <p class="muted small">
+            把当前版本的 options.txt（视野、视频、按键、音量、资源包列表）保存成模板，之后手动应用到任意版本。
+            模组自己的 config 不在其中；应用前请先退出游戏，否则游戏退出时会重写 options.txt。
+          </p>
+
+          <div class="setting setting--stack">
+            <div class="setting__label">
+              <strong>从当前版本保存</strong>
+              <span>先在游戏里调好设置并退出，再保存；同名预设会覆盖</span>
+            </div>
+            <div class="setting__control setting__control--wide">
+              <div class="row opts-save">
+                <WoodInput v-model="optionsName" placeholder="预设名称，例如 低配流畅" />
+                <WoodButton
+                  variant="soft"
+                  size="sm"
+                  :disabled="optionsBusy"
+                  @click="saveOptionsPreset"
+                >
+                  <AppIcon name="download" :size="14" />
+                  保存当前设置
+                </WoodButton>
+              </div>
+            </div>
+          </div>
+
+          <div class="divider" />
+
+          <div class="opts-presets">
+            <div class="opts-presets__head">
+              <strong>已保存的预设</strong>
+              <span class="muted small">应用会先把当前 options.txt 备份为 options.txt.bak</span>
+            </div>
+            <div v-if="!optionsPresets.length" class="muted small">
+              还没有预设。先按上面的方式保存一套当前设置。
+            </div>
+            <div v-for="preset in optionsPresets" :key="preset.id" class="opts-preset">
+              <div class="opts-preset__info">
+                <strong>{{ preset.name }}</strong>
+                <span class="muted small mono">
+                  {{ presetDate(preset) }} · {{ formatBytes(preset.size) }}
+                </span>
+              </div>
+              <div class="row">
+                <WoodButton
+                  variant="primary"
+                  size="sm"
+                  :disabled="optionsBusy"
+                  @click="applyOptionsPreset(preset)"
+                >
+                  应用
+                </WoodButton>
+                <IconButton
+                  icon="trash"
+                  label="删除预设"
+                  variant="danger-quiet"
+                  :size="30"
+                  @click="deleteOptionsPreset(preset)"
+                />
+              </div>
             </div>
           </div>
         </section>
@@ -3124,5 +3271,59 @@ function launch() {
   font-size: 11.5px;
   line-height: 1.6;
   color: var(--muted);
+}
+
+.opts-save {
+  align-items: center;
+}
+
+.opts-save .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.opts-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.opts-presets__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.opts-presets__head strong {
+  font-size: 13px;
+  color: var(--walnut-deep);
+}
+
+.opts-preset {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel-2);
+}
+
+.opts-preset__info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.opts-preset__info strong {
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

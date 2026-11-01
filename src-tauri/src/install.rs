@@ -621,6 +621,22 @@ mod tests {
         );
     }
 
+    /// PCL 生成的清单会把同一个库列两遍，重复路径会让 BootstrapLauncher 构建
+    /// union 文件系统时抛 Duplicate key 直接启动失败，必须在 classpath 里折叠
+    #[test]
+    fn duplicate_libraries_are_collapsed() {
+        let cfg = crate::config::Config::default();
+        let detail = parse(serde_json::json!({
+            "id": "Pack",
+            "libraries": [
+                { "name": "com.google.code.gson:gson:2.10.1" },
+                { "name": "com.google.code.gson:gson:2.10.1" },
+                { "name": "com.google.guava:guava:32.1.2-jre" },
+            ],
+        }));
+        assert_eq!(super::library_file_paths(&cfg, &detail).len(), 2);
+    }
+
     /// 有继承链时链根就是原版版本号
     #[test]
     fn chain_root_wins_over_assets() {
@@ -782,6 +798,7 @@ pub fn resolve_detail(cfg: &Config, version_id: &str) -> Result<MergedDetail> {
 
 pub fn library_file_paths(cfg: &Config, detail: &VersionDetail) -> Vec<PathBuf> {
     let mut paths = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for lib in &detail.libraries {
         if !rules_allow(lib.rules.as_ref()) || library_is_native(lib) {
             continue;
@@ -793,7 +810,14 @@ pub fn library_file_paths(cfg: &Config, detail: &VersionDetail) -> Vec<PathBuf> 
             .and_then(|a| a.path.clone())
             .or_else(|| maven_path(&lib.name));
         if let Some(rel) = path {
-            paths.push(cfg.game_root().join("libraries").join(rel.replace('/', "\\")));
+            let full = cfg.game_root().join("libraries").join(rel.replace('/', "\\"));
+            // 外部启动器生成的清单可能把同一个库列两遍（PCL 的整合包清单很常见），
+            // 重复路径会让 BootstrapLauncher 构建 union 文件系统时因重复键直接崩溃：
+            // Duplicate key .../gson-2.10.1.jar。这里按最终文件路径去重。
+            let key = full.to_string_lossy().to_lowercase();
+            if seen.insert(key) {
+                paths.push(full);
+            }
         }
     }
     paths
@@ -806,12 +830,18 @@ pub fn merged_classpath_entries(
 ) -> Vec<PathBuf> {
     let mut entries = library_file_paths(cfg, detail);
     if let Some(jar) = jar_id {
-        entries.push(
-            cfg.game_root()
-                .join("versions")
-                .join(jar)
-                .join(format!("{jar}.jar")),
-        );
+        let jar_path = cfg
+            .game_root()
+            .join("versions")
+            .join(jar)
+            .join(format!("{jar}.jar"));
+        let key = jar_path.to_string_lossy().to_lowercase();
+        let duplicated = entries
+            .iter()
+            .any(|p| p.to_string_lossy().to_lowercase() == key);
+        if !duplicated {
+            entries.push(jar_path);
+        }
     }
     entries
 }

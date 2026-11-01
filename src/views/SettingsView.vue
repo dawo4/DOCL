@@ -11,6 +11,7 @@ import {
   saveSettingsDialog,
   type Config,
   type GameDirEntry,
+  type SourceProbe,
   type UpdateInfo,
   type UpdateProgress,
 } from "../api";
@@ -409,6 +410,41 @@ const sourceOptions = [
   { value: "mirror", label: "仅加速镜像" },
   { value: "official", label: "仅官方源" },
 ];
+
+/* ---------- 下载源测速 ---------- */
+const probes = ref<SourceProbe[]>([]);
+const probeBusy = ref(false);
+
+const probeGroups = computed(() => {
+  const groups = [
+    { key: "mojang", label: "游戏文件与加载器" },
+    { key: "mod", label: "Mod 接口（CurseForge / Modrinth）" },
+  ];
+  return groups
+    .map((group) => ({
+      ...group,
+      items: probes.value
+        .filter((item) => item.group === group.key)
+        // 可用的排前面，同状态按延迟从低到高
+        .sort((a, b) =>
+          a.ok === b.ok ? a.latency_ms - b.latency_ms : a.ok ? -1 : 1
+        ),
+    }))
+    .filter((group) => group.items.length > 0);
+});
+
+async function runProbe() {
+  if (probeBusy.value) return;
+  probeBusy.value = true;
+  probes.value = [];
+  try {
+    probes.value = await api.probeDownloadSources();
+  } catch (err) {
+    notify(`测速失败：${String(err)}`, "err");
+  } finally {
+    probeBusy.value = false;
+  }
+}
 
 const javaOptions = [
   { value: "8", label: "Java 8" },
@@ -1454,6 +1490,39 @@ async function removeJava(path: string) {
           <WoodSlider v-model="form.concurrency" :min="1" :max="64" :step="1" />
         </div>
       </div>
+      <div class="setting setting--stack">
+        <div class="setting__label">
+          <strong>下载源测速</strong>
+          <span>并发测试官方与镜像的连通性；结果仅供参考，实际下载仍会自动换源</span>
+        </div>
+        <div class="setting__control setting__control--wide">
+          <div class="probe">
+            <div class="probe__head">
+              <span class="muted small">
+                Mod 接口全红时，CurseForge 的模组信息与整合包文件会取不到；游戏文件全红时安装会卡住。
+              </span>
+              <WoodButton variant="soft" size="sm" :disabled="probeBusy" @click="runProbe">
+                <AppIcon name="refresh" :size="14" />
+                {{ probeBusy ? "测速中…" : "开始测速" }}
+              </WoodButton>
+            </div>
+            <div v-if="probeGroups.length" class="probe__groups">
+              <div v-for="group in probeGroups" :key="group.key" class="probe__group">
+                <div class="probe__group-title">{{ group.label }}</div>
+                <div v-for="item in group.items" :key="item.id" class="probe__row">
+                  <span class="probe__dot" :class="{ 'probe__dot--ok': item.ok }" />
+                  <span class="probe__name">{{ item.name }}</span>
+                  <span class="probe__ms mono" :class="{ 'probe__ms--err': !item.ok }">
+                    {{ item.ok ? `${item.latency_ms} ms` : item.error }}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <p v-else-if="!probeBusy" class="muted small">还没测过，点「开始测速」会同时请求所有源。</p>
+          </div>
+        </div>
+      </div>
+
       <div class="setting setting--last">
         <div class="setting__label">
           <strong>速度限制</strong>
@@ -2282,5 +2351,85 @@ async function removeJava(path: string) {
 
 .bg-chip__swatch--none {
   background-image: linear-gradient(135deg, var(--panel) 0 50%, var(--panel-2) 50%);
+}
+
+/* ---------- 下载源测速 ---------- */
+.probe {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.probe__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.probe__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.probe__group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.probe__group-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--walnut-deep);
+}
+
+.probe__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-2);
+  font-size: 12px;
+}
+
+.probe__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  flex-shrink: 0;
+}
+
+.probe__dot--ok {
+  background: var(--moss);
+}
+
+.probe__name {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.probe__ms {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+
+.probe__ms--err {
+  color: var(--danger);
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

@@ -272,6 +272,27 @@ export interface InstanceCheck {
   broken: BrokenFile[];
 }
 
+/// 下载源测速结果
+export interface SourceProbe {
+  id: string;
+  name: string;
+  /// mojang = 游戏文件与加载器；mod = CurseForge / Modrinth 接口
+  group: string;
+  url: string;
+  ok: boolean;
+  latency_ms: number;
+  bytes: number;
+  error: string;
+}
+
+/// 游戏设置预设（options.txt 模板）
+export interface GameOptionsPreset {
+  id: string;
+  name: string;
+  saved_at: number;
+  size: number;
+}
+
 export interface CrashLink {
   label: string;
   url: string;
@@ -719,6 +740,13 @@ export const api = {
     invoke<InstanceContext>("instance_context", { versionId }),
   checkInstanceFiles: (versionId: string) =>
     invoke<InstanceCheck>("check_instance_files", { versionId }),
+  gameOptionsPresets: () => invoke<GameOptionsPreset[]>("game_options_presets"),
+  saveGameOptionsPreset: (versionId: string, name: string) =>
+    invoke<GameOptionsPreset>("save_game_options_preset", { versionId, name }),
+  applyGameOptionsPreset: (versionId: string, id: string) =>
+    invoke<string>("apply_game_options_preset", { versionId, id }),
+  deleteGameOptionsPreset: (id: string) =>
+    invoke<void>("delete_game_options_preset", { id }),
   instanceInfo: (versionId: string) =>
     invoke<InstanceInfo>("instance_info", { versionId }),
   instanceMetas: () => invoke<Record<string, InstanceMeta>>("instance_metas"),
@@ -758,6 +786,7 @@ export const api = {
   pclImportPreview: (path: string) =>
     invoke<PclPreview>("pcl_import_preview", { path }),
   pclImportApply: (path: string) => invoke<Config>("pcl_import_apply", { path }),
+  probeDownloadSources: () => invoke<SourceProbe[]>("probe_download_sources"),
   updateCheck: (url: string) => invoke<UpdateInfo>("update_check", { url }),
   updateDownload: (url: string, version: string) =>
     invoke<string>("update_download", { url, version }),

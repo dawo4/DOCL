@@ -42,6 +42,8 @@ const sourceLabel = computed(() => {
       return "JVM 崩溃日志";
     case "latest-log":
       return "latest.log";
+    case "launcher-log":
+      return "启动器启动日志";
     default:
       return "无日志";
   }
