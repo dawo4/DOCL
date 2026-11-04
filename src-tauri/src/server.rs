@@ -405,12 +405,13 @@ fn bool_text(value: bool) -> &'static str {
     }
 }
 
-fn verify_sha1(bytes: &[u8], expected: &str) -> bool {
-    if expected.trim().is_empty() {
-        return true;
-    }
-    let actual = format!("{:x}", Sha1::digest(bytes));
-    actual.eq_ignore_ascii_case(expected.trim())
+/// 服务端 jar / 安装器多为几十 MB，必须走文件流下载：
+/// 以前用 get_bytes 会整份读进内存，且 45 秒请求超时会在慢网络下直接判失败。
+async fn fetch_to_path(client: &reqwest::Client, url: &str, path: &Path) -> Result<()> {
+    let mut urls = vec![crate::mirror::rewrite(url), url.to_string()];
+    urls.dedup();
+    let mut ignore = |_: u64, _: u64| {};
+    download::download_stream(client, &urls, path, &mut ignore).await
 }
 
 /// 从合并后的版本信息里识别加载器类型与版本。
@@ -559,6 +560,23 @@ fn installer_cache() -> PathBuf {
     crate::config::data_dir().join("installers")
 }
 
+/// 安装器缓存必须同时是有效 zip，避免 HTML 错误页或截断包被当成安装器。
+fn installer_zip_ok(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if meta.len() < 10_000 {
+        return false;
+    }
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(archive) = zip::ZipArchive::new(file) else {
+        return false;
+    };
+    archive.len() > 0
+}
+
 async fn ensure_installer(
     client: &reqwest::Client,
     url: &str,
@@ -567,19 +585,17 @@ async fn ensure_installer(
     let dir = installer_cache();
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(file_name);
-    if std::fs::metadata(&path)
-        .map(|meta| meta.len() > 10_000)
-        .unwrap_or(false)
-    {
+    if installer_zip_ok(&path) {
         return Ok(path);
     }
-    let bytes = download::get_bytes(client, url, false)
+    let _ = std::fs::remove_file(&path);
+    fetch_to_path(client, url, &path)
         .await
         .with_context(|| format!("下载安装器失败：{file_name}"))?;
-    if bytes.len() < 10_000 {
+    if !installer_zip_ok(&path) {
+        let _ = std::fs::remove_file(&path);
         bail!("安装器下载不完整：{file_name}");
     }
-    std::fs::write(&path, bytes)?;
     Ok(path)
 }
 
@@ -693,13 +709,19 @@ async fn prepare_vanilla(
         if server_ref.url.trim().is_empty() {
             bail!("服务端下载地址为空");
         }
-        let bytes = download::get_bytes(client, &server_ref.url, true)
+        fetch_to_path(client, &server_ref.url, &jar_path)
             .await
             .context("下载服务端失败")?;
-        if !verify_sha1(&bytes, &server_ref.sha1) {
+        // 校验直接对文件做，避免为几十 MB 的 jar 再整份读进内存
+        let mut hasher = Sha1::new();
+        download::hash_existing(&jar_path, &mut hasher)
+            .await
+            .context("读取服务端文件失败")?;
+        let actual = format!("{:x}", hasher.finalize());
+        if !server_ref.sha1.trim().is_empty() && !actual.eq_ignore_ascii_case(&server_ref.sha1) {
+            let _ = std::fs::remove_file(&jar_path);
             bail!("服务端文件校验失败，请重试");
         }
-        std::fs::write(&jar_path, &bytes)?;
     }
     Ok(LaunchMode::Jar(jar_path))
 }

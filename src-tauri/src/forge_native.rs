@@ -76,6 +76,33 @@ pub fn supports_native(installer_path: &Path) -> bool {
     !profile.version.is_empty() && !profile.minecraft.is_empty() && profile.json.is_some()
 }
 
+/// 安装器声明的版本目录名，用于回退官方安装器前清理半成品目录。
+pub fn profile_version(installer_path: &Path) -> Option<String> {
+    let bytes = read_entry(installer_path, "install_profile.json").ok()?;
+    let profile: InstallProfile = serde_json::from_slice(&bytes).ok()?;
+    if profile.version.is_empty() {
+        None
+    } else {
+        Some(profile.version)
+    }
+}
+
+/// 安装器包是否完整可用。缓存文件可能来自中断的下载，先校验再决定复不复用，
+/// 否则会把坏包交给官方安装器，最终只看到退出码 1。
+pub fn installer_usable(installer_path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(installer_path) else {
+        return false;
+    };
+    let Ok(mut archive) = ZipArchive::new(file) else {
+        return false;
+    };
+    let size = match archive.by_name("install_profile.json") {
+        Ok(entry) => entry.size(),
+        Err(_) => 0,
+    };
+    size > 64
+}
+
 pub async fn install(
     app: &AppHandle,
     client: &reqwest::Client,
@@ -117,8 +144,8 @@ pub async fn install(
     )
     .await;
     if result.is_err() {
-        // 半成品目录不能留，和清单校验的处置保持一致
-        let _ = std::fs::remove_dir_all(&version_dir);
+        // 只清加载器产物，版本隔离下 versions/<id> 还装着实例的 mods 与存档
+        install::clear_loader_version_dir(&version_dir, &profile.version);
     }
     result
 }
@@ -143,8 +170,7 @@ async fn install_inner(
     // 1) 官方安装器的第一步就是把内嵌清单写盘，照做——清单落地后，
     //    verify_loader_manifest 要查的核心库条目就完整了
     if version_dir.exists() {
-        std::fs::remove_dir_all(version_dir)
-            .with_context(|| format!("无法清理旧目录 {}", version_dir.display()))?;
+        install::clear_loader_version_dir(version_dir, &profile.version);
     }
     std::fs::create_dir_all(version_dir)?;
     let json_entry = profile
@@ -183,18 +209,24 @@ async fn install_inner(
             continue;
         }
         let dest = libraries_dir.join(path.replace('/', "\\"));
-        if dest.exists() {
+        // 已存在的库也要校验：0 字节或内容损坏的旧库会让处理器直接失败，
+        // 而且官方安装器同样会跳过已存在文件，只报一个退出码 1
+        if artifact_ok(&dest, &dl.sha1, dl.size) {
             continue;
+        }
+        if dest.exists() {
+            let _ = std::fs::remove_file(&dest);
         }
         if dl.url.is_empty() {
             // 没有下载地址的库按官方行为从安装器内嵌文件解出
             if let Ok(bytes) = read_entry(installer_path, &format!("maven/{path}")) {
-                if dl.sha1.is_empty() || sha1_hex(&bytes) == dl.sha1 {
-                    if let Some(parent) = dest.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&dest, &bytes)?;
+                if !dl.sha1.is_empty() && !sha1_hex(&bytes).eq_ignore_ascii_case(&dl.sha1) {
+                    bail!("安装器内嵌库 {path} 校验失败，安装包可能已损坏");
                 }
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&dest, &bytes)?;
             }
             continue;
         }
@@ -605,6 +637,25 @@ fn replace_tokens(data: &HashMap<String, String>, value: &str) -> Result<String>
     Ok(out)
 }
 
+/// 已存在的文件是否可信：空文件、大小不符、SHA1 不符都要重新下载。
+fn artifact_ok(path: &Path, sha1: &str, size: u64) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if meta.len() == 0 {
+        return false;
+    }
+    if size > 0 && meta.len() != size {
+        return false;
+    }
+    if sha1.is_empty() {
+        return true;
+    }
+    file_sha1(path)
+        .map(|actual| actual.eq_ignore_ascii_case(sha1))
+        .unwrap_or(false)
+}
+
 fn file_sha1(path: &Path) -> Option<String> {
     let mut file = std::fs::File::open(path).ok()?;
     let mut hasher = Sha1::new();
@@ -623,4 +674,81 @@ fn sha1_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha1::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{artifact_ok, installer_usable, profile_version};
+    use std::io::Write;
+
+    fn write_zip(path: &std::path::Path, entries: &[(&str, &str)]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, body) in entries {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn installer_usable_requires_valid_profile_entry() {
+        let dir = std::env::temp_dir().join("docl-installer-usable-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let valid = dir.join("valid.jar");
+        let _ = std::fs::remove_file(&valid);
+        write_zip(
+            &valid,
+            &[(
+                "install_profile.json",
+                r#"{"version":"1.20.1-forge-47.4.28","minecraft":"1.20.1","json":"/version.json"}"#,
+            )],
+        );
+        assert!(installer_usable(&valid));
+        assert_eq!(
+            profile_version(&valid).as_deref(),
+            Some("1.20.1-forge-47.4.28")
+        );
+
+        let no_profile = dir.join("no-profile.jar");
+        let _ = std::fs::remove_file(&no_profile);
+        write_zip(&no_profile, &[("version.json", "{}")]);
+        assert!(!installer_usable(&no_profile));
+        assert!(profile_version(&no_profile).is_none());
+
+        let corrupt = dir.join("corrupt.jar");
+        std::fs::write(&corrupt, b"not a zip").unwrap();
+        assert!(!installer_usable(&corrupt));
+        assert!(profile_version(&corrupt).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn existing_artifact_requires_size_and_hash() {
+        let dir = std::env::temp_dir().join("docl-forge-artifact-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lib.jar");
+        let _ = std::fs::remove_file(&path);
+        assert!(!artifact_ok(&path, "", 0));
+
+        std::fs::write(&path, b"").unwrap();
+        assert!(!artifact_ok(&path, "", 0));
+
+        std::fs::write(&path, b"abc").unwrap();
+        assert!(artifact_ok(&path, "", 3));
+        assert!(!artifact_ok(&path, "", 5));
+        assert!(!artifact_ok(
+            &path,
+            "0000000000000000000000000000000000000000",
+            3
+        ));
+        assert!(artifact_ok(
+            &path,
+            "a9993e364706816aba3e25717850c26c9cd0d89d",
+            3
+        ));
+        let _ = std::fs::remove_file(&path);
+    }
 }

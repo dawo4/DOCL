@@ -537,20 +537,22 @@ a {
   left: 50%;
   bottom: 52px;
   transform: translateX(-50%);
-  background: #3c2b1c;
-  color: #fbf4e6;
+  /* 用主题的反色对，深色主题下自动变成浅底深字 */
+  background: color-mix(in srgb, var(--ink) 94%, transparent);
+  color: var(--paper);
   padding: 10px 18px;
   border-radius: 9px;
   font-size: 13px;
-  box-shadow: 0 14px 32px rgba(40, 28, 16, 0.3);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.22);
   z-index: 90;
   animation: toast-in 260ms var(--ease-out-expo) both;
   max-width: 70vw;
-  border: 1px solid rgba(255, 253, 246, 0.1);
+  border: 1px solid color-mix(in srgb, var(--paper) 14%, transparent);
 }
 
 .toast--err {
-  background: #8c412f;
+  background: var(--danger);
+  border-color: color-mix(in srgb, var(--paper) 18%, transparent);
 }
 
 @keyframes toast-in {

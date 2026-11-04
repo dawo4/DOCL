@@ -15,6 +15,7 @@ import {
   type InstanceMeta,
   type InstanceModMeta,
   type InstancePaths,
+  type RepairReport,
   type ModUpdate,
   type ModUpdateReport,
   type WorldSeed,
@@ -34,6 +35,8 @@ import {
   openCommunity,
   openCrashDialog,
   refreshInstanceMetas,
+  reinstallLoader,
+  repairInstance,
   store,
 } from "../store";
 import { ICON_PRESETS, formatBytes, formatDate, kindLabel } from "../utils";
@@ -50,17 +53,17 @@ type Tab =
   | "saves"
   | "screenshots";
 
-const tabs: { key: Tab; label: string; icon: string; no: string }[] = [
-  { key: "overview", label: "概览", icon: "cube", no: "01" },
-  { key: "launch", label: "启动设置", icon: "settings", no: "02" },
-  { key: "mods", label: "Mod", icon: "grid", no: "03" },
-  { key: "resourcepacks", label: "资源包", icon: "image", no: "04" },
-  { key: "shaderpacks", label: "光影", icon: "sun", no: "05" },
-  { key: "datapacks", label: "数据包", icon: "package", no: "06" },
-  { key: "schematics", label: "投影", icon: "layers", no: "07" },
-  { key: "saves", label: "存档", icon: "database", no: "08" },
-  { key: "screenshots", label: "截图", icon: "folder", no: "09" },
-  { key: "gameopts", label: "游戏设置", icon: "sliders", no: "10" },
+const tabs: { key: Tab; label: string; icon: string }[] = [
+  { key: "overview", label: "概览", icon: "cube" },
+  { key: "launch", label: "启动设置", icon: "settings" },
+  { key: "mods", label: "Mod", icon: "grid" },
+  { key: "resourcepacks", label: "资源包", icon: "image" },
+  { key: "shaderpacks", label: "光影", icon: "sun" },
+  { key: "datapacks", label: "数据包", icon: "package" },
+  { key: "schematics", label: "投影", icon: "layers" },
+  { key: "saves", label: "存档", icon: "database" },
+  { key: "screenshots", label: "截图", icon: "folder" },
+  { key: "gameopts", label: "游戏设置", icon: "sliders" },
 ];
 
 const contentTabs: Tab[] = [
@@ -777,6 +780,80 @@ const checkOpen = ref(false);
 const checking = ref(false);
 const checkResult = ref<InstanceCheck | null>(null);
 
+const repairOpen = ref(false);
+const repairing = ref(false);
+const repairResult = ref<RepairReport | null>(null);
+const reinstalling = ref(false);
+
+/// 只对标准加载器实例显示重装入口，整合包重装会破坏包内清单
+const canReinstallLoader = computed(() => {
+  const value = info.value;
+  if (!value || value.category === "modpack") return false;
+  return ["forge", "neoforge", "fabric", "quilt"].includes(value.loader);
+});
+
+/// 重装加载器：清理损坏的版本目录后按原加载器版本重新安装
+async function reinstallCurrentLoader() {
+  const versionId = store.instanceId;
+  if (!versionId || reinstalling.value) return;
+  const ok = await confirm(
+    "将删除并重新生成版本清单与补丁 jar，不会删除 mods、存档和配置。继续吗？",
+    { title: "重装加载器", kind: "warning" }
+  );
+  if (!ok) return;
+  reinstalling.value = true;
+  try {
+    const done = await reinstallLoader(versionId);
+    if (done) {
+      repairOpen.value = false;
+      await refreshFiles();
+    }
+  } finally {
+    reinstalling.value = false;
+  }
+}
+
+/// 一键自愈：修清单、补缺失文件、重解本地库、禁用重复模组
+async function runRepair() {
+  const versionId = store.instanceId;
+  if (repairing.value || !versionId) return;
+  repairing.value = true;
+  repairResult.value = null;
+  try {
+    const result = await repairInstance(versionId);
+    if (!result) return;
+    repairResult.value = result;
+    repairOpen.value = true;
+    await refreshFiles();
+    if (result.disabled_mods.length) notify("已禁用重复的模组，重新启动后生效");
+    else if (!result.files_restored && !result.issues.length) notify("检查完成，没有发现问题");
+  } finally {
+    repairing.value = false;
+  }
+}
+
+/// 修复结果里需要展示的行
+const repairLines = computed(() => {
+  const result = repairResult.value;
+  if (!result) return [];
+  const lines: string[] = [];
+  if (result.version_json) lines.push("版本清单已重新下载修复");
+  if (result.files_restored) lines.push(`补回 ${result.files_restored} 个缺失文件`);
+  if (result.natives) lines.push("本地库已重新解压");
+  if (result.disabled_mods.length)
+    lines.push(`禁用了 ${result.disabled_mods.length} 个重复模组：${result.disabled_mods.slice(0, 4).join("、")}`);
+  if (result.missing_deps.length)
+    lines.push(`缺少前置模组：${result.missing_deps.slice(0, 6).join("、")}`);
+  return lines;
+});
+
+/// 修复结果里仍然需要手动处理的问题
+const repairProblems = computed(() => {
+  const result = repairResult.value;
+  if (!result) return [];
+  return [...result.issues, ...result.files_failed];
+});
+
 /// 扫描 mods / 资源包 / 光影里打不开的压缩包。
 /// FML 初始化时遇到损坏的 jar 会直接退出，这个入口用来给已装好的实例排查。
 async function runSelfCheck() {
@@ -1126,6 +1203,14 @@ function launch() {
           @click="openVersionFolder"
         />
         <IconButton
+          icon="wrench"
+          :label="repairing ? '正在修复…' : '一键修复'"
+          variant="soft"
+          :size="34"
+          :disabled="repairing"
+          @click="runRepair"
+        />
+        <IconButton
           icon="search"
           label="文件自检"
           variant="soft"
@@ -1165,7 +1250,6 @@ function launch() {
           >
             {{ item.key === "mods" ? info.counts.mods : item.key === "resourcepacks" ? info.counts.resourcepacks : item.key === "shaderpacks" ? info.counts.shaderpacks : item.key === "saves" ? info.counts.saves : info.counts.screenshots }}
           </span>
-          <span v-else class="ins-side__no mono">{{ item.no }}</span>
         </button>
 
         <div class="ins-side__meta">
@@ -1180,7 +1264,6 @@ function launch() {
         <template v-if="tab === 'overview'">
           <section class="card card-pad group reveal">
             <div class="group-head">
-              <span class="group-no display">01</span>
               <div class="group-titles">
                 <div class="section-title">个性化</div>
               </div>
@@ -1267,7 +1350,6 @@ function launch() {
 
           <section class="card card-pad group reveal" style="--i: 1">
             <div class="group-head">
-              <span class="group-no display">02</span>
               <div class="group-titles">
                 <div class="section-title">快捷方式</div>
               </div>
@@ -1308,7 +1390,6 @@ function launch() {
 
           <section class="card card-pad group reveal" style="--i: 2">
             <div class="group-head">
-              <span class="group-no display">03</span>
               <div class="group-titles">
                 <div class="section-title">详细信息</div>
               </div>
@@ -1984,6 +2065,53 @@ function launch() {
       </template>
     </WoodModal>
 
+    <WoodModal
+      v-if="repairOpen && repairResult"
+      title="一键修复结果"
+      :width="470"
+      @close="repairOpen = false"
+    >
+      <div class="check-body">
+        <p v-if="repairLines.length === 0" class="check-ok">
+          <AppIcon name="check" :size="14" />
+          没有发现需要修复的问题
+        </p>
+        <ul v-else class="check-list">
+          <li v-for="line in repairLines" :key="line" class="check-item">
+            <AppIcon name="check" :size="13" />
+            <span>{{ line }}</span>
+          </li>
+        </ul>
+        <template v-if="repairProblems.length">
+          <p class="repair-err-title">
+            <AppIcon name="alert" :size="13" />
+            仍需手动处理
+          </p>
+          <ul class="check-list">
+            <li v-for="line in repairProblems" :key="line" class="check-item">
+              <span class="check-name">{{ line }}</span>
+            </li>
+          </ul>
+        </template>
+      </div>
+      <template #footer>
+        <WoodButton
+          v-if="canReinstallLoader"
+          variant="primary"
+          size="sm"
+          :disabled="reinstalling"
+          @click="reinstallCurrentLoader"
+        >
+          {{ reinstalling ? "正在重装…" : "重装加载器" }}
+        </WoodButton>
+        <WoodButton variant="ghost" size="sm" @click="repairOpen = false">关闭</WoodButton>
+        <WoodButton variant="soft" size="sm" @click="openVersionFolder">
+          <AppIcon name="folder" :size="13" />
+          打开版本目录
+        </WoodButton>
+      </template>
+    </WoodModal>
+
     <Teleport to="body">
       <Transition name="pack-modal">
         <div v-if="showExport && exportPreview" class="pack-modal">
@@ -2253,7 +2381,6 @@ function launch() {
   flex: 1;
 }
 
-.ins-side__no,
 .ins-side__count {
   font-size: 10.5px;
   color: var(--muted);
@@ -2306,12 +2433,6 @@ function launch() {
   align-items: center;
   gap: 12px;
   margin-bottom: 10px;
-}
-
-.group-no {
-  font-size: 26px;
-  line-height: 1;
-  color: var(--line-strong);
 }
 
 .group-titles {
@@ -2670,6 +2791,15 @@ function launch() {
   margin: 0;
   font-size: 13px;
   color: var(--ink);
+}
+
+.repair-err-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #b4483c;
 }
 
 .check-list {

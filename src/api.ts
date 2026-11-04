@@ -126,7 +126,20 @@ export interface HallRoom {
   players: number;
   max_players: number;
   version: string;
+  /// 房主加载器，大厅源可留空
+  loader?: string;
+  /// 房间需要的 Mod 文件名或 mod id，大厅源可留空
+  mods?: string[];
   updated: number;
+}
+
+/// 进房前的 Mod / 版本一致性校验结果
+export interface RoomModCheck {
+  game_version: string;
+  loader: string;
+  missing: string[];
+  extra: string[];
+  problems: string[];
 }
 
 export interface Config {
@@ -134,6 +147,8 @@ export interface Config {
   game_dirs: GameDirEntry[];
   recent_servers: ServerEntry[];
   hall_url: string;
+  /// 附加的 EasyTier 公共节点，逗号或空格分隔
+  terracotta_nodes: string;
   update_url: string;
   update_mode: string;
   java_path: string | null;
@@ -168,6 +183,10 @@ export interface Config {
   glass_opacity: number;
   glass_blur: number;
   background_dim: number;
+  /// 版本页「游玩档案」卡片底图，空表示内置
+  profile_hero_image: string | null;
+  /// 版本页「最常玩版本」卡片底图，空表示内置
+  profile_card_image: string | null;
   ui_radius: string;
   ui_density: string;
   window_vibrancy: boolean;
@@ -272,6 +291,18 @@ export interface InstanceCheck {
   broken: BrokenFile[];
 }
 
+/// 一键自愈的结果
+export interface RepairReport {
+  version_json: boolean;
+  files_restored: number;
+  files_failed: string[];
+  natives: boolean;
+  disabled_mods: string[];
+  duplicate_mods: string[];
+  missing_deps: string[];
+  issues: string[];
+}
+
 /// 下载源测速结果
 export interface SourceProbe {
   id: string;
@@ -283,6 +314,30 @@ export interface SourceProbe {
   latency_ms: number;
   bytes: number;
   error: string;
+}
+
+/// 重试失败文件后的结果
+export interface RetryDownloads {
+  failed: string[];
+}
+
+/// 本地游玩画像
+export interface VersionPlayStat {
+  launches: number;
+  total_seconds: number;
+  first_played: number | null;
+  last_played: number | null;
+}
+
+export interface PlaySession {
+  version: string;
+  started: number;
+  seconds: number;
+}
+
+export interface PlayStats {
+  versions: Record<string, VersionPlayStat>;
+  sessions: PlaySession[];
 }
 
 /// 游戏设置预设（options.txt 模板）
@@ -736,10 +791,14 @@ export const api = {
     invoke<LoaderVersion[]>("loader_versions", { versionId, loader }),
   installLoader: (versionId: string, loader: string, loaderVersion?: string) =>
     invoke<InstalledVersion>("install_loader", { versionId, loader, loaderVersion }),
+  reinstallLoader: (versionId: string) =>
+    invoke<InstalledVersion>("reinstall_loader", { versionId }),
   instanceContext: (versionId: string) =>
     invoke<InstanceContext>("instance_context", { versionId }),
   checkInstanceFiles: (versionId: string) =>
     invoke<InstanceCheck>("check_instance_files", { versionId }),
+  repairInstance: (versionId: string) =>
+    invoke<RepairReport>("repair_instance", { versionId }),
   gameOptionsPresets: () => invoke<GameOptionsPreset[]>("game_options_presets"),
   saveGameOptionsPreset: (versionId: string, name: string) =>
     invoke<GameOptionsPreset>("save_game_options_preset", { versionId, name }),
@@ -787,6 +846,8 @@ export const api = {
     invoke<PclPreview>("pcl_import_preview", { path }),
   pclImportApply: (path: string) => invoke<Config>("pcl_import_apply", { path }),
   probeDownloadSources: () => invoke<SourceProbe[]>("probe_download_sources"),
+  retryFailedDownloads: () => invoke<RetryDownloads>("retry_failed_downloads"),
+  playStats: () => invoke<PlayStats>("play_stats"),
   updateCheck: (url: string) => invoke<UpdateInfo>("update_check", { url }),
   updateDownload: (url: string, version: string) =>
     invoke<string>("update_download", { url, version }),
@@ -942,6 +1003,18 @@ export const api = {
     invoke<number>("launch_server", { versionId, address }),
   lanRooms: () => invoke<LanView>("lan_rooms"),
   hallRooms: () => invoke<HallRoom[]>("hall_rooms"),
+  roomModCheck: (
+    versionId: string,
+    roomVersion: string,
+    roomLoader: string,
+    roomMods: string[]
+  ) =>
+    invoke<RoomModCheck>("room_mod_check", {
+      versionId,
+      roomVersion,
+      roomLoader,
+      roomMods,
+    }),
   serverVersions: () => invoke<ServerVersionOption[]>("server_versions"),
   serverStatus: () => invoke<ServerSnapshot | null>("server_status"),
   serverStart: (versionId: string, options: ServerOptions) =>

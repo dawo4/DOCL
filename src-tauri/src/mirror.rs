@@ -27,6 +27,12 @@ const HOST_MAPPINGS: &[(&str, &str)] = &[
         "https://maven.minecraftforge.net/",
         "https://bmclapi2.bangbang93.com/maven/",
     ),
+    // NeoForge 安装器里的库全部指向 maven.neoforged.net；BMCLAPI 有同路径镜像，
+    // 不映射的话国内会直连境外源，安装原生步骤很容易超时后回退到退出码 1
+    (
+        "https://maven.neoforged.net/releases/",
+        "https://bmclapi2.bangbang93.com/maven/",
+    ),
     (
         "https://resources.download.minecraft.net/",
         "https://bmclapi2.bangbang93.com/assets/",
@@ -81,6 +87,18 @@ pub fn prefer_mirror_first(url: &str) -> bool {
     !(url.starts_with("https://edge.forgecdn.net/")
         || url.starts_with("https://mediafilez.forgecdn.net/")
         || url.starts_with("https://media.forgecdn.net/"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rewrites_neoforged_maven_to_bmclapi() {
+        let url = "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.259/neoforge-21.1.259-installer.jar";
+        assert_eq!(
+            super::rewrite(url),
+            "https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/21.1.259/neoforge-21.1.259-installer.jar"
+        );
+    }
 }
 
 pub fn official(url: &str) -> String {

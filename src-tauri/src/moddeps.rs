@@ -188,8 +188,10 @@ fn parse_forge(text: &str, list: &mut Vec<Requirement>) {
     flush(&mut current, list);
 }
 
-/// 读取单个 jar 里声明的必需前置。
-fn read_requirements(path: &Path) -> Vec<Requirement> {
+/// 按实例加载器只读对应格式的元数据。
+/// Forge 整合包里常混有多加载器 jar，它们也带 fabric.mod.json，
+/// 读它会把 fabric-api 这类在 Forge 下无关的前置算成缺失。
+fn read_requirements(path: &Path, loader: &str) -> Vec<Requirement> {
     let Ok(file) = File::open(path) else {
         return Vec::new();
     };
@@ -198,15 +200,29 @@ fn read_requirements(path: &Path) -> Vec<Requirement> {
     };
     let mut list = Vec::new();
 
-    if let Some(text) = zip_text(&mut archive, "fabric.mod.json") {
-        parse_fabric(&text, &mut list);
-    }
-    if let Some(text) = zip_text(&mut archive, "quilt.mod.json") {
-        parse_quilt(&text, &mut list);
-    }
-    for name in ["META-INF/neoforge.mods.toml", "META-INF/mods.toml"] {
-        if let Some(text) = zip_text(&mut archive, name) {
-            parse_forge(&text, &mut list);
+    match loader {
+        "fabric" => {
+            if let Some(text) = zip_text(&mut archive, "fabric.mod.json") {
+                parse_fabric(&text, &mut list);
+            }
+        }
+        "quilt" => {
+            if let Some(text) = zip_text(&mut archive, "quilt.mod.json") {
+                parse_quilt(&text, &mut list);
+            }
+            // Quilt 也兼容 fabric 模组
+            if list.is_empty() {
+                if let Some(text) = zip_text(&mut archive, "fabric.mod.json") {
+                    parse_fabric(&text, &mut list);
+                }
+            }
+        }
+        _ => {
+            for name in ["META-INF/neoforge.mods.toml", "META-INF/mods.toml"] {
+                if let Some(text) = zip_text(&mut archive, name) {
+                    parse_forge(&text, &mut list);
+                }
+            }
         }
     }
     list
@@ -255,7 +271,7 @@ fn jar_mod_id(path: &Path) -> Option<String> {
 }
 
 /// 已安装模组提供的 ID 集合。
-fn installed_ids(mods_dir: &Path) -> HashSet<String> {
+pub fn installed_ids(mods_dir: &Path) -> HashSet<String> {
     let mut set = HashSet::new();
     let Ok(entries) = std::fs::read_dir(mods_dir) else {
         return set;
@@ -274,6 +290,67 @@ fn installed_ids(mods_dir: &Path) -> HashSet<String> {
         }
     }
     set
+}
+
+/// 同一个 mod id 装了多份 jar（作者换文件名、手动复制都会出现）。
+/// 返回 (mod id, 该 id 下全部 jar 路径)，只包含多于一份的。
+pub fn duplicate_mods(mods_dir: &Path) -> Vec<(String, Vec<std::path::PathBuf>)> {
+    let mut map: std::collections::HashMap<String, Vec<std::path::PathBuf>> =
+        std::collections::HashMap::new();
+    let Ok(entries) = std::fs::read_dir(mods_dir) else {
+        return Vec::new();
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if !name.ends_with(".jar") {
+            continue;
+        }
+        if let Some(id) = jar_mod_id(&path) {
+            map.entry(id).or_default().push(path);
+        }
+    }
+    let mut list: Vec<(String, Vec<std::path::PathBuf>)> = map
+        .into_iter()
+        .filter(|(_, files)| files.len() > 1)
+        .collect();
+    for (_, files) in list.iter_mut() {
+        files.sort();
+    }
+    list.sort_by(|a, b| a.0.cmp(&b.0));
+    list
+}
+
+/// 已装 jar 声明为必需、但实例里找不到的前置 mod id（去重、排除加载器内置）。
+pub fn missing_requirements(mods_dir: &Path, loader: &str) -> Vec<String> {
+    let present = installed_ids(mods_dir);
+    let mut missing: Vec<String> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(mods_dir) else {
+        return missing;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if !name.ends_with(".jar") {
+            continue;
+        }
+        for requirement in read_requirements(&path, loader)
+            .into_iter()
+            .filter(|item| item.mandatory)
+        {
+            if present.contains(&requirement.id) || missing.contains(&requirement.id) {
+                continue;
+            }
+            missing.push(requirement.id);
+        }
+    }
+    missing
 }
 
 /// 从版本 JSON 判断实例的加载器与游戏版本。
@@ -402,11 +479,11 @@ pub async fn install_missing(
         present.insert(id);
     }
 
-    let requirements = read_requirements(jar);
+    let (loader, game_version) = instance_env(cfg, instance_id);
+    let requirements = read_requirements(jar, &loader);
     if requirements.is_empty() {
         return report;
     }
-    let (loader, game_version) = instance_env(cfg, instance_id);
 
     let mut resolved = Vec::new();
     for requirement in requirements.into_iter().filter(|item| item.mandatory) {

@@ -19,6 +19,12 @@ pub struct HallRoom {
     pub max_players: u32,
     #[serde(default)]
     pub version: String,
+    /// 房主使用的加载器（可空，大厅源未提供时不校验）
+    #[serde(default)]
+    pub loader: String,
+    /// 房间需要的 Mod 文件或 mod id（可空）
+    #[serde(default)]
+    pub mods: Vec<String>,
     /// Unix 秒；用于显示“几分钟前”
     #[serde(default)]
     pub updated: u64,

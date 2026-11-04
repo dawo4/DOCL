@@ -26,6 +26,8 @@ pub struct Config {
     pub recent_servers: Vec<ServerEntry>,
     /// 房间大厅数据地址（返回 JSON 列表），留空表示不启用大厅
     pub hall_url: String,
+    /// 附加的 EasyTier 公共节点（逗号或空格分隔），开房/加入时传给陶瓦
+    pub terracotta_nodes: String,
     /// 自更新清单地址，留空表示不检查更新
     pub update_url: String,
     /// 启动器更新策略：auto（自动下载）/ notify（提示）/ off（关闭）
@@ -76,6 +78,12 @@ pub struct Config {
     pub glass_blur: u32,
     /// 背景遮罩暗度（0-60）
     pub background_dim: u32,
+    /// 版本页「游玩档案」卡片底图，空表示用内置图
+    #[serde(default)]
+    pub profile_hero_image: Option<String>,
+    /// 版本页「最常玩版本」卡片底图，空表示用内置图
+    #[serde(default)]
+    pub profile_card_image: Option<String>,
     /// default / sharp / round
     pub ui_radius: String,
     /// compact / normal / comfy
@@ -105,6 +113,7 @@ impl Default for Config {
             game_dirs: Vec::new(),
             recent_servers: Vec::new(),
             hall_url: String::new(),
+            terracotta_nodes: String::new(),
             // 默认走国内加速；玩家可在设置里切到 GitHub 原地址
             update_url: "https://cdn.jsdelivr.net/gh/dawo4/DOCL@main/update.json".into(),
             update_mode: "notify".into(),
@@ -137,6 +146,8 @@ impl Default for Config {
             glass_opacity: 62,
             glass_blur: 18,
             background_dim: 0,
+            profile_hero_image: None,
+            profile_card_image: None,
             ui_radius: "default".into(),
             ui_density: "normal".into(),
             // 便携版默认透出桌面：配合外带场景的玻璃质感；安装版保持实心

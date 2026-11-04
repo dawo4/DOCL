@@ -291,13 +291,28 @@ async fn call(path: &str, query: &[(&str, String)]) -> Result<reqwest::StatusCod
     Ok(response.status())
 }
 
-pub async fn host(room: Option<String>, player: Option<String>) -> Result<()> {
+/// 解析设置里的公共节点：逗号、中文逗号、空格、换行分隔，去重保序。
+/// 只接受 http(s) 地址，避免把误输入的普通文字传给陶瓦。
+pub fn parse_nodes(raw: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    raw.split(|c: char| c == ',' || c == '，' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|item| item.starts_with("http://") || item.starts_with("https://"))
+        .filter(|item| seen.insert(item.to_string()))
+        .map(str::to_string)
+        .collect()
+}
+
+pub async fn host(room: Option<String>, player: Option<String>, nodes: &[String]) -> Result<()> {
     let mut query: Vec<(&str, String)> = Vec::new();
     if let Some(room) = room.filter(|value| !value.trim().is_empty()) {
         query.push(("room", room));
     }
     if let Some(player) = player.filter(|value| !value.trim().is_empty()) {
         query.push(("player", player));
+    }
+    for node in nodes {
+        query.push(("public_nodes", node.clone()));
     }
     let status = call("/state/scanning", &query).await?;
     if !status.is_success() {
@@ -306,7 +321,7 @@ pub async fn host(room: Option<String>, player: Option<String>) -> Result<()> {
     Ok(())
 }
 
-pub async fn join(room: String, player: Option<String>) -> Result<()> {
+pub async fn join(room: String, player: Option<String>, nodes: &[String]) -> Result<()> {
     let room = room.trim();
     if room.is_empty() {
         bail!("请输入房间邀请码");
@@ -314,6 +329,9 @@ pub async fn join(room: String, player: Option<String>) -> Result<()> {
     let mut query: Vec<(&str, String)> = vec![("room", room.to_string())];
     if let Some(player) = player.filter(|value| !value.trim().is_empty()) {
         query.push(("player", player));
+    }
+    for node in nodes {
+        query.push(("public_nodes", node.clone()));
     }
     let status = call("/state/guesting", &query).await?;
     if status == reqwest::StatusCode::BAD_REQUEST {
@@ -386,6 +404,20 @@ fn raw_get(port: u16, path: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn parses_public_nodes() {
+        let nodes = parse_nodes(
+            "https://etnode.example.org/node1, https://etnode.example.org/node2\nhttps://etnode.example.org/node1 随便写的文字",
+        );
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes[0].ends_with("node1"));
+        assert!(nodes[1].ends_with("node2"));
+        assert!(parse_nodes("").is_empty());
+        assert!(parse_nodes("不是地址").is_empty());
+        let cn = parse_nodes("https://a.example.org，https://b.example.org");
+        assert_eq!(cn.len(), 2);
+    }
+
     #[tokio::test]
     #[ignore]
     async fn prepare_real_terracotta() {
@@ -396,7 +428,7 @@ mod tests {
         let state = initial.state.clone().expect("缺少 state");
         assert!(state.get("state").is_some(), "state 结构异常：{state}");
 
-        host(None, Some("DOCL Test".into()))
+        host(None, Some("DOCL Test".into()), &[])
             .await
             .expect("创建房间请求失败");
         let mut scanning = false;

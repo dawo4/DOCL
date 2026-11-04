@@ -15,6 +15,8 @@ import {
   type UpdateInfo,
   type UpdateProgress,
 } from "../api";
+import defaultProfileCard from "../assets/profile-card.jpg";
+import defaultProfileHero from "../assets/profile-hero.jpg";
 import AppIcon from "../components/AppIcon.vue";
 import IconButton from "../components/IconButton.vue";
 import WoodButton from "../components/WoodButton.vue";
@@ -43,6 +45,7 @@ const form = reactive<Config>({
   game_dirs: [],
   recent_servers: [],
   hall_url: "",
+  terracotta_nodes: "",
   update_url: "",
   update_mode: "notify",
   java_path: null,
@@ -74,6 +77,8 @@ const form = reactive<Config>({
   glass_opacity: 78,
   glass_blur: 14,
   background_dim: 0,
+  profile_hero_image: null,
+  profile_card_image: null,
   ui_radius: "default",
   ui_density: "normal",
   window_vibrancy: false,
@@ -109,10 +114,13 @@ const autoSaveKeys: (keyof Config)[] = [
   "glass_blur",
   "glass_opacity",
   "background_dim",
+  "profile_hero_image",
+  "profile_card_image",
   "ui_radius",
   "ui_density",
   "animations",
   "hall_url",
+  "terracotta_nodes",
   "update_url",
   "update_mode",
   "java_path",
@@ -215,14 +223,14 @@ type SettingsTab =
   | "update";
 const settingsTab = ref<SettingsTab>("game");
 
-const settingsTabs: { value: SettingsTab; label: string; icon: string; no: string }[] = [
-  { value: "game", label: "游戏与启动", icon: "cube", no: "01" },
-  { value: "java", label: "Java 运行时", icon: "database", no: "02" },
-  { value: "appearance", label: "外观", icon: "image", no: "03" },
-  { value: "performance", label: "性能与参数", icon: "sun", no: "04" },
-  { value: "download", label: "下载", icon: "download", no: "05" },
-  { value: "multiplayer", label: "联机", icon: "globe", no: "06" },
-  { value: "update", label: "更新", icon: "refresh", no: "07" },
+const settingsTabs: { value: SettingsTab; label: string; icon: string }[] = [
+  { value: "game", label: "游戏与启动", icon: "cube" },
+  { value: "java", label: "Java 运行时", icon: "database" },
+  { value: "appearance", label: "外观", icon: "image" },
+  { value: "performance", label: "性能与参数", icon: "sun" },
+  { value: "download", label: "下载", icon: "download" },
+  { value: "multiplayer", label: "联机", icon: "globe" },
+  { value: "update", label: "更新", icon: "refresh" },
 ];
 
 async function selectTab(tab: SettingsTab) {
@@ -372,12 +380,6 @@ async function chooseBackgroundDir() {
   notify("背景文件夹已应用，每次启动随机一张");
 }
 
-function clearBackgroundDir() {
-  form.background_dir = null;
-  void runAutoSave().then(loadBackground);
-  notify("已移除背景文件夹");
-}
-
 function previewBuiltin(name: string) {
   store.backgroundPreset = name;
   store.backgroundUrl = "";
@@ -397,6 +399,73 @@ function clearBackground() {
   notify("已移除背景");
 }
 
+/* ---------- 版本页卡片底图 ---------- */
+
+const profileHeroPreview = ref(defaultProfileHero);
+const profileCardPreview = ref(defaultProfileCard);
+let previewSeq = 0;
+
+async function loadProfilePreviews() {
+  const seq = (previewSeq += 1);
+  let hero = defaultProfileHero;
+  let card = defaultProfileCard;
+  if (form.profile_hero_image) {
+    try {
+      hero = await api.backgroundDataUrl(form.profile_hero_image);
+    } catch {
+      // 文件被移动/删除时保留内置图，不打断设置页
+    }
+  }
+  if (form.profile_card_image) {
+    try {
+      card = await api.backgroundDataUrl(form.profile_card_image);
+    } catch {
+      // 同上
+    }
+  }
+  // 连续切换图片时只采用最后一次结果，避免旧请求覆盖新预览
+  if (seq !== previewSeq) return;
+  profileHeroPreview.value = hero;
+  profileCardPreview.value = card;
+}
+
+watch(
+  () => [form.profile_hero_image, form.profile_card_image],
+  () => void loadProfilePreviews(),
+  { immediate: true }
+);
+
+async function chooseProfileCardImage(kind: "hero" | "card") {
+  const path = await pickImage();
+  if (!path) return;
+  if (kind === "hero") {
+    form.profile_hero_image = path;
+    notify("游玩档案底图已更新");
+  } else {
+    form.profile_card_image = path;
+    notify("最常玩版本底图已更新");
+  }
+  try {
+    const url = await api.backgroundDataUrl(path);
+    if (kind === "hero") profileHeroPreview.value = url;
+    else profileCardPreview.value = url;
+  } catch {
+    // 保存后由 loadProfilePreviews 再次尝试
+  }
+}
+
+function resetProfileCardImage(kind: "hero" | "card") {
+  if (kind === "hero") {
+    form.profile_hero_image = null;
+    profileHeroPreview.value = defaultProfileHero;
+    notify("已恢复游玩档案内置底图");
+  } else {
+    form.profile_card_image = null;
+    profileCardPreview.value = defaultProfileCard;
+    notify("已恢复最常玩版本内置底图");
+  }
+}
+
 /// 背景适应方式选项（cover 为默认铺满裁剪）
 const fitOptions = [
   { value: "cover", label: "铺满裁剪" },
@@ -404,6 +473,45 @@ const fitOptions = [
   { value: "stretch", label: "拉伸铺满" },
   { value: "center", label: "原始大小" },
 ];
+
+/// 内置底图的缩略渐变，用于背景预览（与实际壁纸同色系）
+const presetPreview: Record<string, string> = {
+  forest: "linear-gradient(180deg, #b7ccb0 0 40%, #7d9a6b 41% 60%, #45603c 61%)",
+  dune: "linear-gradient(180deg, #f7dfc0 0 40%, #d9a97f 41% 60%, #a8623f 61%)",
+  night: "linear-gradient(180deg, #141d2e 0 46%, #1e2c42 47% 72%, #16202e 73%)",
+  sakura: "linear-gradient(180deg, #fdeef2 0 38%, #f8d7e1 39% 66%, #e6a3ba 67%)",
+  ocean: "linear-gradient(180deg, #dff1f7 0 36%, #5f9cb2 37% 66%, #2f6076 67%)",
+  aurora:
+    "radial-gradient(circle at 30% 25%, #78eabe 0 18%, transparent 40%), radial-gradient(circle at 70% 45%, #9682f0 0 14%, transparent 36%), linear-gradient(180deg, #101a2c 0 46%, #172a42 47% 72%, #101a2a 73%)",
+};
+
+const hasBackground = computed(
+  () => Boolean(store.backgroundUrl || store.backgroundPreset)
+);
+
+const bgPreviewStyle = computed(() => {
+  const style: Record<string, string> = {};
+  if (store.backgroundUrl) {
+    const size =
+      form.background_fit === "contain"
+        ? "contain"
+        : form.background_fit === "center"
+          ? "auto"
+          : form.background_fit === "stretch"
+            ? "100% 100%"
+            : "cover";
+    style.backgroundImage = `url("${store.backgroundUrl}")`;
+    style.backgroundSize = size;
+    style.backgroundPosition = "center";
+    style.backgroundRepeat = "no-repeat";
+    return style;
+  }
+  if (store.backgroundPreset) {
+    style.backgroundImage = presetPreview[store.backgroundPreset] ?? "";
+    style.backgroundSize = "cover";
+  }
+  return style;
+});
 
 const sourceOptions = [
   { value: "auto", label: "自动（按来源智能选择）" },
@@ -494,6 +602,8 @@ async function chooseJavaDir() {
 const gameDirs = ref<GameDirEntry[]>([]);
 const activeDir = ref("");
 const officialDir = ref("");
+/// 目录路径 → 该目录下的版本数
+const dirCounts = ref<Record<string, number>>({});
 
 /// 截图/录屏时把 Windows 用户名替换成 Player，避免公开本机用户名
 const privacy = computed(() => import.meta.env.DEV && store.maskIds);
@@ -647,6 +757,16 @@ async function loadDirs() {
     officialDir.value = view.official;
   } catch {
     gameDirs.value = [];
+  }
+  await loadDirCounts();
+}
+
+/// 每个目录下的版本数量，用于在列表里显示
+async function loadDirCounts() {
+  try {
+    dirCounts.value = await api.gameDirVersionCounts();
+  } catch {
+    dirCounts.value = {};
   }
 }
 
@@ -834,14 +954,12 @@ async function removeJava(path: string) {
         >
           <AppIcon :name="tab.icon" :size="16" />
           <span class="settings-side__label">{{ tab.label }}</span>
-          <span class="settings-side__no mono">{{ tab.no }}</span>
         </button>
       </aside>
 
       <div class="settings-main">
     <section v-if="settingsTab === 'game'" class="card card-pad group reveal">
       <div class="group-head">
-        <span class="group-no display">01</span>
         <div class="group-titles">
           <div class="section-title">游戏与启动</div>
         </div>
@@ -851,12 +969,20 @@ async function removeJava(path: string) {
       <div class="setting setting--stack">
         <div class="setting__label">
           <strong>游戏目录</strong>
-          <span>versions / assets / libraries 都放在这里</span>
+          <span>versions / assets / libraries 都放在这里；路径不可直接编辑</span>
         </div>
         <div class="setting__control setting__control--wide">
-          <div class="row">
-            <WoodInput v-model="form.game_dir" mono />
-            <IconButton icon="folder" label="选择游戏目录" :size="38" @click="chooseDir" />
+          <div class="dir-current">
+            <span class="dir-current__path mono" :title="form.game_dir">
+              {{ maskPath(form.game_dir) }}
+            </span>
+            <div class="dir-current__actions">
+              <button class="dir-link" @click="openFolder(form.game_dir)">
+                <AppIcon name="folder" :size="14" />
+                在文件资源管理器中显示
+              </button>
+              <WoodButton variant="soft" size="sm" @click="chooseDir">更改目录</WoodButton>
+            </div>
           </div>
         </div>
       </div>
@@ -879,12 +1005,19 @@ async function removeJava(path: string) {
                   <strong>{{ dir.name }}</strong>
                   <span class="mono">{{ maskPath(dir.path) }}</span>
                 </span>
+                <span class="dir-row__count mono">{{ dirCounts[dir.path] ?? 0 }} 个版本</span>
                 <span v-if="dir.path === activeDir" class="tag tag--grass">当前</span>
               </button>
               <IconButton
+                icon="folder"
+                label="打开目录"
+                :size="28"
+                @click="openFolder(dir.path)"
+              />
+              <IconButton
                 icon="trash"
                 label="从列表移除"
-                :size="30"
+                :size="28"
                 :disabled="gameDirs.length <= 1 || dirBusy"
                 @click="removeDir(dir.path)"
               />
@@ -968,7 +1101,6 @@ async function removeJava(path: string) {
 
     <section v-if="settingsTab === 'java'" class="card card-pad group reveal" style="--i: 1">
       <div class="group-head">
-        <span class="group-no display">02</span>
         <div class="group-titles">
           <div class="section-title">Java 运行时</div>
         </div>
@@ -995,7 +1127,7 @@ async function removeJava(path: string) {
           @keydown.enter="form.java_path = java.path"
         >
           <span class="java-item__major display">Java {{ java.major }}</span>
-          <span class="java-item__path mono">{{ java.path }}</span>
+          <span class="java-item__path mono" :title="java.path">{{ java.path }}</span>
           <AppIcon
             v-if="form.java_path === java.path"
             name="check"
@@ -1028,27 +1160,37 @@ async function removeJava(path: string) {
 
       <div class="divider" />
 
-      <div class="setting">
+      <div class="setting setting--stack">
         <div class="setting__label">
           <strong>Java 安装位置</strong>
           <span>下载的运行时保存到这里，留空则使用启动器数据目录</span>
         </div>
         <div class="setting__control">
-          <div class="row">
-            <span class="muted small path-hint">
+          <div class="path-card">
+            <span
+              class="path-card__text mono"
+              :title="form.java_install_dir || '默认（启动器数据目录）'"
+            >
               {{ form.java_install_dir || "默认（启动器数据目录）" }}
             </span>
-            <WoodButton variant="soft" size="sm" @click="chooseJavaDir">
-              选择目录
-            </WoodButton>
-            <IconButton
-              v-if="form.java_install_dir"
-              icon="trash"
-              label="恢复默认位置"
-              variant="danger-quiet"
-              :size="34"
-              @click="form.java_install_dir = null"
-            />
+            <div class="path-card__foot">
+              <span class="muted small">
+                {{ form.java_install_dir ? "自定义位置" : "默认位置" }}
+              </span>
+              <div class="path-card__buttons">
+                <WoodButton variant="soft" size="sm" @click="chooseJavaDir">
+                  选择目录
+                </WoodButton>
+                <IconButton
+                  v-if="form.java_install_dir"
+                  icon="trash"
+                  label="恢复默认位置"
+                  variant="danger-quiet"
+                  :size="34"
+                  @click="form.java_install_dir = null"
+                />
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1060,7 +1202,7 @@ async function removeJava(path: string) {
         </div>
         <div class="setting__control">
           <div class="row">
-            <WoodSelect v-model="runtimeMajor" :options="javaOptions" />
+            <WoodSelect v-model="runtimeMajor" :options="javaOptions" class="runtime-select" />
             <WoodButton
               variant="soft"
               size="sm"
@@ -1082,7 +1224,6 @@ async function removeJava(path: string) {
       :style="{ '--i': 2 }"
     >
       <div class="group-head">
-        <span class="group-no display">03</span>
         <div class="group-titles">
           <div class="section-title">外观</div>
         </div>
@@ -1095,25 +1236,29 @@ async function removeJava(path: string) {
           <span>即时预览并自动保存</span>
         </div>
         <div class="setting__control">
-          <div class="theme-grid">
-          <button
-            v-for="theme in themes"
-            :key="theme.value"
-            class="theme-chip"
-            :class="{ 'theme-chip--active': form.theme === theme.value }"
-            @click="form.theme = theme.value"
-          >
-            <span class="theme-chip__dots">
-              <i v-for="color in theme.colors" :key="color" :style="{ background: color }" />
-            </span>
-            <span class="theme-chip__label">{{ theme.label }}</span>
-            <AppIcon
-              v-if="form.theme === theme.value"
-              name="check"
-              :size="14"
-              class="theme-chip__check"
-            />
-          </button>
+          <div class="theme-cards">
+            <button
+              v-for="theme in themes"
+              :key="theme.value"
+              class="theme-card"
+              :class="{ 'theme-card--active': form.theme === theme.value }"
+              @click="form.theme = theme.value"
+            >
+              <span
+                class="theme-card__preview"
+                :style="{
+                  '--pv-bg': theme.colors[0],
+                  '--pv-main': theme.colors[1],
+                  '--pv-accent': theme.colors[2],
+                }"
+              >
+                <i class="theme-card__side" />
+                <i class="theme-card__bar" />
+                <i class="theme-card__line theme-card__line--long" />
+                <i class="theme-card__line" />
+              </span>
+              <span class="theme-card__name">{{ theme.label }}</span>
+            </button>
           </div>
         </div>
       </div>
@@ -1124,76 +1269,131 @@ async function removeJava(path: string) {
           <span>点选即可预览磨砂玻璃效果，无需本地图片</span>
         </div>
         <div class="setting__control">
-          <div class="bg-presets">
+          <div class="bg-tiles">
             <button
               v-for="bg in builtinBackgrounds"
               :key="bg.value"
-              class="bg-chip"
+              class="bg-tile"
               :class="{
-                'bg-chip--active': form.background_image === `builtin:${bg.value}`,
+                'bg-tile--active': form.background_image === `builtin:${bg.value}`,
               }"
               @click="previewBuiltin(bg.value)"
             >
-              <span class="bg-chip__swatch" :class="`bg-chip__swatch--${bg.value}`" />
-              {{ bg.label }}
+              <span
+                class="bg-tile__thumb"
+                :class="`bg-chip__swatch--${bg.value}`"
+              />
+              <span class="bg-tile__label">{{ bg.label }}</span>
             </button>
             <button
-              class="bg-chip"
-              :class="{ 'bg-chip--active': !form.background_image }"
+              class="bg-tile"
+              :class="{ 'bg-tile--active': !form.background_image && !form.background_dir }"
               @click="clearBackground"
             >
-              <span class="bg-chip__swatch bg-chip__swatch--none" />
-              无背景
+              <span class="bg-tile__thumb bg-chip__swatch--none" />
+              <span class="bg-tile__label">无背景</span>
             </button>
           </div>
         </div>
       </div>
 
-      <div class="setting">
+      <div class="setting setting--stack">
         <div class="setting__label">
           <strong>背景图片</strong>
-          <span>PNG / JPG / WEBP / BMP / GIF，上限 24 MB</span>
+          <span>PNG / JPG / WEBP / BMP / GIF，上限 24 MB；文件夹优先于单图</span>
         </div>
         <div class="setting__control">
-          <div class="row">
-            <span class="muted small">{{ form.background_image && !form.background_image.startsWith("builtin:") ? "已设置" : "未设置" }}</span>
-            <IconButton icon="image" label="选择背景图片" :size="34" @click="chooseBackground" />
-            <IconButton
-              icon="trash"
-              label="移除背景图片"
-              variant="danger-quiet"
-              :size="34"
-              :disabled="!form.background_image"
-              @click="clearBackground"
-            />
+          <div
+            class="bg-preview"
+            :class="{ 'bg-preview--empty': !hasBackground }"
+            :style="bgPreviewStyle"
+          >
+            <span v-if="!hasBackground" class="bg-preview__empty">
+              还没有背景，选择一张图片或下方内置底图
+            </span>
+            <button class="bg-preview__pick" @click="chooseBackground">选择图片</button>
+          </div>
+          <div class="bg-preview__actions">
+            <span class="muted small">
+              {{ form.background_dir ? "使用文件夹随机图" : hasBackground ? "已设置背景" : "未设置背景" }}
+            </span>
+            <div class="row">
+              <IconButton icon="image" label="选择背景图片" :size="34" @click="chooseBackground" />
+              <IconButton icon="folder" label="选择背景文件夹" :size="34" @click="chooseBackgroundDir" />
+              <IconButton
+                icon="refresh"
+                label="换一张"
+                :size="34"
+                :disabled="!form.background_dir"
+                @click="shuffleBackground"
+              />
+              <IconButton
+                icon="trash"
+                label="移除背景"
+                variant="danger-quiet"
+                :size="34"
+                :disabled="!hasBackground && !form.background_dir"
+                @click="clearBackground"
+              />
+            </div>
           </div>
         </div>
       </div>
 
-      <div class="setting">
+      <div class="setting setting--stack">
         <div class="setting__label">
-          <strong>背景图文件夹</strong>
-          <span>每次启动从文件夹随机挑一张，优先于上方单图</span>
+          <strong>版本页卡片底图</strong>
+          <span>分别使用你自己的图片；不设置时沿用内置风景图</span>
         </div>
         <div class="setting__control">
-          <div class="row">
-            <span class="muted small">{{ form.background_dir ? "已设置" : "未设置" }}</span>
-            <IconButton icon="folder" label="选择背景文件夹" :size="34" @click="chooseBackgroundDir" />
-            <IconButton
-              icon="refresh"
-              label="换一张"
-              :size="34"
-              :disabled="!form.background_dir"
-              @click="shuffleBackground"
-            />
-            <IconButton
-              icon="trash"
-              label="移除背景文件夹"
-              variant="danger-quiet"
-              :size="34"
-              :disabled="!form.background_dir"
-              @click="clearBackgroundDir"
-            />
+          <div class="profile-bg-grid">
+            <div class="profile-bg-card">
+              <span
+                class="profile-bg-card__preview"
+                :style="{ backgroundImage: `url(${profileHeroPreview})` }"
+              />
+              <div class="profile-bg-card__body">
+                <strong>游玩档案</strong>
+                <span>{{ form.profile_hero_image ? "自定义底图" : "内置森林落日" }}</span>
+              </div>
+              <div class="profile-bg-card__actions">
+                <WoodButton variant="soft" size="sm" @click="chooseProfileCardImage('hero')">
+                  选择图片
+                </WoodButton>
+                <WoodButton
+                  variant="ghost"
+                  size="sm"
+                  :disabled="!form.profile_hero_image"
+                  @click="resetProfileCardImage('hero')"
+                >
+                  恢复默认
+                </WoodButton>
+              </div>
+            </div>
+
+            <div class="profile-bg-card">
+              <span
+                class="profile-bg-card__preview"
+                :style="{ backgroundImage: `url(${profileCardPreview})` }"
+              />
+              <div class="profile-bg-card__body">
+                <strong>最常玩版本</strong>
+                <span>{{ form.profile_card_image ? "自定义底图" : "内置林间小屋" }}</span>
+              </div>
+              <div class="profile-bg-card__actions">
+                <WoodButton variant="soft" size="sm" @click="chooseProfileCardImage('card')">
+                  选择图片
+                </WoodButton>
+                <WoodButton
+                  variant="ghost"
+                  size="sm"
+                  :disabled="!form.profile_card_image"
+                  @click="resetProfileCardImage('card')"
+                >
+                  恢复默认
+                </WoodButton>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1258,33 +1458,80 @@ async function removeJava(path: string) {
         </div>
       </div>
 
-      <div class="setting">
+      <div class="setting setting--stack">
         <div class="setting__label">
-          <strong>界面圆角</strong>
-          <span>卡片与面板的边角风格</span>
+          <strong>窗口材质</strong>
+          <span>毛玻璃会透出桌面实时画面；Win10 上拖动窗口时系统会临时降级</span>
         </div>
         <div class="setting__control">
-          <WoodSelect v-model="form.ui_radius" :options="radiusOptions" />
+          <div class="option-cards">
+            <button
+              class="option-card"
+              :class="{ 'option-card--active': !form.window_vibrancy }"
+              @click="form.window_vibrancy = false"
+            >
+              <span class="option-card__preview option-card__preview--solid" />
+              <span class="option-card__name">实心窗口</span>
+            </button>
+            <button
+              class="option-card"
+              :class="{ 'option-card--active': form.window_vibrancy }"
+              @click="form.window_vibrancy = true"
+            >
+              <span class="option-card__preview option-card__preview--glass" />
+              <span class="option-card__name">毛玻璃</span>
+            </button>
+          </div>
         </div>
       </div>
 
-      <div class="setting">
+      <div class="setting setting--stack">
         <div class="setting__label">
           <strong>界面密度</strong>
           <span>控制间距与留白，小窗口可用紧凑</span>
         </div>
         <div class="setting__control">
-          <WoodSelect v-model="form.ui_density" :options="densityOptions" />
+          <div class="option-cards">
+            <button
+              v-for="opt in densityOptions"
+              :key="opt.value"
+              class="option-card"
+              :class="{ 'option-card--active': form.ui_density === opt.value }"
+              @click="form.ui_density = opt.value"
+            >
+              <span
+                class="option-card__preview option-card__preview--density"
+                :class="`density--${opt.value}`"
+              >
+                <i /><i /><i />
+              </span>
+              <span class="option-card__name">{{ opt.label }}</span>
+            </button>
+          </div>
         </div>
       </div>
 
-      <div class="setting">
+      <div class="setting setting--stack">
         <div class="setting__label">
-          <strong>毛玻璃透出桌面</strong>
-          <span>窗口整体变为系统级毛玻璃，可看到后面的实时画面；Win10 上拖动窗口时系统会临时降级</span>
+          <strong>界面圆角</strong>
+          <span>卡片与面板的边角风格</span>
         </div>
         <div class="setting__control">
-          <WoodToggle v-model="form.window_vibrancy" />
+          <div class="option-cards">
+            <button
+              v-for="opt in radiusOptions"
+              :key="opt.value"
+              class="option-card"
+              :class="{ 'option-card--active': form.ui_radius === opt.value }"
+              @click="form.ui_radius = opt.value"
+            >
+              <span
+                class="option-card__preview option-card__preview--radius"
+                :class="`radius--${opt.value}`"
+              />
+              <span class="option-card__name">{{ opt.label }}</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1315,7 +1562,6 @@ async function removeJava(path: string) {
       :style="{ '--i': 3 }"
     >
       <div class="group-head">
-        <span class="group-no display">04</span>
         <div class="group-titles">
           <div class="section-title">性能与参数</div>
         </div>
@@ -1456,7 +1702,6 @@ async function removeJava(path: string) {
       :style="{ '--i': 4 }"
     >
       <div class="group-head">
-        <span class="group-no display">05</span>
         <div class="group-titles">
           <div class="section-title">下载</div>
         </div>
@@ -1540,7 +1785,6 @@ async function removeJava(path: string) {
       :style="{ '--i': 5 }"
     >
       <div class="group-head">
-        <span class="group-no display">06</span>
         <div class="group-titles">
           <div class="section-title">联机</div>
         </div>
@@ -1563,8 +1807,24 @@ async function removeJava(path: string) {
 
       <p class="muted small settings-hall-hint">
         支持 <span class="mono">{ "rooms": [ ... ] }</span> 或直接返回数组；每个房间至少包含
-        <span class="mono">room</span>（陶瓦邀请码），可选 name、motd、players、max_players、version、updated（Unix 秒）。
+        <span class="mono">room</span>（陶瓦邀请码），可选 name、motd、players、max_players、version、loader、mods、updated（Unix 秒）。
       </p>
+
+      <div class="setting setting--stack setting--last">
+        <div class="setting__label">
+          <strong>EasyTier 公共节点</strong>
+          <span>
+            可选。陶瓦默认使用内置公共节点；直连困难时可填自建或第三方节点，多个用逗号或空格分隔，开房/加入时追加
+          </span>
+        </div>
+        <div class="setting__control setting__control--wide">
+          <WoodInput
+            v-model="form.terracotta_nodes"
+            mono
+            placeholder="https://etnode.example.org/node1, https://etnode.example.org/node2"
+          />
+        </div>
+      </div>
     </section>
 
     <section
@@ -1573,7 +1833,6 @@ async function removeJava(path: string) {
       :style="{ '--i': 6 }"
     >
       <div class="group-head">
-        <span class="group-no display">07</span>
         <div class="group-titles">
           <div class="section-title">启动器更新</div>
         </div>
@@ -1845,12 +2104,6 @@ async function removeJava(path: string) {
   white-space: nowrap;
 }
 
-.settings-side__no {
-  font-size: 9px;
-  color: var(--muted);
-  letter-spacing: 0.08em;
-}
-
 .settings-main {
   display: flex;
   flex-direction: column;
@@ -1863,13 +2116,6 @@ async function removeJava(path: string) {
   align-items: center;
   gap: 12px;
   margin-bottom: 6px;
-}
-
-.group-no {
-  font-size: 28px;
-  line-height: 1;
-  color: var(--line-strong);
-  min-width: 34px;
 }
 
 .group-titles {
@@ -1947,13 +2193,24 @@ async function removeJava(path: string) {
   justify-content: flex-end;
 }
 
+/* 下拉框按固定宽度显示，长选项在内部省略而不是把整行撑破 */
+.setting__control .select {
+  width: 230px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.setting__control .row .select {
+  width: 180px;
+}
+
 .setting__control--wide {
   flex: 1;
   max-width: 430px;
 }
 
 .resolution {
-  width: 230px;
+  width: 300px;
 }
 
 .memory {
@@ -2018,7 +2275,9 @@ async function removeJava(path: string) {
 }
 
 .memory__chip {
-  height: 26px;
+  flex: 1;
+  min-width: 64px;
+  height: 28px;
   padding: 0 10px;
   border-radius: 3px;
   border: 1px dashed var(--line-strong);
@@ -2066,31 +2325,83 @@ async function removeJava(path: string) {
   font-size: 13px;
 }
 
+.dir-current {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
+.dir-current__path {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.dir-current__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dir-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  color: var(--moss);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.dir-link:hover {
+  text-decoration: underline;
+}
+
 .dir-list {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 2px;
   width: 100%;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
 }
 
 .dir-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 4px 2px 2px;
-  border: 1px solid var(--line);
+  padding: 0 2px;
+  border: 1px solid transparent;
   border-radius: 4px;
-  background: var(--panel);
-  transition: border-color var(--dur-2) ease;
+  background: transparent;
+  transition: background var(--dur-2) ease, border-color var(--dur-2) ease;
 }
 
 .dir-row:hover {
-  border-color: var(--walnut-light);
+  background: var(--panel-2);
 }
 
 .dir-row--active {
-  border-color: var(--moss);
-  background: linear-gradient(180deg, var(--panel), var(--moss-soft));
+  border-color: color-mix(in srgb, var(--moss) 42%, transparent);
+  background: var(--moss-soft);
+}
+
+.dir-row__count {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .dir-row__main {
@@ -2134,37 +2445,120 @@ async function removeJava(path: string) {
   margin-top: 8px;
 }
 
-.java-list {
+.path-card {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin: 12px 0;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
+.path-card__text {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.path-card__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.path-card__buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 内置底图改成一排缩略图卡片 */
+.bg-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.bg-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  transition: border-color var(--dur-2) ease, box-shadow var(--dur-2) ease,
+    transform var(--dur-2) var(--ease-out-expo);
+}
+
+.bg-tile:hover {
+  border-color: var(--walnut-light);
+  transform: translateY(-1px);
+}
+
+.bg-tile--active {
+  border-color: var(--moss);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.08);
+}
+
+.bg-tile__thumb {
+  display: block;
+  width: 100%;
+  height: 56px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background-size: cover;
+  background-position: center;
+}
+
+.bg-tile__label {
+  padding-left: 2px;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.java-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 14px 0;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
 }
 
 .java-item {
   display: flex;
   align-items: center;
   gap: 13px;
-  padding: 10px 13px;
+  padding: 10px 12px;
   border-radius: 4px;
-  border: 1px solid var(--line);
-  background: var(--panel);
+  border: 1px solid transparent;
+  background: transparent;
   text-align: left;
   position: relative;
   overflow: hidden;
   cursor: pointer;
-  transition: transform var(--dur-2) var(--ease-out-expo),
-    border-color var(--dur-2) ease, box-shadow var(--dur-2) ease;
+  transition: background var(--dur-2) ease, border-color var(--dur-2) ease;
 }
 
 .java-item:hover {
-  transform: translateY(-1px);
-  border-color: var(--walnut-light);
+  background: var(--panel-2);
 }
 
 .java-item--active {
-  border-color: var(--moss);
-  box-shadow: 0 0 0 3px rgba(94, 123, 73, 0.1);
+  border-color: color-mix(in srgb, var(--moss) 42%, transparent);
+  background: var(--moss-soft);
 }
 
 .java-item--active::after {
@@ -2210,14 +2604,9 @@ async function removeJava(path: string) {
   justify-content: space-between;
 }
 
-/* 自定义路径可能很长，截断显示避免撑破设置行 */
-.path-hint {
-  display: inline-block;
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: middle;
+/* 运行时版本下拉固定宽度，避免和「下载并安装」按钮一起撑出卡片 */
+.runtime-select {
+  width: 180px;
 }
 
 .java-progress {
@@ -2231,55 +2620,280 @@ async function removeJava(path: string) {
   width: 118px;
 }
 
-.theme-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.theme-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 10px;
   width: 100%;
 }
 
-.theme-chip {
+.theme-card {
   display: flex;
-  align-items: center;
-  gap: 7px;
-  height: 34px;
-  padding: 0 10px;
-  border-radius: 4px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 6px;
   border: 1px solid var(--line);
   background: var(--panel-2);
-  color: var(--ink-soft);
-  font-size: 12px;
-  font-weight: 600;
-  transition: border-color var(--dur-2) ease, background var(--dur-2) ease,
+  transition: border-color var(--dur-2) ease, box-shadow var(--dur-2) ease,
     transform var(--dur-2) var(--ease-out-expo);
 }
 
-.theme-chip:hover {
+.theme-card:hover {
   border-color: var(--walnut-light);
   transform: translateY(-1px);
 }
 
-.theme-chip--active {
+.theme-card--active {
   border-color: var(--moss);
-  background: var(--moss-soft);
-  color: var(--moss);
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.08);
 }
 
-.theme-chip__dots {
+.theme-card__preview {
+  position: relative;
+  height: 54px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--pv-bg);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.theme-card__side {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 22%;
+  background: color-mix(in srgb, var(--pv-main) 24%, transparent);
+  border-right: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.theme-card__bar {
+  position: absolute;
+  left: 30%;
+  top: 11px;
+  width: 28%;
+  height: 5px;
+  border-radius: 2px;
+  background: var(--pv-main);
+}
+
+.theme-card__line {
+  position: absolute;
+  left: 30%;
+  right: 12%;
+  top: 35px;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--pv-main) 30%, transparent);
+}
+
+.theme-card__line--long {
+  top: 24px;
+  right: 24%;
+}
+
+.theme-card__name {
+  padding-left: 2px;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 700;
+  text-align: left;
+}
+
+/* 外观选项预览卡（窗口材质 / 密度 / 圆角） */
+.option-cards {
   display: flex;
-  gap: 2px;
+  flex-wrap: wrap;
+  gap: 10px;
+  width: 100%;
 }
 
-.theme-chip__dots i {
-  width: 10px;
-  height: 10px;
+.option-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 112px;
+  padding: 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  transition: border-color var(--dur-2) ease, box-shadow var(--dur-2) ease,
+    transform var(--dur-2) var(--ease-out-expo);
+}
+
+.option-card:hover {
+  border-color: var(--walnut-light);
+  transform: translateY(-1px);
+}
+
+.option-card--active {
+  border-color: var(--moss);
+  background: var(--moss-soft);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.08);
+}
+
+.option-card__name {
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.option-card__preview {
+  position: relative;
+  display: block;
+  height: 46px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+.option-card__preview--solid {
+  background: linear-gradient(160deg, var(--panel-2), var(--panel));
+}
+
+.option-card__preview--solid::after {
+  content: "";
+  position: absolute;
+  inset: 8px 10px auto 10px;
+  height: 24px;
   border-radius: 3px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: var(--panel);
+  border: 1px solid var(--line);
 }
 
-.theme-chip__check {
-  color: var(--moss);
+.option-card__preview--glass {
+  background: radial-gradient(circle at 28% 30%, rgba(255, 255, 255, 0.6), transparent 62%),
+    linear-gradient(160deg, #90b2a2, #cbd6c5);
+}
+
+.option-card__preview--glass::after {
+  content: "";
+  position: absolute;
+  inset: 8px 10px auto 10px;
+  height: 24px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(4px);
+}
+
+.option-card__preview--density {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 12px;
+  background: var(--panel);
+}
+
+.option-card__preview--density i {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line-strong);
+}
+
+.option-card__preview--density i:last-child {
+  width: 58%;
+}
+
+.density--compact i + i {
+  margin-top: 3px;
+}
+
+.density--normal i + i {
+  margin-top: 6px;
+}
+
+.density--comfy i + i {
+  margin-top: 9px;
+}
+
+.option-card__preview--radius {
+  background: var(--panel);
+}
+
+.option-card__preview--radius::after {
+  content: "";
+  position: absolute;
+  inset: 8px 16px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+
+.radius--sharp::after {
+  border-radius: 2px;
+}
+
+.radius--default::after {
+  border-radius: 7px;
+}
+
+.radius--round::after {
+  border-radius: 14px;
+}
+
+/* 背景预览 */
+.bg-preview {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-width: 560px;
+  height: 156px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background-color: var(--panel-2);
+  background-position: center;
+  background-repeat: no-repeat;
+  overflow: hidden;
+}
+
+.bg-preview--empty {
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 8px,
+    rgba(var(--accent-rgb), 0.06) 8px 16px
+  );
+}
+
+.bg-preview__empty {
+  padding: 0 14px;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-align: center;
+}
+
+.bg-preview__pick {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 99px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--walnut-deep);
+  font-size: 11.5px;
+  font-weight: 700;
+  box-shadow: 0 2px 6px rgba(60, 44, 26, 0.16);
+}
+
+.bg-preview__pick:hover {
+  background: #fff;
+}
+
+.bg-preview__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  margin-top: 8px;
+  flex-wrap: wrap;
 }
 
 .bg-presets {
@@ -2431,5 +3045,68 @@ async function removeJava(path: string) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 版本页卡片底图选择 */
+.profile-bg-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.profile-bg-card {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  gap: 8px 12px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(var(--glass-rgb), 0.82);
+}
+
+.profile-bg-card__preview {
+  grid-row: 1 / span 2;
+  width: 96px;
+  height: 76px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background-color: var(--panel-2);
+  background-position: center;
+  background-size: cover;
+}
+
+.profile-bg-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.profile-bg-card__body strong {
+  font-size: 13.5px;
+  color: var(--walnut-deep);
+}
+
+.profile-bg-card__body span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-bg-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+@media (max-width: 1040px) {
+  .profile-bg-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 </style>

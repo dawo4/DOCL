@@ -149,6 +149,22 @@ pub fn find_java(cfg: &Config, required: u32) -> Result<java::JavaInfo> {
     ))
 }
 
+/// 安装加载器时优先用版本要求的精确 Java 大版本。
+/// 旧版 Forge 的处理器被更高版本 JDK 运行（例如 1.18 + Java 21）可能直接退出 1。
+pub fn find_java_exact(cfg: &Config, required: u32) -> Option<java::JavaInfo> {
+    if let Some(path) = &cfg.java_path {
+        let info = java::inspect_java(&PathBuf::from(path), "手动指定");
+        if let Some(info) = info {
+            if info.major == required {
+                return Some(info);
+            }
+        }
+    }
+    java::detect(cfg)
+        .into_iter()
+        .find(|info| info.major == required)
+}
+
 pub fn build(
     cfg: &Config,
     merged: &install::MergedDetail,
@@ -522,6 +538,11 @@ pub fn spawn(
     }
     run_pre_launch(app, cfg, &game_dir);
 
+    let started_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let stats_version = version_id.to_string();
     let mut child = cmd.spawn()?;
     let pid = child.id();
     let stdout = child.stdout.take();
@@ -603,6 +624,12 @@ pub fn spawn(
                 let _ = writer.flush();
             }
         }
+        // 先记录本次游玩时长，再通知前端刷新，否则版本页会读到旧数据
+        let ended = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(started_at);
+        crate::stats::record(&stats_version, started_at, ended.saturating_sub(started_at));
         let _ = app.emit("game-exit", GameExit { code, pid });
     });
 

@@ -1605,7 +1605,9 @@ pub async fn import(
             if !tasks.is_empty() {
                 download::begin_stage(app, &progress, "正在下载整合包内容…");
                 let count = tasks.len() as u32;
-                download::run_tasks(
+                // 整合包动辄几百个文件，个别文件超时不该让整个导入失败：
+                // 收集失败项，导入仍算完成，由下载面板提供「重试失败文件」
+                let outcome = download::run_tasks_reporting(
                     app,
                     client,
                     tasks.clone(),
@@ -1614,7 +1616,11 @@ pub async fn import(
                     progress.clone(),
                 )
                 .await?;
-                installed_files += count;
+                let failed_count = outcome.failed.len() as u32;
+                installed_files += count.saturating_sub(failed_count);
+                for (label, reason) in outcome.failed {
+                    failed.push(format!("{label}：{reason}"));
+                }
             }
             download::begin_stage(app, &progress, "正在校验下载文件…");
             repair_broken_jars(client, cfg, &root, &tasks, &mut failed, progress.as_ref()).await;
@@ -1709,7 +1715,9 @@ pub async fn import(
             if !tasks.is_empty() {
                 download::begin_stage(app, &progress, "正在下载整合包内容…");
                 let count = tasks.len() as u32;
-                download::run_tasks(
+                // 整合包动辄几百个文件，个别文件超时不该让整个导入失败：
+                // 收集失败项，导入仍算完成，由下载面板提供「重试失败文件」
+                let outcome = download::run_tasks_reporting(
                     app,
                     client,
                     tasks.clone(),
@@ -1718,7 +1726,11 @@ pub async fn import(
                     progress.clone(),
                 )
                 .await?;
-                installed_files += count;
+                let failed_count = outcome.failed.len() as u32;
+                installed_files += count.saturating_sub(failed_count);
+                for (label, reason) in outcome.failed {
+                    failed.push(format!("{label}：{reason}"));
+                }
             }
             download::begin_stage(app, &progress, "正在校验下载文件…");
             repair_broken_jars(client, cfg, &root, &tasks, &mut failed, progress.as_ref()).await;

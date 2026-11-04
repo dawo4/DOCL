@@ -380,6 +380,37 @@ export async function installLoader(
   }
 }
 
+/// 重装加载器：清理损坏的版本目录后按原加载器版本重装，实例文件不受影响
+export async function reinstallLoader(versionId: string) {
+  if (store.installingId) {
+    notify("已有安装任务正在进行", "err");
+    return false;
+  }
+  store.installingId = "重装加载器";
+  store.progress = null;
+  store.lastProgress = null;
+  store.lastJobError = null;
+  store.lastJobTitle = "重装加载器";
+  store.downloadPanel = "open";
+  primeProgress("install", "准备重装加载器…");
+  try {
+    await api.reinstallLoader(versionId);
+    await refreshInstalled();
+    await refreshConfig();
+    notify("加载器已重装");
+    return true;
+  } catch (err) {
+    store.lastJobError = String(err);
+    notify(`重装加载器失败：${String(err)}`, "err");
+    return false;
+  } finally {
+    store.installingId = null;
+    window.setTimeout(() => {
+      if (!store.progress?.active) store.progress = null;
+    }, 800);
+  }
+}
+
 export async function installCfFile(
   versionId: string,
   kind: string,
@@ -487,6 +518,68 @@ export async function importModpack(
   } catch (err) {
     store.lastJobError = String(err);
     notify(`导入失败：${String(err)}`, "err");
+    return null;
+  } finally {
+    store.installingId = null;
+    window.setTimeout(() => {
+      if (!store.progress?.active) store.progress = null;
+    }, 800);
+  }
+}
+
+/// 只重试上一批失败文件，不必重新导入整个整合包
+export async function retryFailedDownloads() {
+  if (store.installingId) {
+    notify("已有下载任务正在进行", "err");
+    return;
+  }
+  store.installingId = "重试失败文件";
+  store.lastJobError = null;
+  store.lastJobPartial = false;
+  store.lastJobTitle = "重试失败文件";
+  store.downloadPanel = "open";
+  primeProgress("repair", "准备重试失败文件…");
+  try {
+    const result = await api.retryFailedDownloads();
+    if (result.failed.length) {
+      store.lastJobPartial = true;
+      store.lastJobError =
+        `仍有 ${result.failed.length} 个文件未能下载：` +
+        result.failed.slice(0, 5).join("；");
+      notify(`仍有 ${result.failed.length} 个文件未能下载`, "err");
+    } else {
+      notify("失败文件已全部补齐");
+    }
+  } catch (err) {
+    store.lastJobError = String(err);
+    notify(`重试失败：${String(err)}`, "err");
+  } finally {
+    store.installingId = null;
+    window.setTimeout(() => {
+      if (!store.progress?.active) store.progress = null;
+    }, 800);
+  }
+}
+
+/// 一键自愈：修清单、补缺失文件、禁用重复模组
+export async function repairInstance(versionId: string) {
+  if (store.installingId) {
+    notify("已有下载任务正在进行", "err");
+    return null;
+  }
+  store.installingId = "一键修复";
+  store.progress = null;
+  store.lastProgress = null;
+  store.lastJobError = null;
+  store.lastJobPartial = false;
+  store.lastJobTitle = "一键修复";
+  store.downloadPanel = "open";
+  primeProgress("repair", "准备检查版本文件…");
+  try {
+    return await api.repairInstance(versionId);
+  } catch (err) {
+    store.lastJobError = String(err);
+    notify(`修复失败：${String(err)}`, "err");
     return null;
   } finally {
     store.installingId = null;

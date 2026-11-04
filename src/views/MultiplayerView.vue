@@ -11,6 +11,7 @@ import {
   type ServerPingResult,
   type ServerSnapshot,
   type ServerVersionOption,
+  type TcState,
   type TcStatus,
 } from "../api";
 import AppIcon from "../components/AppIcon.vue";
@@ -248,6 +249,100 @@ const tcDifficulty = computed(() => {
   }
 });
 
+const tcTough = computed(() => tc.value?.state?.difficulty === "TOUGH");
+
+/// 本地「最近一起玩的人」：陶瓦没有好友接口，只能自己记
+interface TcRecent {
+  machine_id: string;
+  name: string;
+  room: string;
+  ts: number;
+}
+
+const RECENTS_KEY = "docl.tc.recents";
+const recents = ref<TcRecent[]>([]);
+/// 上一次看到的房间成员，用来提示有人进入/离开
+let knownMembers: { id: string; name: string }[] = [];
+
+function loadRecents() {
+  try {
+    const raw = localStorage.getItem(RECENTS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    recents.value = Array.isArray(parsed) ? parsed : [];
+  } catch {
+    recents.value = [];
+  }
+}
+
+function saveRecents() {
+  try {
+    localStorage.setItem(RECENTS_KEY, JSON.stringify(recents.value));
+  } catch {
+    // 隐私模式写不进去就算了，不影响联机
+  }
+}
+
+function clearRecents() {
+  recents.value = [];
+  saveRecents();
+}
+
+/// 房主视角自己是 HOST，房客视角自己是 LOCAL，其余才是「一起玩过的人」
+function rememberPlayers(state: TcState) {
+  const room = (state.room ?? "").trim();
+  if (!room) return;
+  const selfKind = state.state === "guest-ok" ? "LOCAL" : "HOST";
+  const ts = Date.now();
+  for (const profile of state.profiles ?? []) {
+    if (!profile.machine_id) continue;
+    if (profile.kind === selfKind || profile.kind === "LOCAL") continue;
+    const entry: TcRecent = {
+      machine_id: profile.machine_id,
+      name: profile.name || "未知玩家",
+      room,
+      ts,
+    };
+    const index = recents.value.findIndex((item) => item.machine_id === profile.machine_id);
+    if (index >= 0) recents.value[index] = entry;
+    else recents.value.unshift(entry);
+  }
+  recents.value = recents.value.slice(0, 12);
+  saveRecents();
+}
+
+/// 写入新状态，顺带处理成员变动提示与本地记录
+function applyTcState(next: TcStatus) {
+  const state = next.state;
+  tc.value = next;
+  if (!state) return;
+  const active = state.state === "host-ok" || state.state === "guest-ok";
+  if (!active) {
+    knownMembers = [];
+    return;
+  }
+  const now = (state.profiles ?? [])
+    .filter((profile) => profile.kind !== "LOCAL")
+    .map((profile) => ({
+      id: profile.machine_id,
+      name: profile.name || "有人",
+    }));
+  // 第一次拿到成员列表时只记录不提示，避免刚进房就刷一堆通知
+  if (knownMembers.length) {
+    for (const member of now) {
+      if (!knownMembers.some((item) => item.id === member.id)) {
+        notify(`${member.name} 加入了房间`);
+      }
+    }
+    for (const member of knownMembers) {
+      if (!now.some((item) => item.id === member.id)) {
+        notify(`${member.name} 离开了房间`);
+      }
+    }
+  }
+  knownMembers = now;
+  rememberPlayers(state);
+}
+
 watch(
   () => store.installed,
   (list) => {
@@ -301,6 +396,33 @@ async function refreshHall() {
 }
 
 async function joinHallRoom(room: HallRoom) {
+  // 进房前校验版本 / 加载器 / Mod 列表；大厅源没广播这些字段时会自动跳过
+  if (versionId.value) {
+    try {
+      const check = await api.roomModCheck(
+        versionId.value,
+        room.version ?? "",
+        room.loader ?? "",
+        room.mods ?? []
+      );
+      const lines = [...check.problems];
+      if (check.missing.length) {
+        lines.push(`缺少房间需要的 Mod：${check.missing.slice(0, 8).join("、")}`);
+      }
+      if (lines.length) {
+        const proceed = await confirm(`${lines.join("\n")}\n\n仍要加入这个房间吗？`, {
+          title: "房间内容与当前实例不一致",
+          kind: "warning",
+        });
+        if (!proceed) {
+          tab.value = "room";
+          return;
+        }
+      }
+    } catch {
+      // 校验失败不阻塞进房，交给陶瓦的报错提示
+    }
+  }
   tcRoomInput.value = room.room;
   tab.value = "room";
   // 首次使用需要下载组件，这里等准备流程真正结束再判断
@@ -532,11 +654,11 @@ async function refreshTc() {
     const next = await api.terracottaStatus();
     if (next.error) {
       tcFailures += 1;
-      if (tcFailures >= 3) tc.value = next;
+      if (tcFailures >= 3) applyTcState(next);
       return;
     }
     tcFailures = 0;
-    tc.value = next;
+    applyTcState(next);
   } catch {
     tcFailures += 1;
     if (tcFailures >= 3 && tc.value) {
@@ -640,6 +762,7 @@ function onDevMpTab(event: Event) {
 
 onMounted(() => {
   if (import.meta.env.DEV) window.addEventListener("docl-dev-mp-tab", onDevMpTab);
+  loadRecents();
   void refreshLan();
   void loadServerVersions();
   void refreshServer();
@@ -820,6 +943,7 @@ onBeforeUnmount(() => {
             <span>
               {{ room.motd || `邀请码 ${room.room}` }}
               <template v-if="room.version"> · {{ room.version }}</template>
+              <template v-if="room.mods?.length"> · {{ room.mods.length }} 个 Mod</template>
               <template v-if="room.players || room.max_players">
                 · {{ room.players }}/{{ room.max_players || "?" }}
               </template>
@@ -986,10 +1110,15 @@ onBeforeUnmount(() => {
 
         <div
           v-else-if="tcStateName === 'guest-connecting' || tcStateName === 'guest-starting'"
-          class="tc-state"
+          class="tc-state tc-state--col"
         >
-          <span class="mp-pulse" />
-          {{ tcStateName === "guest-connecting" ? "正在连接房主…" : tcDifficulty }}
+          <div class="tc-state__line">
+            <span class="mp-pulse" />
+            {{ tcStateName === "guest-connecting" ? "正在连接房主…" : tcDifficulty }}
+          </div>
+          <span v-if="tcTough" class="tc-hint">
+            网络较难直连，可在「设置 → 联机」里添加 EasyTier 公共节点后重新加入
+          </span>
         </div>
 
         <div v-else-if="tcStateName === 'guest-ok'" class="tc-room">
@@ -1029,6 +1158,21 @@ onBeforeUnmount(() => {
       <div class="tc-credit">
         Terracotta / 陶瓦联机 by burningtnt · AGPL-3.0
         <button @click="openExternal('https://github.com/burningtnt/Terracotta')">项目主页</button>
+      </div>
+
+      <div v-if="recents.length" class="tc-recents">
+        <div class="tc-recents__head">
+          <span class="tc-recents__title">最近一起玩的人</span>
+          <WoodButton variant="ghost" size="sm" @click="clearRecents">清空</WoodButton>
+        </div>
+        <div v-for="person in recents" :key="person.machine_id" class="tc-recent">
+          <span class="tc-recent__name">{{ person.name }}</span>
+          <span class="tc-recent__room mono">{{ person.room }}</span>
+          <WoodButton variant="soft" size="sm" @click="copyAddress(person.room)">
+            复制邀请码
+          </WoodButton>
+        </div>
+        <p class="tc-hint">邀请码只在房主重新开房前有效；陶瓦没有好友接口，这里只记录本机见过的玩家。</p>
       </div>
     </section>
 
@@ -1642,6 +1786,64 @@ onBeforeUnmount(() => {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.6;
+}
+
+.tc-state--col {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.tc-state__line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tc-recents {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.tc-recents__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tc-recents__title {
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.tc-recent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: rgba(var(--glass-rgb), 0.22);
+  font-size: 11.5px;
+}
+
+.tc-recent__name {
+  flex-shrink: 0;
+  color: var(--ink);
+}
+
+.tc-recent__room {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tc-scan {

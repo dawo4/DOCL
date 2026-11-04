@@ -667,7 +667,7 @@ pub async fn install_file(
         size: 0,
         label: name,
     };
-    download::run_tasks(app, client, vec![task], 1, false, progress.clone()).await?;
+    download::run_tasks(app, client, vec![task], 1, cfg.use_mirror(), progress.clone()).await?;
 
     // 模组装好后顺手补齐它声明的必需前置，装不上的留给前端提示
     let mut dependencies = crate::moddeps::DependencyReport::default();

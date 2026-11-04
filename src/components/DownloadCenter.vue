@@ -4,7 +4,7 @@ import AppIcon from "./AppIcon.vue";
 import IconButton from "./IconButton.vue";
 import WoodButton from "./WoodButton.vue";
 import WoodProgress from "./WoodProgress.vue";
-import { cancelInstall, store } from "../store";
+import { cancelInstall, retryFailedDownloads, store } from "../store";
 import { formatBytes, formatDuration, formatSpeed } from "../utils";
 
 const hovered = ref(false);
@@ -16,12 +16,14 @@ const active = computed(() => !!store.installingId);
 /// 有文件没下载成功但任务本身跑完了：算「部分完成」，不算安装失败
 const partial = computed(() => !active.value && !!store.lastJobPartial);
 const failed = computed(() => !!store.lastJobError && !partial.value);
-const finished = computed(() => !active.value && !failed.value && !!store.lastProgress);
+const finished = computed(
+  () => !active.value && !failed.value && !partial.value && !!store.lastProgress
+);
 
 const percent = computed(() => {
   const p = snapshot.value;
   if (!p) return finished.value ? 100 : 0;
-  if (!active.value && !failed.value) return 100;
+  if (!active.value && !failed.value && !partial.value) return 100;
   if (p.bytes_total > 0) return Math.min(100, (p.bytes_done / p.bytes_total) * 100);
   if (p.files_total > 0) return Math.min(100, (p.files_done / p.files_total) * 100);
   return 0;
@@ -73,9 +75,16 @@ const remainingFiles = computed(() => {
   return String(Math.max(0, p.files_total - p.files_done));
 });
 
-const ringStyle = computed(() => ({
-  background: `conic-gradient(var(--moss) ${percent.value * 3.6}deg, rgba(var(--glass-rgb), 0.28) 0)`,
-}));
+const ringStyle = computed(() => {
+  const tone = failed.value
+    ? "var(--danger)"
+    : partial.value
+      ? "var(--amber)"
+      : "var(--moss)";
+  return {
+    background: `conic-gradient(${tone} ${percent.value * 3.6}deg, rgba(var(--glass-rgb), 0.28) 0)`,
+  };
+});
 
 function closePanel() {
   store.downloadPanel = active.value || !!store.lastProgress ? "ball" : "hidden";
@@ -226,6 +235,14 @@ onBeforeUnmount(() => {
             <WoodButton v-if="active" variant="danger" size="sm" @click="cancelInstall">
               取消安装
             </WoodButton>
+            <WoodButton
+              v-else-if="partial"
+              variant="primary"
+              size="sm"
+              @click="retryFailedDownloads()"
+            >
+              重试失败文件
+            </WoodButton>
             <WoodButton variant="ghost" size="sm" @click="closePanel">
               收起到悬浮球
             </WoodButton>
@@ -271,22 +288,37 @@ onBeforeUnmount(() => {
 
       <button
         class="dl-ball"
-        :class="{ 'dl-ball--done': finished && !failed, 'dl-ball--failed': failed }"
+        :class="{
+          'dl-ball--done': finished && !failed,
+          'dl-ball--failed': failed,
+          'dl-ball--partial': partial,
+          'dl-ball--busy': active && !failed,
+        }"
         :style="ringStyle"
         aria-label="下载进度"
         @mouseenter="showTip"
         @mouseleave="hideTip"
         @click="openPanel"
       >
+        <span class="dl-ball__glow" />
         <span class="dl-ball__inner">
-          <template v-if="failed">!</template>
-          <template v-else-if="finished">✓</template>
-          <template v-else>{{ Math.round(percent) }}</template>
+          <span class="dl-ball__sheen" />
+          <span class="dl-ball__icon">
+            <AppIcon
+              :name="failed || partial ? 'alert' : active ? 'download' : 'check'"
+              :size="13"
+            />
+          </span>
+          <span class="dl-ball__pct">
+            {{
+              failed ? "失败" : partial ? "部分" : finished ? "完成" : `${Math.round(percent)}%`
+            }}
+          </span>
         </span>
       </button>
 
       <button
-        v-if="finished || failed"
+        v-if="finished || failed || partial"
         class="dl-ball__dismiss"
         title="关闭"
         @click="hideBall"
@@ -547,17 +579,17 @@ onBeforeUnmount(() => {
 }
 
 .dl-tip .dl-status {
-  background: rgba(255, 253, 246, 0.1);
-  border-color: rgba(255, 253, 246, 0.18);
-  color: #fbf4e6;
+  background: color-mix(in srgb, var(--paper) 10%, transparent);
+  border-color: color-mix(in srgb, var(--paper) 18%, transparent);
+  color: var(--paper);
 }
 
 .dl-tip .dl-status--ok {
-  color: #b7d49a;
+  color: color-mix(in srgb, var(--moss-bright) 60%, var(--paper));
 }
 
 .dl-tip .dl-status--err {
-  color: #f0a58d;
+  color: color-mix(in srgb, var(--danger) 45%, var(--paper));
 }
 
 .dl-error {
@@ -585,41 +617,119 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: flex-end;
   gap: 10px;
+  animation: dl-ball-float 4.6s ease-in-out infinite;
 }
 
 .dl-ball {
-  width: 56px;
-  height: 56px;
+  position: relative;
+  width: 58px;
+  height: 58px;
   border-radius: 50%;
   padding: 4px;
-  box-shadow: 0 10px 26px rgba(40, 28, 16, 0.28);
-  transition: transform var(--dur-2) var(--ease-out-expo);
+  box-shadow: 0 12px 28px rgba(40, 28, 16, 0.26), 0 2px 4px rgba(40, 28, 16, 0.12);
+  transition: transform var(--dur-2) var(--ease-out-expo), box-shadow var(--dur-2) ease;
 }
 
 .dl-ball:hover {
-  transform: translateY(-3px) scale(1.04);
+  transform: translateY(-4px) scale(1.05);
+  box-shadow: 0 18px 34px rgba(40, 28, 16, 0.3);
+}
+
+/* 外侧柔光：下载中缓慢呼吸，完成/失败时静止 */
+.dl-ball__glow {
+  position: absolute;
+  inset: -9px;
+  z-index: -1;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(var(--accent-rgb), 0.4), transparent 66%);
+  filter: blur(7px);
+  opacity: 0.32;
+  pointer-events: none;
+}
+
+.dl-ball--busy .dl-ball__glow {
+  animation: dl-ball-breathe 2.6s ease-in-out infinite;
 }
 
 .dl-ball__inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
   width: 100%;
   height: 100%;
+  overflow: hidden;
   border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: var(--panel);
+  border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
+  background: radial-gradient(
+    circle at 32% 24%,
+    var(--panel) 0 44%,
+    color-mix(in srgb, var(--panel) 78%, var(--panel-2)) 100%
+  );
   color: var(--walnut-deep);
-  font-family: var(--font-display);
-  font-size: 15px;
+  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.75),
+    inset 0 -3px 8px rgba(80, 58, 34, 0.1);
+}
+
+.dl-ball__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--moss);
+}
+
+.dl-ball--busy .dl-ball__icon {
+  animation: dl-ball-icon 1.8s ease-in-out infinite;
+}
+
+.dl-ball__pct {
+  font-size: 10.5px;
   font-weight: 700;
-  border: 1px solid var(--line);
+  line-height: 1.1;
+}
+
+/* 表面扫过的高光，让球体看起来是玻璃材质 */
+.dl-ball__sheen {
+  position: absolute;
+  top: -45%;
+  left: -70%;
+  width: 55%;
+  height: 190%;
+  transform: rotate(20deg);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  pointer-events: none;
+  animation: dl-ball-sheen 3.4s ease-in-out infinite;
+}
+
+.dl-ball--done {
+  animation: dl-ball-pop 520ms var(--ease-out-expo);
 }
 
 .dl-ball--done .dl-ball__inner {
   color: var(--moss);
 }
 
+.dl-ball--done .dl-ball__icon,
+.dl-ball--failed .dl-ball__icon {
+  color: inherit;
+}
+
+.dl-ball--failed {
+  animation: dl-ball-shake 460ms ease;
+}
+
 .dl-ball--failed .dl-ball__inner {
   color: var(--danger);
+}
+
+.dl-ball--partial .dl-ball__inner {
+  color: var(--amber);
+}
+
+.dl-ball--partial .dl-ball__icon {
+  color: inherit;
 }
 
 .dl-ball__dismiss {
@@ -634,6 +744,8 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   margin-right: 2px;
+  box-shadow: 0 4px 10px rgba(40, 28, 16, 0.14);
+  animation: dl-ball-pop 360ms var(--ease-out-expo);
 }
 
 .dl-ball__dismiss:hover {
@@ -641,14 +753,84 @@ onBeforeUnmount(() => {
   border-color: var(--danger);
 }
 
+@keyframes dl-ball-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes dl-ball-breathe {
+  0%,
+  100% {
+    opacity: 0.28;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 0.72;
+    transform: scale(1.06);
+  }
+}
+
+@keyframes dl-ball-sheen {
+  0% {
+    left: -70%;
+  }
+  55%,
+  100% {
+    left: 120%;
+  }
+}
+
+@keyframes dl-ball-icon {
+  0%,
+  100% {
+    transform: translateY(1px);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes dl-ball-pop {
+  0% {
+    transform: scale(0.86);
+  }
+  55% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes dl-ball-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  50% {
+    transform: translateX(4px);
+  }
+  75% {
+    transform: translateX(-2px);
+  }
+}
+
 .dl-tip {
   width: 260px;
   padding: 12px 13px;
-  border-radius: 4px;
-  background: #3c2b1c;
-  color: #fbf4e6;
-  box-shadow: 0 14px 34px rgba(40, 28, 16, 0.32);
-  border: 1px solid rgba(255, 253, 246, 0.08);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ink) 94%, transparent);
+  color: var(--paper);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.24);
+  border: 1px solid color-mix(in srgb, var(--paper) 12%, transparent);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -665,7 +847,7 @@ onBeforeUnmount(() => {
 .dl-tip__bar {
   height: 5px;
   border-radius: 3px;
-  background: rgba(255, 253, 246, 0.18);
+  background: color-mix(in srgb, var(--paper) 18%, transparent);
   overflow: hidden;
 }
 
@@ -673,7 +855,7 @@ onBeforeUnmount(() => {
   display: block;
   height: 100%;
   border-radius: 3px;
-  background: linear-gradient(90deg, #88a867, #c08a55);
+  background: linear-gradient(90deg, var(--moss-bright), var(--amber));
   transition: width 240ms var(--ease-out-quart);
 }
 
@@ -682,25 +864,25 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 4px 12px;
   font-size: 11px;
-  color: #d8c8b0;
+  color: color-mix(in srgb, var(--paper) 72%, transparent);
 }
 
 .dl-tip__err {
   font-size: 11px;
-  color: #f0a58d;
+  color: color-mix(in srgb, var(--danger) 45%, var(--paper));
 }
 
 .dl-tip__open {
   height: 28px;
-  border-radius: 3px;
-  background: rgba(255, 253, 246, 0.1);
-  color: #fbf4e6;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--paper) 12%, transparent);
+  color: var(--paper);
   font-size: 11.5px;
-  border: 1px solid rgba(255, 253, 246, 0.12);
+  border: 1px solid color-mix(in srgb, var(--paper) 16%, transparent);
 }
 
 .dl-tip__open:hover {
-  background: rgba(255, 253, 246, 0.18);
+  background: color-mix(in srgb, var(--paper) 20%, transparent);
 }
 
 @keyframes dl-fade-in {

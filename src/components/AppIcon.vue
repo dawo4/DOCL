@@ -146,6 +146,10 @@ const icons: Record<string, string[]> = {
     "M12 9.6v4.4",
     "M12 16.6h.01",
   ],
+  wrench: [
+    "M14.7 6.3a3.8 3.8 0 0 1 5.1 5.1l-8.3 8.3a2.4 2.4 0 0 1-3.4 0l-1.7-1.7a2.4 2.4 0 0 1 0-3.4z",
+    "M7.2 16.8l.01.01",
+  ],
 };
 
 const paths = computed(() => icons[props.name] ?? []);

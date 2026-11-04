@@ -28,8 +28,10 @@ mod news;
 mod pclimport;
 mod ping;
 mod probes;
+mod repair;
 mod server;
 mod skins;
+mod stats;
 mod system;
 mod terracotta;
 mod translate;
@@ -145,6 +147,7 @@ pub fn run() {
             commands::loader_options,
             commands::loader_versions,
             commands::install_loader,
+            commands::reinstall_loader,
             commands::delete_version,
             commands::instance_info,
             commands::instance_metas,
@@ -172,11 +175,14 @@ pub fn run() {
             commands::modpack_export,
             commands::instance_context,
             commands::check_instance_files,
+            commands::repair_instance,
             gameopts::game_options_presets,
             gameopts::save_game_options_preset,
             gameopts::apply_game_options_preset,
             gameopts::delete_game_options_preset,
             probes::probe_download_sources,
+            commands::retry_failed_downloads,
+            commands::play_stats,
             commands::crash_analyze,
             commands::crash_export,
             commands::mod_updates,
@@ -222,6 +228,7 @@ pub fn run() {
             commands::launch_server,
             commands::lan_rooms,
             commands::hall_rooms,
+            commands::room_mod_check,
             commands::server_versions,
             commands::server_status,
             commands::server_start,

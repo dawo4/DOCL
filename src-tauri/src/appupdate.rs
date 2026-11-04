@@ -1,12 +1,10 @@
 use crate::config;
 use crate::http;
 use anyhow::{bail, Context, Result};
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
-use tokio::io::AsyncWriteExt;
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -127,21 +125,8 @@ pub async fn download(app: &AppHandle, url: &str, version: &str) -> Result<PathB
     let target = dir.join(download_name(url, version));
 
     let client = http::client();
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .context("下载安装包失败")?
-        .error_for_status()
-        .context("安装包地址返回了错误状态")?;
-    let total = response.content_length().unwrap_or(0);
-    let mut stream = response.bytes_stream();
-    let mut file = tokio::fs::File::create(&target).await?;
-    let mut downloaded = 0u64;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("下载安装包中断")?;
-        file.write_all(&chunk).await?;
-        downloaded += chunk.len() as u64;
+    let urls = vec![url.to_string()];
+    let mut on_progress = |downloaded: u64, total: u64| {
         let _ = app.emit(
             "update-progress",
             UpdateProgress {
@@ -149,9 +134,8 @@ pub async fn download(app: &AppHandle, url: &str, version: &str) -> Result<PathB
                 total,
             },
         );
-    }
-    file.flush().await?;
-    let _ = app.emit("update-progress", UpdateProgress { downloaded, total });
+    };
+    crate::download::download_stream(&client, &urls, &target, &mut on_progress).await?;
     Ok(target)
 }
 

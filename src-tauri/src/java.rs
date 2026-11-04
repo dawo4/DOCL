@@ -218,6 +218,31 @@ pub fn detect(cfg: &Config) -> Vec<JavaInfo> {
     found
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{pick_for_major, JavaInfo};
+
+    fn java(major: u32) -> JavaInfo {
+        JavaInfo {
+            path: format!("java{major}"),
+            version: format!("{major}.0.0"),
+            major,
+            source: "test".into(),
+        }
+    }
+
+    #[test]
+    fn exact_major_wins_over_newer_runtime() {
+        // 安装器优先精确大版本：有 Java 17 时不能拿 21 去跑 1.18 的处理器
+        let list = vec![java(21), java(17), java(8)];
+        assert_eq!(pick_for_major(&list, 17).map(|info| info.major), Some(17));
+        assert_eq!(pick_for_major(&list, 8).map(|info| info.major), Some(8));
+        // 没有精确版本时向上兼容，但 Java 8 时代不允许高版本顶替
+        assert_eq!(pick_for_major(&list, 16).map(|info| info.major), Some(17));
+        assert!(pick_for_major(&[java(21)], 8).is_none());
+    }
+}
+
 pub fn pick_for_major(list: &[JavaInfo], required: u32) -> Option<JavaInfo> {
     if let Some(exact) = list.iter().find(|j| j.major == required) {
         return Some(exact.clone());

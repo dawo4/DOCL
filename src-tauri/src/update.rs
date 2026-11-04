@@ -3,15 +3,15 @@ use crate::curseforge;
 use crate::download;
 use crate::install;
 use crate::instance;
+use crate::mirror;
+use crate::moddeps;
 use anyhow::{bail, Context, Result};
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{Cursor, Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use tokio::io::AsyncWriteExt;
 use zip::ZipArchive;
 
 const BASE: &str = "https://api.modrinth.com/v2";
@@ -668,14 +668,29 @@ pub async fn check(
     report.updates.sort_by(|a, b| a.mod_name.to_lowercase().cmp(&b.mod_name.to_lowercase()));
 
     for jar in unknown.iter().take(8) {
-        report
-            .notes
-            .push(format!("未在 Modrinth / CurseForge 找到：{}", jar.file_name));
+        report.notes.push(format!(
+            "未找到适配当前版本的更新：{}（可能已停止维护）",
+            jar.file_name
+        ));
     }
     if unknown.len() > 8 {
         report
             .notes
             .push(format!("另有 {} 个文件未识别", unknown.len() - 8));
+    }
+
+    // 同一个 mod 装了多份时，游戏可能在加载阶段直接报冲突
+    for (id, files) in moddeps::duplicate_mods(&dir) {
+        report.notes.push(format!(
+            "重复模组 {id}：{} 个文件（{}）",
+            files.len(),
+            files
+                .iter()
+                .filter_map(|path| path.file_name().map(|name| name.to_string_lossy().to_string()))
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("、")
+        ));
     }
 
     Ok(report)
@@ -708,29 +723,16 @@ pub async fn install_update(
     fs::create_dir_all(&dir)?;
     let file_name = safe_file_name(file_name)?;
     let target = dir.join(&file_name);
-    let tmp = target.with_extension("jar.part");
-    let _ = fs::remove_file(&tmp);
+    let tmp = dir.join(format!("{file_name}.download"));
 
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("下载失败：{file_name}"))?;
-    if !response.status().is_success() {
-        bail!("服务器返回 HTTP {}", response.status());
-    }
+    // 换源与续传交给公共下载器：CDN 断流时不再让单个 Mod 更新卡住
+    let mut urls = vec![mirror::rewrite(url), url.to_string()];
+    urls.dedup();
+    let mut ignore = |_: u64, _: u64| {};
+    download::download_stream(client, &urls, &tmp, &mut ignore).await?;
 
-    let mut file = tokio::fs::File::create(&tmp).await?;
     let mut hasher = Sha1::new();
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("读取下载数据失败")?;
-        hasher.update(&chunk);
-        file.write_all(&chunk).await?;
-    }
-    file.flush().await?;
-    drop(file);
-
+    download::hash_existing(&tmp, &mut hasher).await?;
     let actual = format!("{:x}", hasher.finalize());
     if let Some(expected) = expected_sha1.filter(|value| !value.is_empty()) {
         if !expected.eq_ignore_ascii_case(&actual) {
@@ -759,6 +761,7 @@ pub async fn install_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Cursor, Write};
 
     #[test]
     fn parses_forge_mods_toml() {

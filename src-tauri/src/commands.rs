@@ -17,10 +17,12 @@ use crate::java::{self, JavaInfo};
 use crate::lan;
 use crate::launch;
 use crate::models::*;
+use crate::moddeps;
 use crate::modpack;
 use crate::news;
 use crate::pclimport;
 use crate::ping::{self, ServerPingResult};
+use crate::repair;
 use crate::server;
 use crate::skins;
 use crate::system;
@@ -368,6 +370,7 @@ pub async fn install_version(
     let progress = ProgressState::new("install");
     progress.set_message(format!("准备安装 {version_id}…"));
     *state.progress.lock().unwrap() = Some(progress.clone());
+    download::reset_failed_batch();
 
     let result = install::install_version(&app, &state.client, &cfg, &version_id, progress.clone())
         .await;
@@ -431,6 +434,7 @@ pub async fn install_loader(
     let progress = ProgressState::new("install");
     progress.set_message(format!("准备安装 {loader}…"));
     *state.progress.lock().unwrap() = Some(progress.clone());
+    download::reset_failed_batch();
 
     let result = install::install_loader(
         &app,
@@ -442,6 +446,45 @@ pub async fn install_loader(
         progress.clone(),
     )
     .await;
+
+    progress.active.store(false, Ordering::Relaxed);
+    download::emit_now(&app, &progress);
+    *state.progress.lock().unwrap() = None;
+
+    match result {
+        Ok(version) => {
+            let mut current = cfg;
+            current.selected_version = Some(version.id.clone());
+            let _ = config::save(&current);
+            *state.config.lock().unwrap() = current;
+            Ok(version)
+        }
+        Err(e) => Err(err(e)),
+    }
+}
+
+#[tauri::command]
+pub async fn reinstall_loader(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    version_id: String,
+) -> CmdResult<InstalledVersion> {
+    let cfg = state.config.lock().unwrap().clone();
+    {
+        let guard = state.progress.lock().unwrap();
+        if let Some(p) = guard.as_ref() {
+            if p.active.load(Ordering::Relaxed) {
+                return Err("已有下载任务正在进行".into());
+            }
+        }
+    }
+    let progress = ProgressState::new("install");
+    progress.set_message("准备重装加载器…");
+    *state.progress.lock().unwrap() = Some(progress.clone());
+    download::reset_failed_batch();
+
+    let result =
+        install::reinstall_loader(&app, &state.client, &cfg, &version_id, progress.clone()).await;
 
     progress.active.store(false, Ordering::Relaxed);
     download::emit_now(&app, &progress);
@@ -762,6 +805,113 @@ pub async fn crash_export(
         .map_err(err)
 }
 
+/// 进房前的 Mod / 版本一致性校验：房间广播了 mod 列表或版本时才对比。
+#[derive(serde::Serialize)]
+pub struct RoomModCheck {
+    pub game_version: String,
+    pub loader: String,
+    /// 房间需要、当前实例没有的（文件名或 mod id）
+    pub missing: Vec<String>,
+    /// 当前实例有、房间没有列出的（仅房间给出文件名列表时统计）
+    pub extra: Vec<String>,
+    /// 需要提示给用户的版本/加载器不一致说明
+    pub problems: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn room_mod_check(
+    state: State<'_, AppState>,
+    version_id: String,
+    room_version: String,
+    room_loader: String,
+    room_mods: Vec<String>,
+) -> CmdResult<RoomModCheck> {
+    let cfg = state.config.lock().unwrap().clone();
+    // 解压/读取几百个 jar 可能持续几秒，放到阻塞线程，避免卡住界面
+    tokio::task::spawn_blocking(move || -> CmdResult<RoomModCheck> {
+        let (game_version, loader) =
+            install::instance_context(&cfg, &version_id).map_err(err)?;
+        // 只读扫描，不顺手创建 mods 目录
+        let dir = instance::game_dir(&cfg, &version_id).join("mods");
+
+        let mut problems = Vec::new();
+        if !room_version.trim().is_empty()
+            && !room_version.trim().eq_ignore_ascii_case(&game_version)
+        {
+            problems.push(format!(
+                "房间是 {}，当前实例是 {game_version}",
+                room_version.trim()
+            ));
+        }
+        if !room_loader.trim().is_empty() && !room_loader.trim().eq_ignore_ascii_case(&loader) {
+            problems.push(format!(
+                "房间使用 {}，当前实例是 {loader}",
+                room_loader.trim()
+            ));
+        }
+
+        let local_ids = moddeps::installed_ids(&dir);
+        let mut local_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if name.ends_with(".jar") {
+                    local_names.insert(name);
+                }
+            }
+        }
+
+        let mut missing = Vec::new();
+        for item in &room_mods {
+            let value = item.trim();
+            if value.is_empty() {
+                continue;
+            }
+            let lower = value.to_lowercase();
+            let present = if lower.ends_with(".jar") {
+                local_names.contains(&lower)
+            } else {
+                local_ids.contains(&lower)
+            };
+            if !present {
+                missing.push(value.to_string());
+            }
+        }
+
+        // 只有房间给出的全是文件名时才推断「本地多装了哪些」，
+        // 否则（给的是 mod id）无法可靠反查每个 jar 的 id，容易误报
+        let room_files: std::collections::HashSet<String> = room_mods
+            .iter()
+            .map(|item| item.trim().to_lowercase())
+            .filter(|item| item.ends_with(".jar"))
+            .collect();
+        let extra = if !room_mods.is_empty() && room_files.len() == room_mods.len() {
+            local_names
+                .iter()
+                .filter(|name| !room_files.contains(*name))
+                .take(30)
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        Ok(RoomModCheck {
+            game_version,
+            loader,
+            missing,
+            extra,
+            problems,
+        })
+    })
+    .await
+    .map_err(|error| format!("进房校验失败：{error}"))?
+}
+
 #[tauri::command]
 pub async fn hall_rooms(
     state: State<'_, AppState>,
@@ -861,6 +1011,7 @@ pub async fn modpack_import(
     let progress = ProgressState::new("install");
     progress.set_message("准备导入整合包…");
     *state.progress.lock().unwrap() = Some(progress.clone());
+    download::reset_failed_batch();
 
     let result = modpack::import(&app, &state.client, &cfg, &path, &options, progress.clone()).await;
 
@@ -878,6 +1029,58 @@ pub async fn modpack_import(
         }
         Err(error) => Err(err(error)),
     }
+}
+
+/// 只重跑上一批失败的文件，不必重新导入整个整合包
+#[derive(serde::Serialize)]
+pub struct RetryDownloadsView {
+    failed: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn retry_failed_downloads(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CmdResult<RetryDownloadsView> {
+    {
+        let guard = state.progress.lock().unwrap();
+        if let Some(progress) = guard.as_ref() {
+            if progress.active.load(Ordering::Relaxed) {
+                return Err("已有下载任务正在进行".into());
+            }
+        }
+    }
+    let Some(batch) = download::take_failed_batch() else {
+        return Ok(RetryDownloadsView { failed: Vec::new() });
+    };
+    let progress = ProgressState::new("repair");
+    progress.set_message("准备重试失败文件…");
+    *state.progress.lock().unwrap() = Some(progress.clone());
+
+    let result = download::run_tasks_reporting(
+        &app,
+        &state.client,
+        batch.tasks,
+        batch.concurrency,
+        batch.use_mirror,
+        progress.clone(),
+    )
+    .await;
+
+    progress.active.store(false, Ordering::Relaxed);
+    download::emit_now(&app, &progress);
+    *state.progress.lock().unwrap() = None;
+
+    let outcome = result.map_err(err)?;
+    Ok(RetryDownloadsView {
+        failed: outcome.failed.into_iter().map(|(label, _)| label).collect(),
+    })
+}
+
+/// 本地游玩画像：各版本累计时长、启动次数与最近几次游戏
+#[tauri::command]
+pub fn play_stats() -> crate::stats::PlayStats {
+    crate::stats::summary()
 }
 
 #[tauri::command]
@@ -957,6 +1160,36 @@ pub async fn check_instance_files(
         .await
         .map_err(err)?;
     Ok(InstanceCheck { scanned, broken })
+}
+
+/// 一键自愈：修清单、补缺失文件、重解本地库、禁用重复模组。
+#[tauri::command]
+pub async fn repair_instance(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    version_id: String,
+) -> CmdResult<repair::RepairReport> {
+    let cfg = state.config.lock().unwrap().clone();
+    {
+        let guard = state.progress.lock().unwrap();
+        if let Some(p) = guard.as_ref() {
+            if p.active.load(Ordering::Relaxed) {
+                return Err("已有下载任务正在进行".into());
+            }
+        }
+    }
+    let progress = ProgressState::new("repair");
+    progress.set_message(format!("正在检查 {version_id}…"));
+    *state.progress.lock().unwrap() = Some(progress.clone());
+    download::reset_failed_batch();
+
+    let result = repair::run(&app, &state.client, &cfg, &version_id, progress.clone()).await;
+
+    progress.active.store(false, Ordering::Relaxed);
+    download::emit_now(&app, &progress);
+    *state.progress.lock().unwrap() = None;
+
+    result.map_err(err)
 }
 
 #[tauri::command]
@@ -1833,15 +2066,22 @@ pub async fn terracotta_status() -> terracotta::TcStatus {
 
 #[tauri::command]
 pub async fn terracotta_host(
+    state: State<'_, AppState>,
     room: Option<String>,
     player: Option<String>,
 ) -> CmdResult<()> {
-    terracotta::host(room, player).await.map_err(err)
+    let nodes = terracotta::parse_nodes(&state.config.lock().unwrap().terracotta_nodes);
+    terracotta::host(room, player, &nodes).await.map_err(err)
 }
 
 #[tauri::command]
-pub async fn terracotta_join(room: String, player: Option<String>) -> CmdResult<()> {
-    terracotta::join(room, player).await.map_err(err)
+pub async fn terracotta_join(
+    state: State<'_, AppState>,
+    room: String,
+    player: Option<String>,
+) -> CmdResult<()> {
+    let nodes = terracotta::parse_nodes(&state.config.lock().unwrap().terracotta_nodes);
+    terracotta::join(room, player, &nodes).await.map_err(err)
 }
 
 #[tauri::command]
