@@ -201,6 +201,29 @@ watch(
 
 const versionStats = computed(() => stats.value?.versions ?? {});
 
+/// 卡片文字颜色：设置里指定时覆盖默认浅色，并按亮度自动配对比阴影
+const profileStyle = computed<Record<string, string>>(() => {
+  const color = store.config?.profile_text_color?.trim();
+  if (!color) return {} as Record<string, string>;
+  const hex = color.replace("#", "");
+  let luminance = 0.5;
+  if (hex.length === 6) {
+    const r = parseInt(hex.slice(0, 2), 16) / 255;
+    const g = parseInt(hex.slice(2, 4), 16) / 255;
+    const b = parseInt(hex.slice(4, 6), 16) / 255;
+    luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  }
+  return {
+    "--profile-ink": color,
+    "--profile-soft": `color-mix(in srgb, ${color} 78%, transparent)`,
+    "--profile-muted": `color-mix(in srgb, ${color} 56%, transparent)`,
+    "--profile-shadow":
+      luminance > 0.6
+        ? "0 1px 4px rgba(18, 12, 6, 0.62)"
+        : "0 1px 4px rgba(255, 252, 244, 0.6)",
+  };
+});
+
 const totalSeconds = computed(() =>
   Object.values(versionStats.value).reduce((sum, item) => sum + item.total_seconds, 0)
 );
@@ -273,21 +296,12 @@ function playTotalShare(id: string) {
   return Math.round((playSeconds(id) / totalSeconds.value) * 100);
 }
 
-const topShare = computed(() =>
-  topVersion.value ? playTotalShare(topVersion.value.id) : 0
-);
-
 /// 总时长拆成「小时 + 分钟」，统计区用大字号分两段展示
 const heroMinutesTotal = computed(() =>
   totalSeconds.value ? Math.max(1, Math.round(totalSeconds.value / 60)) : 0
 );
 const heroHours = computed(() => Math.floor(heroMinutesTotal.value / 60));
 const heroMinutes = computed(() => heroMinutesTotal.value % 60);
-const avgSessionText = computed(() => {
-  if (!totalLaunches.value) return "—";
-  const minutes = Math.max(1, Math.round(totalSeconds.value / totalLaunches.value / 60));
-  return `${minutes} 分钟`;
-});
 
 /// 所有版本里最早的一次游玩，用于「入坑于」文案
 const firstPlayed = computed(() => {
@@ -332,9 +346,6 @@ const weekDays = computed<WeekDay[]>(() => {
   return days;
 });
 
-const weekTotal = computed(() =>
-  weekDays.value.reduce((sum, day) => sum + day.seconds, 0)
-);
 const weekMax = computed(() =>
   Math.max(1, ...weekDays.value.map((day) => day.seconds))
 );
@@ -434,11 +445,6 @@ async function chooseImage(id: string) {
     <header class="page-head page-head--split">
       <div class="page-head__lead">
         <h1 class="page-title">版本库</h1>
-        <p class="page-sub">
-          共 {{ visibleVersions.length }} 个版本{{
-            totalSeconds ? ` · 累计游玩 ${formatPlaytime(totalSeconds, true)}` : ""
-          }}
-        </p>
       </div>
       <div class="page-head__actions">
         <div class="dir-switch">
@@ -477,42 +483,45 @@ async function chooseImage(id: string) {
       </div>
     </header>
 
-    <div v-if="visibleVersions.length" class="shelf-stats">
+    <div v-if="visibleVersions.length" class="shelf-stats" :style="profileStyle">
       <article
         class="shelf-hero"
         :class="{ 'shelf-hero--empty': !distribution.length }"
         :style="{ '--hero-bg': `url(${heroBg})` }"
       >
-        <div class="hero-main">
-          <div class="hero-total">
-            <span class="hero-total__eyebrow">游玩档案</span>
-            <div v-if="totalSeconds" class="hero-total__num">
-              <template v-if="heroHours">
-                <strong>{{ heroHours }}</strong>
-                <span class="hero-total__unit">小时</span>
-                <strong>{{ heroMinutes }}</strong>
-                <span class="hero-total__unit">分</span>
-              </template>
-              <template v-else>
-                <strong>{{ heroMinutes }}</strong>
-                <span class="hero-total__unit">分钟</span>
-              </template>
-            </div>
-            <div v-else class="hero-total__num hero-total__num--empty">还没有游玩记录</div>
-            <div v-if="totalSeconds" class="hero-facts">
-              <span><b>{{ totalLaunches }}</b> 次启动</span>
-              <span><b>{{ avgSessionText }}</b> 平均每次</span>
-              <span v-if="firstPlayed">
-                <b>{{ formatDate(new Date(firstPlayed * 1000).toISOString()) }}</b> 入坑
-              </span>
-            </div>
+        <div class="hero-total">
+          <span class="hero-total__eyebrow">游玩档案</span>
+          <div v-if="totalSeconds" class="hero-total__num">
+            <template v-if="heroHours">
+              <strong>{{ heroHours }}</strong>
+              <span class="hero-total__unit">小时</span>
+              <strong>{{ heroMinutes }}</strong>
+              <span class="hero-total__unit">分</span>
+            </template>
+            <template v-else>
+              <strong>{{ heroMinutes }}</strong>
+              <span class="hero-total__unit">分钟</span>
+            </template>
           </div>
+          <div v-else class="hero-total__num hero-total__num--empty">还没有游玩记录</div>
+          <div v-if="totalSeconds" class="hero-facts">
+            <span><b>{{ totalLaunches }}</b> 次启动</span>
+            <span v-if="firstPlayed">
+              <b>{{ formatDate(new Date(firstPlayed * 1000).toISOString()) }}</b> 入坑
+            </span>
+          </div>
+          <div v-if="lastSession" class="hero-recent">
+            <span class="hero-recent__label">最近游玩</span>
+            <strong v-if="!topVersion || lastSession.version !== topVersion.id">
+              {{ displayName(lastSession.version) }}
+            </strong>
+            <span class="hero-recent__meta">{{ relativeDay(lastSession.started) }}</span>
+          </div>
+        </div>
 
+        <div class="hero-bottom">
           <div class="week">
-            <div class="week__head">
-              <span class="week__title">最近 7 天</span>
-              <span class="week__sum">{{ weekTotal ? formatPlaytime(weekTotal, true) : "暂无" }}</span>
-            </div>
+            <span class="week__title">最近 7 天</span>
             <div class="week__bars">
               <div v-for="day in weekDays" :key="day.key" class="week__col">
                 <div class="week__track">
@@ -534,23 +543,23 @@ async function chooseImage(id: string) {
               </div>
             </div>
           </div>
-        </div>
 
-        <div v-if="distribution.length" class="hero-dist">
-          <div class="hero-dist__bar">
-            <span
-              v-for="slice in distribution"
-              :key="slice.id"
-              :style="{ width: `${slice.percent}%`, background: slice.color }"
-              :title="`${slice.name} · ${formatPlaytime(slice.seconds)}`"
-            />
-          </div>
-          <div class="hero-dist__legend">
-            <span v-for="slice in distribution" :key="slice.id" class="hero-dist__item">
-              <i :style="{ background: slice.color }" />
-              <b>{{ slice.name }}</b>
-              <em>{{ Math.round(slice.percent) }}%</em>
-            </span>
+          <div v-if="distribution.length" class="hero-dist">
+            <div class="hero-dist__bar">
+              <span
+                v-for="slice in distribution"
+                :key="slice.id"
+                :style="{ width: `${slice.percent}%`, background: slice.color }"
+                :title="`${slice.name} · ${formatPlaytime(slice.seconds)}`"
+              />
+            </div>
+            <div class="hero-dist__legend">
+              <span v-for="slice in distribution" :key="slice.id" class="hero-dist__item">
+                <i :style="{ background: slice.color }" />
+                <b>{{ slice.name }}</b>
+                <em>{{ Math.round(slice.percent) }}%</em>
+              </span>
+            </div>
           </div>
         </div>
       </article>
@@ -564,52 +573,19 @@ async function chooseImage(id: string) {
           <div v-if="topVersion" class="top-version">
             <span class="top-version__tile">
               <img v-if="customIcons[topVersion.id]" :src="customIcons[topVersion.id]" alt="" />
-              <InstanceGlyph v-else :preset="iconOf(topVersion.id)" :size="20" />
+              <InstanceGlyph v-else :preset="iconOf(topVersion.id)" :size="24" />
             </span>
             <div class="top-version__body">
               <strong>{{ displayName(topVersion.id) }}</strong>
-              <span>
-                {{ formatPlaytime(topVersion.stat.total_seconds, true) }} ·
-                {{ topVersion.stat.launches }} 次启动
-              </span>
             </div>
-            <span class="top-version__percent mono">{{ topShare }}%</span>
           </div>
           <div v-else class="stat-empty">还没有游玩记录</div>
-          <div v-if="topVersion" class="meter">
-            <span :style="{ width: `${Math.max(4, topShare)}%` }" />
+
+          <div class="top-overview">
+            <span><b>{{ visibleVersions.length }}</b> 个版本</span>
+            <span><b>{{ favCount }}</b> 个收藏</span>
           </div>
         </article>
-
-        <div class="shelf-side__split">
-          <article class="stat-card stat-card--recent">
-            <span class="stat-card__label">最近游玩</span>
-            <strong class="stat-card__value">
-              {{ lastSession ? displayName(lastSession.version) : "—" }}
-            </strong>
-            <span v-if="lastSession" class="stat-card__sub">
-              {{ formatDate(new Date(lastSession.started * 1000).toISOString()) }}
-              <i class="stat-card__dot" />
-              {{ relativeDay(lastSession.started) }}
-            </span>
-            <span v-else class="stat-card__sub">还没有启动记录</span>
-            <span v-if="lastSession" class="stat-card__pill">
-              本次 {{ formatPlaytime(lastSession.seconds, true) }}
-            </span>
-          </article>
-
-          <article class="stat-card stat-card--overview">
-            <span class="stat-card__label">版本概览</span>
-            <div class="stat-card__big">
-              <strong class="display">{{ visibleVersions.length }}</strong>
-              <span>个版本</span>
-            </div>
-            <span class="stat-card__sub">{{ favCount }} 个收藏 · 共启动 {{ totalLaunches }} 次</span>
-            <span class="stat-card__pill">
-              {{ weekTotal ? `本周 ${formatPlaytime(weekTotal, true)}` : "本周还没开玩" }}
-            </span>
-          </article>
-        </div>
       </aside>
     </div>
 
@@ -882,9 +858,15 @@ async function chooseImage(id: string) {
 
 /* ---------- 本地游玩画像 ---------- */
 .shelf-stats {
+  --profile-ink: #fff4e2;
+  --profile-soft: rgba(255, 244, 226, 0.8);
+  --profile-muted: rgba(255, 244, 226, 0.55);
+  --profile-shadow: 0 1px 4px rgba(20, 14, 8, 0.62);
   display: grid;
-  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 300px);
   gap: 10px;
+  align-items: stretch;
+  text-shadow: var(--profile-shadow);
 }
 
 .shelf-hero {
@@ -892,69 +874,29 @@ async function chooseImage(id: string) {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 12px;
-  padding: 16px 20px 14px;
+  gap: 18px;
+  min-height: 300px;
+  padding: 22px 24px 18px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 10px;
-  /* 底图只占右侧一段，左侧保持干净的信息区；图片本身不再被大面积遮罩压暗 */
   background-color: rgba(var(--glass-rgb), 0.92);
-  background-image: radial-gradient(
-    120% 130% at 0% 100%,
-    rgba(var(--ambient-b), 0.12),
-    transparent 62%
-  );
-  box-shadow: var(--shadow-1);
-}
-
-.shelf-hero::after {
-  content: "";
-  position: absolute;
-  z-index: 0;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 62%;
-  background-image: linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--panel) 36%, transparent),
-      transparent 40%
-    ),
-    var(--hero-bg);
+  background-image: var(--hero-bg);
   background-position: center;
   background-size: cover;
-  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 24%, #000 100%);
-  mask-image: linear-gradient(90deg, transparent 0, #000 24%, #000 100%);
-  filter: saturate(1.1) contrast(1.04);
-  pointer-events: none;
+  box-shadow: var(--shadow-1);
 }
 
 .shelf-hero--empty {
   justify-content: center;
 }
 
-.shelf-hero::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image: radial-gradient(
-    rgba(var(--accent-rgb), 0.18) 1px,
-    transparent 1px
-  );
-  background-size: 16px 16px;
-  opacity: 0.28;
-  -webkit-mask-image: radial-gradient(120% 100% at 100% 0%, #000 0%, transparent 68%);
-  mask-image: radial-gradient(120% 100% at 100% 0%, #000 0%, transparent 68%);
-}
-
-.hero-main {
+.hero-bottom {
   position: relative;
   z-index: 1;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 250px;
-  align-items: end;
-  gap: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .hero-total {
@@ -971,7 +913,7 @@ async function chooseImage(id: string) {
   font-size: 13px;
   font-weight: 800;
   letter-spacing: 0.04em;
-  color: var(--walnut-deep);
+  color: var(--profile-ink);
 }
 
 .hero-total__eyebrow::before {
@@ -987,7 +929,7 @@ async function chooseImage(id: string) {
   align-items: baseline;
   gap: 5px;
   font-family: var(--font-display);
-  color: var(--walnut-deep);
+  color: var(--profile-ink);
   line-height: 1;
 }
 
@@ -1000,7 +942,7 @@ async function chooseImage(id: string) {
 .hero-total__unit {
   margin-right: 6px;
   font-size: 12.5px;
-  color: var(--ink-soft);
+  color: var(--profile-soft);
   letter-spacing: 0.02em;
 }
 
@@ -1009,13 +951,13 @@ async function chooseImage(id: string) {
   font-family: var(--font-ui);
   font-size: 17px;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--profile-muted);
 }
 
 .hero-facts {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px 18px;
   margin-top: 5px;
 }
 
@@ -1023,18 +965,42 @@ async function chooseImage(id: string) {
   display: inline-flex;
   align-items: baseline;
   gap: 4px;
-  padding: 3px 9px;
-  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
-  border-radius: 99px;
-  background: color-mix(in srgb, var(--panel) 76%, transparent);
-  font-size: 11px;
-  color: var(--ink-soft);
+  font-size: 11.5px;
+  color: var(--profile-soft);
 }
 
 .hero-facts b {
   font-family: var(--font-display);
   font-size: 13px;
-  color: var(--walnut-deep);
+  color: var(--profile-ink);
+}
+
+.hero-recent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--profile-soft);
+}
+
+.hero-recent__label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--profile-muted);
+}
+
+.hero-recent strong {
+  font-family: var(--font-display);
+  font-size: 13px;
+  color: var(--profile-ink);
+}
+
+.hero-recent__meta {
+  color: var(--profile-soft);
 }
 
 .week {
@@ -1042,31 +1008,13 @@ async function chooseImage(id: string) {
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--panel) 80%, transparent);
-  box-shadow: var(--shadow-1);
-  backdrop-filter: blur(6px);
-}
-
-.week__head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
 }
 
 .week__title {
+  display: block;
   font-size: 12.5px;
   font-weight: 800;
-  color: var(--walnut-deep);
-}
-
-.week__sum {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--walnut);
+  color: var(--profile-ink);
 }
 
 .week__bars {
@@ -1089,13 +1037,13 @@ async function chooseImage(id: string) {
   align-items: flex-end;
   justify-content: center;
   width: 100%;
-  height: 56px;
-  border-bottom: 1px solid var(--line);
+  height: 48px;
+  border-bottom: 1px solid var(--profile-muted);
 }
 
 .week__bar {
   display: block;
-  width: min(16px, 82%);
+  width: min(24px, 64%);
   border-radius: 3px 3px 0 0;
   background: linear-gradient(180deg, var(--moss-bright), var(--moss));
   transition: height var(--dur-3) var(--ease-out-expo);
@@ -1117,12 +1065,12 @@ async function chooseImage(id: string) {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.04em;
-  color: var(--ink-soft);
+  color: var(--profile-soft);
 }
 
 .week__label--today {
   font-weight: 700;
-  color: var(--walnut);
+  color: var(--profile-ink);
 }
 
 .hero-dist {
@@ -1162,7 +1110,7 @@ async function chooseImage(id: string) {
   gap: 6px;
   min-width: 0;
   font-size: 11.5px;
-  color: var(--ink-soft);
+  color: var(--profile-soft);
 }
 
 .hero-dist__item i {
@@ -1176,6 +1124,7 @@ async function chooseImage(id: string) {
   overflow: hidden;
   max-width: 110px;
   font-weight: 600;
+  color: var(--profile-ink);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1184,20 +1133,15 @@ async function chooseImage(id: string) {
   font-style: normal;
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--muted);
+  color: var(--profile-muted);
 }
 
 .shelf-side {
   display: flex;
   flex-direction: column;
+  justify-content: flex-end;
   gap: 10px;
   min-width: 0;
-}
-
-.shelf-side__split {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
 }
 
 .stat-card {
@@ -1210,73 +1154,19 @@ async function chooseImage(id: string) {
   padding: 13px 15px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(var(--glass-rgb), 0.86);
+  background-color: rgba(var(--glass-rgb), 0.86);
   box-shadow: var(--shadow-1);
 }
 
 .stat-card--top {
-  flex: 1;
-  background-color: rgba(var(--glass-rgb), 0.92);
-  background-image: radial-gradient(
-    120% 130% at 0% 100%,
-    rgba(var(--ambient-b), 0.1),
-    transparent 62%
-  );
-}
-
-.stat-card--top::after {
-  content: "";
-  position: absolute;
-  z-index: 0;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 58%;
-  background-image: linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--panel) 40%, transparent),
-      transparent 44%
-    ),
-    var(--card-bg);
-  background-position: center, center 38%;
+  flex: none;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 200px;
+  padding: 18px 20px 16px;
+  background-image: var(--card-bg);
+  background-position: center;
   background-size: cover;
-  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 26%, #000 100%);
-  mask-image: linear-gradient(90deg, transparent 0, #000 26%, #000 100%);
-  filter: saturate(1.08) contrast(1.03);
-  pointer-events: none;
-}
-
-.stat-card--top > * {
-  position: relative;
-  z-index: 1;
-}
-
-.stat-card--recent {
-  background-image: radial-gradient(
-    130% 110% at 100% 0%,
-    rgba(var(--ambient-a), 0.18),
-    transparent 64%
-  );
-}
-
-.stat-card--overview::after {
-  content: "";
-  position: absolute;
-  right: -12px;
-  bottom: -14px;
-  width: 100px;
-  height: 100px;
-  transform: rotate(12deg);
-  background-image: linear-gradient(
-      90deg,
-      rgba(var(--accent-rgb), 0.16) 1px,
-      transparent 1px
-    ),
-    linear-gradient(0deg, rgba(var(--accent-rgb), 0.16) 1px, transparent 1px);
-  background-size: 12px 12px;
-  mask-image: radial-gradient(circle at 100% 100%, #000 0%, transparent 72%);
-  -webkit-mask-image: radial-gradient(circle at 100% 100%, #000 0%, transparent 72%);
-  pointer-events: none;
 }
 
 .stat-card__label {
@@ -1287,7 +1177,7 @@ async function chooseImage(id: string) {
   font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--ink-soft);
+  color: var(--profile-soft);
 }
 
 .stat-card__label::before {
@@ -1299,76 +1189,35 @@ async function chooseImage(id: string) {
   background: var(--moss);
 }
 
-.stat-card__value {
-  overflow: hidden;
-  font-family: var(--font-display);
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1.2;
-  color: var(--walnut-deep);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.stat-card__sub {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.stat-card__dot {
-  display: inline-block;
-  width: 3px;
-  height: 3px;
-  margin: 0 4px;
-  border-radius: 50%;
-  background: var(--muted);
-  vertical-align: middle;
-}
-
-.stat-card__pill {
-  align-self: flex-start;
-  margin-top: 2px;
-  padding: 1px 7px;
-  border: 1px solid var(--line);
-  border-radius: 99px;
-  background: rgba(var(--accent-rgb), 0.05);
-  font-size: 10px;
-  color: var(--ink-soft);
-  white-space: nowrap;
-}
-
-.stat-card__big {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-}
-
-.stat-card__big strong {
-  font-size: 31px;
-  line-height: 1;
-  color: var(--walnut-deep);
-}
-
-.stat-card__big span {
-  font-size: 11.5px;
-  color: var(--muted);
-}
-
 .stat-empty {
   padding: 6px 0;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--profile-muted);
+}
+
+.top-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--profile-muted);
+  font-size: 11px;
+  color: var(--profile-soft);
+}
+
+.top-overview b {
+  font-family: var(--font-display);
+  font-size: 13px;
+  color: var(--profile-ink);
 }
 
 .top-version {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: center;
+  gap: 12px;
   min-width: 0;
-  margin: 1px 0;
+  margin: 0;
 }
 
 .top-version__tile {
@@ -1376,12 +1225,12 @@ async function chooseImage(id: string) {
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
+  width: 46px;
+  height: 46px;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 7px;
-  background: rgba(var(--accent-rgb), 0.06);
+  border-radius: 8px;
+  background: rgba(var(--accent-rgb), 0.08);
 }
 
 .top-version__tile img {
@@ -1392,50 +1241,20 @@ async function chooseImage(id: string) {
 
 .top-version__body {
   display: flex;
-  flex: 1;
+  flex: 0 1 auto;
   flex-direction: column;
   gap: 1px;
   min-width: 0;
+  max-width: 190px;
 }
 
 .top-version__body strong {
   overflow: hidden;
   font-family: var(--font-display);
-  font-size: 17px;
-  color: var(--walnut-deep);
+  font-size: 21px;
+  color: var(--profile-ink);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.top-version__body span {
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.top-version__percent {
-  flex-shrink: 0;
-  padding: 2px 8px;
-  border: 1px solid color-mix(in srgb, var(--moss) 32%, transparent);
-  border-radius: 99px;
-  background: color-mix(in srgb, var(--panel) 78%, transparent);
-  backdrop-filter: blur(4px);
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--moss);
-}
-
-.meter {
-  height: 4px;
-  overflow: hidden;
-  border-radius: 99px;
-  background: rgba(var(--accent-rgb), 0.1);
-}
-
-.meter span {
-  display: block;
-  height: 100%;
-  border-radius: 99px;
-  background: linear-gradient(90deg, var(--moss-bright), var(--moss));
 }
 
 .version-row__share {
@@ -1784,24 +1603,12 @@ async function chooseImage(id: string) {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .shelf-side {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .shelf-hero {
+    min-height: 0;
   }
 
-  .shelf-side__split {
-    display: contents;
-  }
-}
-
-@media (max-width: 760px) {
-  .hero-main {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 14px;
-  }
-
-  .shelf-side {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .stat-card--top {
+    min-height: 0;
   }
 }
 </style>

@@ -187,7 +187,10 @@ export interface Config {
   profile_hero_image: string | null;
   /// 版本页「最常玩版本」卡片底图，空表示内置
   profile_card_image: string | null;
+  /// 版本页卡片文字颜色，空表示跟随主题
+  profile_text_color: string | null;
   ui_radius: string;
+  ui_font: string;
   ui_density: string;
   window_vibrancy: boolean;
   /// 从 MC 百科补全模组中文名
@@ -273,6 +276,10 @@ export interface JavaInfo {
   version: string;
   major: number;
   source: string;
+  /// JDK 或 JRE
+  kind: string;
+  /// 发行版名称，如 Eclipse Temurin、Azul Zulu
+  vendor: string;
 }
 
 export interface InstanceContext {
@@ -298,6 +305,8 @@ export interface RepairReport {
   files_failed: string[];
   natives: boolean;
   disabled_mods: string[];
+  /// 因与当前游戏/加载器不兼容而被禁用的模组
+  incompatible_mods: string[];
   duplicate_mods: string[];
   missing_deps: string[];
   issues: string[];
@@ -996,7 +1005,11 @@ export const api = {
     invoke<void>("cape_set_active", { accountId, capeId }),
   msLoginBegin: () => invoke<DeviceCode>("ms_login_begin"),
   detectJava: () => invoke<JavaInfo[]>("detect_java"),
-  installJava: (major: number) => invoke<JavaInfo>("install_java", { major }),
+  addJava: (path: string) => invoke<JavaInfo>("add_java", { path }),
+  javaRuntimeMajors: (source: string) =>
+    invoke<number[]>("java_runtime_majors", { source }),
+  installJava: (major: number, source: string) =>
+    invoke<JavaInfo>("install_java", { major, source }),
   deleteJava: (path: string) => invoke<boolean>("delete_java", { path }),
   launchVersion: (versionId: string) => invoke<number>("launch_version", { versionId }),
   launchServer: (versionId: string, address: string) =>
@@ -1091,6 +1104,16 @@ export async function pickImage(): Promise<string | null> {
     filters: [
       { name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "bmp", "gif"] },
     ],
+  });
+  return typeof result === "string" ? result : null;
+}
+
+export async function pickJavaExe(): Promise<string | null> {
+  const result = await open({
+    directory: false,
+    multiple: false,
+    title: "选择 java.exe（JDK/JRE 的 bin 目录下）",
+    filters: [{ name: "Java 运行时", extensions: ["exe"] }],
   });
   return typeof result === "string" ? result : null;
 }

@@ -7,6 +7,7 @@ import {
   openFolder,
   pickDirectory,
   pickImage,
+  pickJavaExe,
   pickSettingsFile,
   saveSettingsDialog,
   type Config,
@@ -79,7 +80,9 @@ const form = reactive<Config>({
   background_dim: 0,
   profile_hero_image: null,
   profile_card_image: null,
+  profile_text_color: null,
   ui_radius: "default",
+  ui_font: "default",
   ui_density: "normal",
   window_vibrancy: false,
   mcmod_names: true,
@@ -116,7 +119,9 @@ const autoSaveKeys: (keyof Config)[] = [
   "background_dim",
   "profile_hero_image",
   "profile_card_image",
+  "profile_text_color",
   "ui_radius",
+  "ui_font",
   "ui_density",
   "animations",
   "hall_url",
@@ -273,6 +278,30 @@ const densityOptions = [
   { value: "comfy", label: "宽松" },
 ];
 
+/// 字体预览直接使用对应字体栈，点选后立即应用到整个界面
+const fontOptions = [
+  {
+    value: "default",
+    label: "默认",
+    stack: '"Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif',
+  },
+  {
+    value: "yahei",
+    label: "黑体",
+    stack: '"Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif',
+  },
+  {
+    value: "songti",
+    label: "宋体",
+    stack: '"SimSun", "Songti SC", "Noto Serif SC", serif',
+  },
+  {
+    value: "kaiti",
+    label: "楷体",
+    stack: '"KaiTi", "STKaiti", "楷体", serif',
+  },
+];
+
 const memoryModes = [
   { value: "auto", label: "自动（G1GC）" },
   { value: "g1gc", label: "调优 G1GC" },
@@ -313,11 +342,6 @@ function setMemoryManual() {
   if (form.memory_mb < 1024) form.memory_mb = recommendedMb.value;
 }
 
-function quickMemory(mb: number) {
-  form.memory_auto = false;
-  form.memory_mb = Math.max(512, Math.round(mb / 512) * 512);
-}
-
 watch(
   () => [form.memory_auto, recommendedMb.value],
   () => {
@@ -344,11 +368,12 @@ watch(
 );
 
 watch(
-  () => [form.background_dim, form.ui_radius, form.ui_density],
+  () => [form.background_dim, form.ui_radius, form.ui_font, form.ui_density],
   () => {
     if (!store.config) return;
     store.config.background_dim = form.background_dim;
     store.config.ui_radius = form.ui_radius;
+    store.config.ui_font = form.ui_font;
     store.config.ui_density = form.ui_density;
   }
 );
@@ -466,6 +491,16 @@ function resetProfileCardImage(kind: "hero" | "card") {
   }
 }
 
+/// 版本页卡片文字颜色，空表示跟随主题
+function setProfileTextColor(event: Event) {
+  form.profile_text_color = (event.target as HTMLInputElement).value;
+}
+
+function resetProfileTextColor() {
+  form.profile_text_color = null;
+  notify("卡片字体颜色已恢复默认");
+}
+
 /// 背景适应方式选项（cover 为默认铺满裁剪）
 const fitOptions = [
   { value: "cover", label: "铺满裁剪" },
@@ -554,12 +589,46 @@ async function runProbe() {
   }
 }
 
-const javaOptions = [
-  { value: "8", label: "Java 8" },
-  { value: "17", label: "Java 17" },
-  { value: "21", label: "Java 21" },
-  { value: "25", label: "Java 25" },
+/// 支持 Mojang 官方目录，以及常见 OpenJDK 发行版的官方下载接口
+const runtimeSource = ref("mojang");
+const javaSources = [
+  { value: "mojang", label: "Mojang 官方" },
+  { value: "temurin", label: "Eclipse Temurin" },
+  { value: "zulu", label: "Azul Zulu" },
+  { value: "corretto", label: "Amazon Corretto" },
 ];
+
+/// 接口读取失败时按各发行版的实际支持范围兜底
+const fallbackMajors: Record<string, number[]> = {
+  mojang: [8, 16, 17, 21, 25],
+  temurin: [8, 11, 16, 17, 21, 25],
+  zulu: [8, 11, 16, 17, 21, 25],
+  corretto: [8, 11, 17, 21, 25],
+};
+
+const javaOptions = ref(
+  fallbackMajors.mojang.map((major) => ({ value: String(major), label: `Java ${major}` }))
+);
+
+async function loadJavaOptions(source = runtimeSource.value) {
+  let majors = fallbackMajors[source] ?? [];
+  try {
+    const list = await api.javaRuntimeMajors(source);
+    if (list.length) majors = list;
+  } catch {
+    // 读取失败时保留内置选项
+  }
+  javaOptions.value = majors.map((major) => ({
+    value: String(major),
+    label: `Java ${major}`,
+  }));
+  if (!javaOptions.value.some((option) => option.value === runtimeMajor.value)) {
+    const preferred = majors.includes(21) ? 21 : majors[majors.length - 1] ?? 21;
+    runtimeMajor.value = String(preferred);
+  }
+}
+
+watch(runtimeSource, (source) => void loadJavaOptions(source));
 
 const updateModes = [
   { value: "auto", label: "有新版本时自动下载" },
@@ -675,6 +744,7 @@ onMounted(() => {
   }
   void initUpdateSection();
   void refreshMemory();
+  void loadJavaOptions();
   memoryTimer = window.setInterval(refreshMemory, 2000);
 });
 
@@ -846,11 +916,32 @@ async function rescanJava() {
   notify(`检测到 ${store.javaList.length} 个 Java`);
 }
 
+const javaBusy = ref(false);
+
+/// 手动添加自动检测不到的 Java（自定义目录、绿色版 JDK 等）
+async function addManualJava() {
+  if (javaBusy.value) return;
+  const path = await pickJavaExe();
+  if (!path) return;
+  javaBusy.value = true;
+  try {
+    const info = await api.addJava(path);
+    form.java_path = info.path;
+    await refreshJava();
+    await refreshConfig();
+    notify(`已添加 Java ${info.major}（${info.vendor} ${info.kind}），并设为优先使用`);
+  } catch (err) {
+    notify(`添加 Java 失败：${String(err)}`, "err");
+  } finally {
+    javaBusy.value = false;
+  }
+}
+
 async function installRuntime() {
   if (runtimeBusy.value) return;
   runtimeBusy.value = true;
   try {
-    await installJava(Number(runtimeMajor.value));
+    await installJava(Number(runtimeMajor.value), runtimeSource.value);
   } finally {
     runtimeBusy.value = false;
   }
@@ -1105,14 +1196,20 @@ async function removeJava(path: string) {
           <div class="section-title">Java 运行时</div>
         </div>
         <span class="group-line" />
-        <WoodButton variant="ghost" size="sm" @click="rescanJava">
-          <AppIcon name="refresh" :size="14" />
-          重新检测
-        </WoodButton>
+        <div class="row">
+          <WoodButton variant="ghost" size="sm" @click="rescanJava">
+            <AppIcon name="refresh" :size="14" />
+            重新检测
+          </WoodButton>
+          <WoodButton variant="soft" size="sm" :disabled="javaBusy" @click="addManualJava">
+            <AppIcon name="plus" :size="14" />
+            {{ javaBusy ? "校验中…" : "手动添加" }}
+          </WoodButton>
+        </div>
       </div>
 
       <p class="muted small">
-        启动器会按版本要求自动挑选 Java；手动选择后将优先使用指定路径。
+        按版本自动选择 Java；手动指定后优先使用。
       </p>
 
       <div class="java-list">
@@ -1134,6 +1231,7 @@ async function removeJava(path: string) {
             :size="16"
             class="java-item__check"
           />
+          <span class="tag">{{ java.vendor }} {{ java.kind }}</span>
           <span class="tag">{{ java.source }}</span>
           <IconButton
             v-if="java.source === '启动器运行时'"
@@ -1145,7 +1243,7 @@ async function removeJava(path: string) {
           />
         </div>
         <div v-if="!store.javaList.length" class="java-empty">
-          未检测到 Java。可以在下方直接下载官方运行时。
+          未检测到 Java，可手动添加或直接下载。
         </div>
       </div>
 
@@ -1197,11 +1295,12 @@ async function removeJava(path: string) {
 
       <div class="setting setting--last">
         <div class="setting__label">
-          <strong>下载官方 Java 运行时</strong>
-          <span>由 Mojang 提供，不影响系统环境</span>
+          <strong>下载 Java 运行时</strong>
+          <span>官方与常见 OpenJDK 发行版，不影响系统环境</span>
         </div>
         <div class="setting__control">
           <div class="row">
+            <WoodSelect v-model="runtimeSource" :options="javaSources" class="runtime-source" />
             <WoodSelect v-model="runtimeMajor" :options="javaOptions" class="runtime-select" />
             <WoodButton
               variant="soft"
@@ -1400,6 +1499,34 @@ async function removeJava(path: string) {
 
       <div class="setting">
         <div class="setting__label">
+          <strong>卡片字体颜色</strong>
+          <span>底图与文字对比度不够时调整，留空使用默认浅色</span>
+        </div>
+        <div class="setting__control">
+          <div class="row">
+            <input
+              class="color-well"
+              type="color"
+              :value="form.profile_text_color || '#fff4e2'"
+              @input="setProfileTextColor"
+            />
+            <span class="mono small">
+              {{ form.profile_text_color || "默认浅色" }}
+            </span>
+            <WoodButton
+              variant="ghost"
+              size="sm"
+              :disabled="!form.profile_text_color"
+              @click="resetProfileTextColor"
+            >
+              恢复默认
+            </WoodButton>
+          </div>
+        </div>
+      </div>
+
+      <div class="setting">
+        <div class="setting__label">
           <strong>背景适应</strong>
           <span>图片与窗口的适配方式</span>
         </div>
@@ -1480,6 +1607,32 @@ async function removeJava(path: string) {
             >
               <span class="option-card__preview option-card__preview--glass" />
               <span class="option-card__name">毛玻璃</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="setting setting--stack">
+        <div class="setting__label">
+          <strong>界面字体</strong>
+          <span>标题与正文统一切换，点击后立即生效</span>
+        </div>
+        <div class="setting__control">
+          <div class="option-cards">
+            <button
+              v-for="opt in fontOptions"
+              :key="opt.value"
+              class="option-card"
+              :class="{ 'option-card--active': form.ui_font === opt.value }"
+              @click="form.ui_font = opt.value"
+            >
+              <span
+                class="option-card__preview option-card__preview--font"
+                :style="{ fontFamily: opt.stack }"
+              >
+                Aa 字体
+              </span>
+              <span class="option-card__name">{{ opt.label }}</span>
             </button>
           </div>
         </div>
@@ -1596,19 +1749,6 @@ async function removeJava(path: string) {
             </div>
             <div class="memory__slider" :class="{ 'memory__slider--off': form.memory_auto }">
               <WoodSlider v-model="form.memory_mb" :min="1024" :max="sliderMax" :step="512" />
-            </div>
-            <div class="memory__quick">
-              <button class="memory__chip" @click="quickMemory(2048)">2 GB</button>
-              <button class="memory__chip" @click="quickMemory(4096)">4 GB</button>
-              <button class="memory__chip" @click="quickMemory(6144)">6 GB</button>
-              <button class="memory__chip" @click="quickMemory(8192)">8 GB</button>
-              <button
-                class="memory__chip"
-                :disabled="!totalMb"
-                @click="quickMemory(totalMb / 2)"
-              >
-                半内存
-              </button>
             </div>
             <div class="memory__bar">
               <span class="memory__bar-fill" :style="{ width: `${usedPercent}%` }" />
@@ -2268,35 +2408,6 @@ async function removeJava(path: string) {
   pointer-events: none;
 }
 
-.memory__quick {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.memory__chip {
-  flex: 1;
-  min-width: 64px;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 3px;
-  border: 1px dashed var(--line-strong);
-  color: var(--ink-soft);
-  font-size: 11.5px;
-  font-weight: 600;
-  transition: border-color var(--dur-1) ease, color var(--dur-1) ease;
-}
-
-.memory__chip:hover:not(:disabled) {
-  border-color: var(--moss);
-  color: var(--moss);
-}
-
-.memory__chip:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
 .memory__bar {
   height: 8px;
   border-radius: 3px;
@@ -2579,6 +2690,7 @@ async function removeJava(path: string) {
 
 .java-item__path {
   flex: 1;
+  min-width: 0;
   font-size: 11.5px;
   color: var(--ink-soft);
   overflow: hidden;
@@ -2604,9 +2716,13 @@ async function removeJava(path: string) {
   justify-content: space-between;
 }
 
-/* 运行时版本下拉固定宽度，避免和「下载并安装」按钮一起撑出卡片 */
+/* 运行时发行版/版本下拉固定宽度，避免和「下载并安装」按钮一起撑出卡片 */
+.runtime-source {
+  width: 160px;
+}
+
 .runtime-select {
-  width: 180px;
+  width: 110px;
 }
 
 .java-progress {
@@ -2747,6 +2863,16 @@ async function removeJava(path: string) {
   border-radius: 4px;
   border: 1px solid rgba(0, 0, 0, 0.08);
   overflow: hidden;
+}
+
+.option-card__preview--font {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel);
+  color: var(--walnut-deep);
+  font-size: 17px;
+  letter-spacing: 0.02em;
 }
 
 .option-card__preview--solid {
@@ -3064,6 +3190,25 @@ async function removeJava(path: string) {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(var(--glass-rgb), 0.82);
+}
+
+.color-well {
+  width: 34px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.color-well::-webkit-color-swatch-wrapper {
+  padding: 3px;
+}
+
+.color-well::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
 }
 
 .profile-bg-card__preview {

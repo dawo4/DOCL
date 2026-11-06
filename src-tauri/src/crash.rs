@@ -169,6 +169,44 @@ const RULES: &[Rule] = &[
         category: "loader",
     },
     Rule {
+        id: "loader-incomplete",
+        title: "加载器没有完整安装",
+        summary: "Java 找不到加载器的引导类或启动 jar，通常是加载器安装中断、文件被删、或版本清单损坏。",
+        patterns: &[
+            "could not find or load main class cpw.mods.bootstraplauncher",
+            "could not find or load main class cpw.mods.modlauncher",
+            "could not find or load main class net.fabricmc",
+            "error: could not find or load main class",
+            "unable to access jarfile",
+        ],
+        advice: &[
+            "在版本设置里点「重装加载器」后重新启动；「一键修复」也会补回缺失的启动 jar 和依赖库。",
+            "确认 versions 目录里该版本的 json 与 jar 没有被其他启动器或清理软件删掉。",
+            "如果只是换了 Java，请确认选择的是与该加载器匹配的 Java 版本。",
+        ],
+        links: &[],
+        priority: 90,
+        category: "loader",
+    },
+    Rule {
+        id: "module-package-conflict",
+        title: "Mod 模块包冲突",
+        summary: "两个模块把同一个包导出给同一个 Mod，常见于 Mod 内置了原版类，或皮肤/前置 Mod 装错了加载器分支。",
+        patterns: &[
+            "java.lang.module.resolutionexception",
+            "export package",
+            "reads another module named",
+        ],
+        advice: &[
+            "看日志里「Modules A and minecraft export package ...」中的 A，A 通常就是冲突 Mod；优先把它更新到与当前游戏和加载器匹配的版本。",
+            "CustomSkinLoader 要选对分支：1.17 及以上使用 ForgeV2 / ForgeActive，ForgeV1 或 Legacy 只用于旧版本。",
+            "如果暂时不需要该 Mod，可在版本设置里禁用后启动；DOCL 已内置第三方皮肤同步，不装 CustomSkinLoader 也能显示皮肤。",
+        ],
+        links: &[],
+        priority: 90,
+        category: "mod",
+    },
+    Rule {
         id: "missing-dependency",
         title: "缺少前置 Mod 或类",
         summary: "某个 Mod 依赖的前置没有安装、版本不满足，或类在运行时找不到。",
@@ -297,6 +335,26 @@ const RULES: &[Rule] = &[
         links: &[],
         priority: 72,
         category: "mod",
+    },
+    Rule {
+        id: "file-locked",
+        title: "文件被占用",
+        summary: "游戏文件正被另一个进程使用，常见于同时开了多个实例、上次游戏没完全退出，或安全软件正在扫描。",
+        patterns: &[
+            "being used by another process",
+            "another instance",
+            "already running",
+            "access is denied",
+            "failed to delete",
+        ],
+        advice: &[
+            "关闭其他正在运行的游戏或启动器实例后重试，必要时在任务管理器里结束残留的 java.exe。",
+            "如果杀毒软件拦截了文件读写，把游戏目录加入白名单。",
+            "仍无法解决时重启电脑，再检查该文件是否被设为只读。",
+        ],
+        links: &[],
+        priority: 70,
+        category: "file",
     },
     Rule {
         id: "graphics",
@@ -621,6 +679,54 @@ fn problematic_frame(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// 从 Java 模块冲突日志里提取可疑模块名，例如：
+/// `Modules customskinloader and minecraft export package ...`
+/// `Module fmlloader reads another module named fmlloader`
+fn module_conflicts(text: &str) -> Vec<String> {
+    let mut result: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        if let Some(start) = lower.find("modules ") {
+            let tail = &line[start + 8..];
+            let tail_lower = &lower[start + 8..];
+            if let Some(export) = tail_lower.find(" export package ") {
+                let names = &tail[..export];
+                if let Some((left, right)) = names.split_once(" and ") {
+                    push_module(left, &mut result);
+                    push_module(right, &mut result);
+                }
+                // "export package ... to module radon"：radon 同时读取这两个模块，
+                // 也列进可疑列表，方便用户在 mods 里定位到具体 jar
+                if let Some(pos) = tail_lower[export..].find(" to module ") {
+                    let reader = &tail[export + pos + 11..];
+                    if let Some(name) = reader.split_whitespace().next() {
+                        push_module(name, &mut result);
+                    }
+                }
+            }
+        }
+        if let Some(start) = lower.find("reads another module named ") {
+            let tail = &line[start + 27..];
+            if let Some(name) = tail.split_whitespace().next() {
+                push_module(name, &mut result);
+            }
+        }
+    }
+    result
+}
+
+fn push_module(name: &str, result: &mut Vec<String>) {
+    let name = name
+        .trim()
+        .trim_matches(|ch: char| ch == '`' || ch == '\'' || ch == '"' || ch == ',' || ch == '.');
+    if name.is_empty() || name.eq_ignore_ascii_case("minecraft") {
+        return;
+    }
+    if !result.iter().any(|item| item.eq_ignore_ascii_case(name)) {
+        result.push(name.to_string());
+    }
 }
 
 /// 堆栈里出现频率最高的第三方包名（过滤掉游戏、加载器与常见库）。
@@ -1245,14 +1351,29 @@ pub fn analyze(cfg: &Config, version_id: &str) -> Result<CrashReport> {
     let description = description_of(&text);
     let mut matches = matches_in(&combined);
 
-    // 可疑 Mod：堆栈包名优先，其次崩溃报告自带的 Suspected Mods
+    // 可疑 Mod：堆栈包名优先，其次是模块冲突名，最后是崩溃报告自带的 Suspected Mods
     let packages = suspicious_packages(&combined);
-    let mods = if packages.is_empty() && !combined.contains("Suspected Mod") {
+    let modules = module_conflicts(&combined);
+    let mods = if packages.is_empty() && modules.is_empty() && !combined.contains("Suspected Mod") {
         Vec::new()
     } else {
         scan_mods(cfg, version_id)
     };
     let mut suspects = locate_by_packages(&mods, &packages);
+    if suspects.len() < 3 {
+        for suspect in locate_reported(&mods, &modules) {
+            if suspects
+                .iter()
+                .any(|item| item.file_name == suspect.file_name && item.name == suspect.name)
+            {
+                continue;
+            }
+            suspects.push(suspect);
+            if suspects.len() >= 3 {
+                break;
+            }
+        }
+    }
     if suspects.len() < 3 {
         let reported = reported_mod_tokens(&combined);
         for suspect in locate_reported(&mods, &reported) {
@@ -1266,6 +1387,25 @@ pub fn analyze(cfg: &Config, version_id: &str) -> Result<CrashReport> {
             if suspects.len() >= 3 {
                 break;
             }
+        }
+    }
+
+    // CustomSkinLoader 的模块冲突非常常见，命中时直接给出针对该 Mod 的结论
+    let csl_conflict = modules
+        .iter()
+        .any(|name| normalize_token(name).contains("customskinloader"));
+    if csl_conflict {
+        if let Some(item) = matches
+            .iter_mut()
+            .find(|item| item.id == "module-package-conflict")
+        {
+            item.summary =
+                "CustomSkinLoader 的 ForgeV1 / Legacy 版本与 1.17 及以上版本的模块系统冲突。".into();
+            item.advice.insert(
+                0,
+                "删除 mods 里 CustomSkinLoader 的 ForgeV1 / Legacy jar，以及实例目录下的 CustomSkinLoader 文件夹；1.18.2 请改用 ForgeV2 / ForgeActive 版本，或直接不装（DOCL 已内置第三方皮肤同步）。"
+                    .into(),
+            );
         }
     }
 
@@ -1521,6 +1661,67 @@ mod tests {
         let matches = matches_in(text);
         assert_eq!(matches[0].id, "duplicate-classpath");
         assert_eq!(matches[0].priority, 92);
+    }
+
+    /// 加载器安装不完整时，Java 找不到引导类
+    #[test]
+    fn detects_incomplete_loader_install() {
+        let text = "Error: Could not find or load main class cpw.mods.bootstraplauncher\nCaused by: java.lang.ClassNotFoundException: cpw.mods.bootstraplauncher";
+        let matches = matches_in(text);
+        assert_eq!(matches[0].id, "loader-incomplete");
+        assert_eq!(matches[0].priority, 90);
+    }
+
+    /// 游戏没关干净时文件被另一个进程占用
+    #[test]
+    fn detects_locked_files() {
+        let text = "java.nio.file.FileSystemException: D:\\instances\\1.20.1-forge\\options.txt: The process cannot access the file because it is being used by another process.";
+        let matches = matches_in(text);
+        assert!(matches.iter().any(|item| item.id == "file-locked"));
+        assert!(matches.iter().all(|item| item.id != "missing-dependency"));
+    }
+
+    /// 1.18.2 里 CustomSkinLoader 的 ForgeV1 分支会和原版模块争抢同一个包
+    #[test]
+    fn detects_module_package_conflict() {
+        let text = "java.lang.module.ResolutionException: Modules customskinloader and minecraft export package net.minecraft.client.renderer to module radon\n\tat cpw.mods.modlauncher.ModuleLayerHandler.buildLayer(ModuleLayerHandler.java:80)";
+        let matches = matches_in(text);
+        assert_eq!(matches[0].id, "module-package-conflict");
+        assert_eq!(matches[0].priority, 90);
+    }
+
+    #[test]
+    fn extracts_conflicting_module_names() {
+        let text = "java.lang.module.ResolutionException: Modules customskinloader and minecraft export package net.minecraft.client.renderer to module radon\nModule radon reads another module named customskinloader";
+        let modules = module_conflicts(text);
+        assert_eq!(modules.len(), 2);
+        assert!(modules.iter().any(|name| name == "customskinloader"));
+        assert!(modules.iter().any(|name| name == "radon"));
+        assert!(!modules.iter().any(|name| name.eq_ignore_ascii_case("minecraft")));
+    }
+
+    /// 模块名要能对上 mods 目录里的 jar，才能定位到具体文件
+    #[test]
+    fn maps_module_names_to_installed_mods() {
+        let mods = vec![
+            ModFile {
+                file_name: "CustomSkinLoader_ForgeV1-14.17.2.jar".into(),
+                mod_id: "customskinloader".into(),
+                display_name: "CustomSkinLoader".into(),
+                packages: Vec::new(),
+            },
+            ModFile {
+                file_name: "radon-1.0.jar".into(),
+                mod_id: "radon".into(),
+                display_name: "Radon".into(),
+                packages: Vec::new(),
+            },
+        ];
+        let suspects = locate_reported(&mods, &["customskinloader".into(), "radon".into()]);
+        assert_eq!(suspects.len(), 2);
+        assert_eq!(suspects[0].file_name, "CustomSkinLoader_ForgeV1-14.17.2.jar");
+        assert_eq!(suspects[0].reason, "reported");
+        assert_eq!(suspects[1].file_name, "radon-1.0.jar");
     }
 
     /// Mixin 找不到可选目标的 ClassNotFoundException 是正常告警，不能报成缺前置

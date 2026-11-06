@@ -279,6 +279,7 @@ const currentView = computed(() => views[store.page as Page]);
     :class="{ 'no-anim': store.config && !store.config.animations }"
     :data-radius="store.config?.ui_radius ?? 'default'"
     :data-density="store.config?.ui_density ?? 'normal'"
+    :data-font="store.config?.ui_font ?? 'default'"
     :style="appStyle"
   >
     <div

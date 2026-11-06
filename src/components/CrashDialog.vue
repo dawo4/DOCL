@@ -8,7 +8,7 @@ import {
   type CrashMatch,
   type CrashReport,
 } from "../api";
-import { notify, openInstance, store } from "../store";
+import { notify, openInstance, repairInstance, store } from "../store";
 import AppIcon from "./AppIcon.vue";
 import WoodButton from "./WoodButton.vue";
 import WoodModal from "./WoodModal.vue";
@@ -16,6 +16,7 @@ import WoodModal from "./WoodModal.vue";
 const report = ref<CrashReport | null>(null);
 const loading = ref(false);
 const exporting = ref(false);
+const repairing = ref(false);
 const error = ref("");
 
 /// 按优先级分组：高优先级是「最可能的原因」，其余作为补充线索
@@ -103,6 +104,40 @@ async function exportReport() {
     notify(`导出失败：${String(err)}`, "err");
   } finally {
     exporting.value = false;
+  }
+}
+
+/// 一键修复：修清单、补文件、禁用重复与已知不兼容的模组
+async function runRepair() {
+  const versionId = store.crashVersionId;
+  if (!versionId || repairing.value) return;
+  repairing.value = true;
+  try {
+    const result = await repairInstance(versionId);
+    if (!result) return;
+    close();
+    const parts: string[] = [];
+    if (result.version_json) parts.push("修复版本清单");
+    if (result.files_restored) parts.push(`补回 ${result.files_restored} 个文件`);
+    if (result.natives) parts.push("重解本地库");
+    if (result.disabled_mods.length)
+      parts.push(`禁用 ${result.disabled_mods.length} 个重复模组`);
+    if (result.incompatible_mods.length)
+      parts.push(`禁用 ${result.incompatible_mods.length} 个不兼容模组`);
+    const pending = result.issues.length + result.files_failed.length;
+    if (parts.length) {
+      notify(
+        `一键修复完成：${parts.join("、")}${
+          pending ? `，仍有 ${pending} 项需要手动处理` : ""
+        }`
+      );
+    } else if (pending) {
+      notify(`一键修复未能解决全部问题，仍有 ${pending} 项需要处理`, "err");
+    } else {
+      notify("检查完成，没有发现问题");
+    }
+  } finally {
+    repairing.value = false;
   }
 }
 
@@ -265,6 +300,16 @@ onMounted(() => {
       >
         <AppIcon name="folder" :size="13" />
         打开日志目录
+      </WoodButton>
+      <WoodButton
+        v-if="report?.found"
+        variant="soft"
+        size="sm"
+        :disabled="repairing || loading"
+        @click="runRepair"
+      >
+        <AppIcon name="wrench" :size="13" />
+        {{ repairing ? "修复中…" : "一键修复" }}
       </WoodButton>
       <WoodButton variant="soft" size="sm" :disabled="loading" @click="load">
         <AppIcon name="refresh" :size="13" />

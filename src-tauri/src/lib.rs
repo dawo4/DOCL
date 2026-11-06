@@ -222,6 +222,8 @@ pub fn run() {
             commands::authlib_meta,
             commands::authlib_login,
             commands::detect_java,
+            commands::add_java,
+            commands::java_runtime_majors,
             commands::install_java,
             commands::delete_java,
             commands::launch_version,

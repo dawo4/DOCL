@@ -186,6 +186,7 @@ a {
   flex-direction: column;
   position: relative;
   isolation: isolate;
+  font-family: var(--font-ui);
 }
 
 .ambient {
@@ -1043,6 +1044,22 @@ a {
   --radius-sm: 12px;
   --radius: 18px;
   --radius-lg: 26px;
+}
+
+/* 界面字体（标题与正文一起切换） */
+.app[data-font="yahei"] {
+  --font-ui: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
+  --font-display: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
+}
+
+.app[data-font="songti"] {
+  --font-ui: "SimSun", "Songti SC", "Noto Serif SC", serif;
+  --font-display: "Songti SC", "SimSun", "Noto Serif SC", serif;
+}
+
+.app[data-font="kaiti"] {
+  --font-ui: "KaiTi", "STKaiti", "楷体", serif;
+  --font-display: "KaiTi", "STKaiti", "楷体", serif;
 }
 
 /* 界面密度 */

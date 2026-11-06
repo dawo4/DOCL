@@ -1,6 +1,6 @@
 {
-  "version": "1.6.4",
-  "url": "https://github.com/dawo4/DOCL/releases/download/v1.6.4/DOCL_1.6.4_x64-setup.exe",
-  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.6.4/DOCL_1.6.4_portable.zip",
-  "notes": "Forge/NeoForge 安装更可靠：NeoForge 依赖库走国内镜像，安装器缓存会校验包完整性，坏包自动重下；安装前校验并补下空文件、长度或 SHA1 不符的库；官方安装器失败时会清理残留清单并自动重试一次，报错保留原始原因和完整安装日志。下载修复分片失效导致的永久 416，失败文件批次改为合并，重试不再丢失前几批文件；下载缓存命中时校验 SHA1。一键修复新增「重装加载器」，只清理加载器文件，保留 mods、存档和配置；未开启版本隔离时不再自动禁用重复模组。版本页新增游玩画像、游玩时长分布和最近 7 天柱图，并加入可自定义的卡片底图；外观页面与设置页也做了视觉优化，所有装饰配色跟随主题。"
+  "version": "1.6.5",
+  "url": "https://github.com/dawo4/DOCL/releases/download/v1.6.5/DOCL_1.6.5_x64-setup.exe",
+  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.6.5/DOCL_1.6.5_portable.zip",
+  "notes": "Java 运行时支持手动添加任意位置的 java.exe，并识别 JDK/JRE 与发行版；下载新增 Eclipse Temurin、Azul Zulu、Amazon Corretto 官方源，可选 Java 8/11/16/17/21/25，Mojang 官方目录也会动态读取。崩溃日志新增加载器未装完、文件被占用等识别规则，一键修复会禁用与当前 Forge/NeoForge 不兼容的旧版 CustomSkinLoader。版本页游玩画像重新排版为两张全底图卡片，去掉多余边框和重复数据，并支持自定义卡片字体颜色；设置页新增界面字体（默认/黑体/宋体/楷体），内存设置也已精简。"
 }

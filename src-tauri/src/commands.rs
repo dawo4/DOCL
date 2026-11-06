@@ -1800,18 +1800,45 @@ pub fn detect_java(state: State<'_, AppState>) -> Vec<JavaInfo> {
     java::detect(&cfg)
 }
 
+/// 手动添加 Java：接受 java.exe、javaw.exe 或 JDK/JRE 安装目录。
+/// 校验通过后立即设为优先使用的运行时，自动检测不到的自定义安装也能用。
+#[tauri::command]
+pub fn add_java(state: State<'_, AppState>, path: String) -> CmdResult<JavaInfo> {
+    let info = java::inspect_manual(&path).map_err(err)?;
+    let mut cfg = state.config.lock().unwrap();
+    cfg.java_path = Some(info.path.clone());
+    config::save(&cfg).map_err(err)?;
+    Ok(info)
+}
+
+#[tauri::command]
+pub async fn java_runtime_majors(
+    state: State<'_, AppState>,
+    source: Option<String>,
+) -> CmdResult<Vec<u32>> {
+    let source = source.as_deref().unwrap_or("mojang");
+    if source == "mojang" {
+        let cfg = state.config.lock().unwrap().clone();
+        return java::available_runtime_majors(&cfg).await.map_err(err);
+    }
+    Ok(java::vendor_majors(source))
+}
+
 #[tauri::command]
 pub async fn install_java(
     app: AppHandle,
     state: State<'_, AppState>,
     major: u32,
+    source: Option<String>,
 ) -> CmdResult<JavaInfo> {
     let cfg = state.config.lock().unwrap().clone();
     let progress = ProgressState::new("java");
     progress.set_message(format!("准备安装 Java {major}…"));
     *state.progress.lock().unwrap() = Some(progress.clone());
 
-    let result = java::install_runtime(&app, &cfg, major, progress.clone()).await;
+    let source = source.unwrap_or_else(|| "mojang".into());
+    let result =
+        java::install_runtime_vendor(&app, &cfg, &source, major, progress.clone()).await;
     progress.active.store(false, Ordering::Relaxed);
     download::emit_now(&app, &progress);
     *state.progress.lock().unwrap() = None;

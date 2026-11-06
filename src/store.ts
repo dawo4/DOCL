@@ -621,7 +621,7 @@ export async function exportModpack(
   }
 }
 
-export async function installJava(major: number) {
+export async function installJava(major: number, source = "mojang") {
   if (store.installingId) {
     notify("已有安装任务正在进行", "err");
     return;
@@ -634,7 +634,7 @@ export async function installJava(major: number) {
   store.downloadPanel = "open";
   primeProgress("java", `准备安装 Java ${major}…`);
   try {
-    const info = await api.installJava(major);
+    const info = await api.installJava(major, source);
     await refreshJava();
     await refreshConfig();
     notify(`Java ${major} 已安装`);

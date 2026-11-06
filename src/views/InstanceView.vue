@@ -220,7 +220,7 @@ const javaOptions = computed(() => [
   { value: "", label: "跟随全局设置" },
   ...store.javaList.map((java) => ({
     value: java.path,
-    label: `Java ${java.major} · ${java.source}`,
+    label: `Java ${java.major} · ${java.vendor} ${java.kind}`,
   })),
 ]);
 
@@ -825,7 +825,8 @@ async function runRepair() {
     repairResult.value = result;
     repairOpen.value = true;
     await refreshFiles();
-    if (result.disabled_mods.length) notify("已禁用重复的模组，重新启动后生效");
+    if (result.disabled_mods.length || result.incompatible_mods.length)
+      notify("已禁用有问题的模组，重新启动后生效");
     else if (!result.files_restored && !result.issues.length) notify("检查完成，没有发现问题");
   } finally {
     repairing.value = false;
@@ -842,6 +843,12 @@ const repairLines = computed(() => {
   if (result.natives) lines.push("本地库已重新解压");
   if (result.disabled_mods.length)
     lines.push(`禁用了 ${result.disabled_mods.length} 个重复模组：${result.disabled_mods.slice(0, 4).join("、")}`);
+  if (result.incompatible_mods.length)
+    lines.push(
+      `禁用了 ${result.incompatible_mods.length} 个不兼容模组：${result.incompatible_mods
+        .slice(0, 4)
+        .join("、")}（可换 ForgeV2 / ForgeActive 版本，或直接不装）`
+    );
   if (result.missing_deps.length)
     lines.push(`缺少前置模组：${result.missing_deps.slice(0, 6).join("、")}`);
   return lines;

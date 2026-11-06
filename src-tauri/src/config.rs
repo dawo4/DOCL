@@ -84,8 +84,13 @@ pub struct Config {
     /// 版本页「最常玩版本」卡片底图，空表示用内置图
     #[serde(default)]
     pub profile_card_image: Option<String>,
+    /// 版本页两张卡片的文字颜色，空表示跟随主题
+    #[serde(default)]
+    pub profile_text_color: Option<String>,
     /// default / sharp / round
     pub ui_radius: String,
+    /// default / yahei / songti / kaiti
+    pub ui_font: String,
     /// compact / normal / comfy
     pub ui_density: String,
     /// Windows Acrylic：窗口毛玻璃化，透出桌面实时画面
@@ -148,7 +153,9 @@ impl Default for Config {
             background_dim: 0,
             profile_hero_image: None,
             profile_card_image: None,
+            profile_text_color: None,
             ui_radius: "default".into(),
+            ui_font: "default".into(),
             ui_density: "normal".into(),
             // 便携版默认透出桌面：配合外带场景的玻璃质感；安装版保持实心
             window_vibrancy: is_portable(),

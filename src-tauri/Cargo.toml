@@ -1,6 +1,6 @@
 [package]
 name = "mc-launcher"
-version = "1.6.4"
+version = "1.6.5"
 description = "DOCL - Minecraft 第三方启动器"
 authors = ["deepseekwork"]
 license = "AGPL-3.0-only"
@@ -25,6 +25,7 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "stream", "multipart"] }
 futures = "0.3"
 sha1 = "0.10"
+sha2 = "0.10"
 zip = "2"
 png = "0.17"
 flate2 = "1"

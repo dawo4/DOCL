@@ -22,6 +22,8 @@ pub struct RepairReport {
     pub natives: bool,
     /// 被禁用的重复 mod（文件名）
     pub disabled_mods: Vec<String>,
+    /// 因与当前游戏/加载器不兼容而被禁用的 mod（文件名）
+    pub incompatible_mods: Vec<String>,
     /// 发现的重复 mod id
     pub duplicate_mods: Vec<String>,
     /// 缺少的必需前置
@@ -106,6 +108,33 @@ fn mtime(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
+/// 1.17 起游戏跑在 Java 模块系统上，CustomSkinLoader 的 ForgeV1 / Legacy
+/// 分支会和原版模块抢同一个包，直接抛 ResolutionException。
+fn needs_modern_csl_check(game_version: &str, loader: &str) -> bool {
+    let loader = loader.to_ascii_lowercase();
+    if loader != "forge" && loader != "neoforge" {
+        return false;
+    }
+    let mut parts = game_version.split('.');
+    let major = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    let minor = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    major == 1 && minor >= 17
+}
+
+/// CustomSkinLoader 的 ForgeV1 / Legacy 分支只适用于 1.16 及以下。
+fn is_legacy_customskinloader(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".jar")
+        && lower.contains("customskinloader")
+        && (lower.contains("forgev1") || lower.contains("legacy"))
+}
+
 fn summary(report: &RepairReport) -> String {
     let mut parts: Vec<String> = Vec::new();
     if report.version_json {
@@ -119,6 +148,12 @@ fn summary(report: &RepairReport) -> String {
     }
     if !report.disabled_mods.is_empty() {
         parts.push(format!("禁用 {} 个重复 mod", report.disabled_mods.len()));
+    }
+    if !report.incompatible_mods.is_empty() {
+        parts.push(format!(
+            "禁用 {} 个不兼容 mod",
+            report.incompatible_mods.len()
+        ));
     }
     if !report.missing_deps.is_empty() {
         parts.push(format!("缺 {} 个前置", report.missing_deps.len()));
@@ -285,23 +320,23 @@ pub async fn run(
 
     // 5) 模组：重复 id 禁用多余的那份，缺失前置只提示（避免乱装）
     progress.set_message("正在检查模组冲突…");
+    // 未启用版本隔离时 mods 目录属于整个游戏根目录，自动禁用会影响所有版本
+    let isolated = instance::get(cfg, version_id)
+        .isolated
+        .unwrap_or(cfg.version_isolation);
+    let (game_version, loader) = install::instance_context(cfg, version_id)
+        .unwrap_or_else(|_| (version_id.to_string(), String::new()));
     if let Ok(mods_dir) = instance::content_dir(cfg, version_id, "mods") {
         let scan_dir = mods_dir.clone();
-        let loader = install::instance_context(cfg, version_id)
-            .map(|(_, loader)| loader)
-            .unwrap_or_default();
+        let loader_for_deps = loader.clone();
         let (dups, missing) = tokio::task::spawn_blocking(move || {
             (
                 moddeps::duplicate_mods(&scan_dir),
-                moddeps::missing_requirements(&scan_dir, &loader),
+                moddeps::missing_requirements(&scan_dir, &loader_for_deps),
             )
         })
         .await?;
         report.missing_deps = missing;
-        // 未启用版本隔离时 mods 目录属于整个游戏根目录，自动禁用会影响所有版本
-        let isolated = instance::get(cfg, version_id)
-            .isolated
-            .unwrap_or(cfg.version_isolation);
         if isolated {
             for (id, files) in dups {
                 report.duplicate_mods.push(id);
@@ -336,8 +371,45 @@ pub async fn run(
         }
     }
 
+    // 6) 已知不兼容：1.17+ 的 Forge/NeoForge 实例里，CustomSkinLoader 的
+    // ForgeV1 / Legacy 分支会和模块系统冲突，直接禁用并告知用户
+    if needs_modern_csl_check(&game_version, &loader) {
+        if let Ok(mods_dir) = instance::content_dir(cfg, version_id, "mods") {
+            progress.set_message("正在检查已知不兼容模组…");
+            let candidates = legacy_customskinloader_files(&mods_dir);
+            if isolated {
+                for name in candidates {
+                    match instance::toggle_file(cfg, version_id, "mods", &name) {
+                        Ok(_) => report.incompatible_mods.push(name),
+                        Err(err) => report
+                            .issues
+                            .push(format!("无法禁用不兼容模组 {name}：{err}")),
+                    }
+                }
+            } else if !candidates.is_empty() {
+                report.issues.push(format!(
+                    "检测到不兼容的 {}：1.17 及以上无法加载 CustomSkinLoader 的 ForgeV1 / Legacy 版本；该实例未启用版本隔离，未自动禁用",
+                    candidates.join("、")
+                ));
+            }
+        }
+    }
+
     progress.set_message(summary(&report));
     Ok(report)
+}
+
+/// mods 目录里启用的 CustomSkinLoader ForgeV1 / Legacy jar。
+fn legacy_customskinloader_files(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.path().is_file())
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| is_legacy_customskinloader(name))
+        .collect()
 }
 
 #[cfg(test)]
@@ -365,7 +437,37 @@ mod tests {
         assert_eq!(summary(&report), "检查完成，没有发现问题");
         report.files_restored = 2;
         report.disabled_mods = vec!["a.jar".into()];
+        report.incompatible_mods = vec!["CustomSkinLoader_ForgeV1-14.17.2.jar".into()];
         assert!(summary(&report).contains("补回 2 个文件"));
         assert!(summary(&report).contains("禁用 1 个重复 mod"));
+        assert!(summary(&report).contains("禁用 1 个不兼容 mod"));
+    }
+
+    /// 只有 CustomSkinLoader 的旧分支会被判定为不兼容
+    #[test]
+    fn flags_legacy_customskinloader_files() {
+        assert!(is_legacy_customskinloader(
+            "CustomSkinLoader_ForgeV1-14.17.2.jar"
+        ));
+        assert!(is_legacy_customskinloader(
+            "CustomSkinLoader_ForgeLegacy-14.17.2.jar"
+        ));
+        assert!(!is_legacy_customskinloader(
+            "CustomSkinLoader_ForgeV2-14.17.2.jar"
+        ));
+        assert!(!is_legacy_customskinloader(
+            "CustomSkinLoader_ForgeV1-14.17.2.jar.disabled"
+        ));
+        assert!(!is_legacy_customskinloader("radon-1.0.jar"));
+    }
+
+    /// 1.16 及以下用 ForgeV1 是正常的，只有 1.17+ 的 Forge/NeoForge 才会冲突
+    #[test]
+    fn legacy_csl_only_conflicts_on_modern_forge() {
+        assert!(needs_modern_csl_check("1.18.2", "forge"));
+        assert!(needs_modern_csl_check("1.17", "neoforge"));
+        assert!(!needs_modern_csl_check("1.16.5", "forge"));
+        assert!(!needs_modern_csl_check("1.18.2", "fabric"));
+        assert!(!needs_modern_csl_check("1.18.2", ""));
     }
 }
