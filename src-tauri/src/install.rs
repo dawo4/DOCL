@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{copy, Write};
 use std::path::{Path, PathBuf};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -753,6 +753,29 @@ mod tests {
         assert_eq!(super::library_file_paths(&cfg, &detail).len(), 2);
     }
 
+    /// PCL / 加载器合并后可能同时留下 asm 9.6 和 9.8；Fabric 会因 classpath
+    /// 上的重复类直接拒绝启动，所以必须只保留版本更高的那个。
+    #[test]
+    fn newer_duplicate_library_version_wins() {
+        let cfg = crate::config::Config::default();
+        let detail = parse(serde_json::json!({
+            "id": "Pack",
+            "libraries": [
+                { "name": "org.ow2.asm:asm:9.6" },
+                { "name": "org.ow2.asm:asm:9.8" },
+                { "name": "org.ow2.asm:asm-analysis:9.8" },
+            ],
+        }));
+        let paths = super::library_file_paths(&cfg, &detail);
+        assert_eq!(paths.len(), 2);
+        assert!(paths
+            .iter()
+            .any(|path| path.to_string_lossy().contains("asm-9.8.jar")));
+        assert!(!paths
+            .iter()
+            .any(|path| path.to_string_lossy().contains("asm-9.6.jar")));
+    }
+
     /// 有继承链时链根就是原版版本号
     #[test]
     fn chain_root_wins_over_assets() {
@@ -912,9 +935,57 @@ pub fn resolve_detail(cfg: &Config, version_id: &str) -> Result<MergedDetail> {
     })
 }
 
+/// 解析 Maven 坐标（group:artifact:version[:classifier][@ext]），
+/// 用于识别「同一个库的不同版本」，例如 asm 9.6 与 asm 9.8。
+pub(crate) fn maven_key_version(name: &str) -> Option<(String, String)> {
+    let coordinate = name.split('@').next().unwrap_or(name);
+    let parts: Vec<&str> = coordinate.split(':').collect();
+    if parts.len() < 3 || parts[0].is_empty() || parts[1].is_empty() || parts[2].is_empty() {
+        return None;
+    }
+    let key = if parts.len() >= 4 && !parts[3].is_empty() {
+        format!("{}:{}:{}", parts[0], parts[1], parts[3])
+    } else {
+        format!("{}:{}", parts[0], parts[1])
+    };
+    Some((key.to_ascii_lowercase(), parts[2].to_string()))
+}
+
+/// 比较 Maven 版本号：数字段按数值比，非数字段按字典序。
+/// 只需要覆盖 asm 9.6 / 9.8 这类常见重复，不追求完整的 Maven 版本语义。
+pub(crate) fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    fn parts(value: &str) -> Vec<String> {
+        value
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .map(|part| part.to_ascii_lowercase())
+            .collect()
+    }
+    let left_parts = parts(a);
+    let right_parts = parts(b);
+    for index in 0..left_parts.len().max(right_parts.len()) {
+        let Some(left) = left_parts.get(index) else {
+            return std::cmp::Ordering::Less;
+        };
+        let Some(right) = right_parts.get(index) else {
+            return std::cmp::Ordering::Greater;
+        };
+        let order = match (left.parse::<u64>(), right.parse::<u64>()) {
+            (Ok(left), Ok(right)) => left.cmp(&right),
+            _ => left.cmp(right),
+        };
+        if order != std::cmp::Ordering::Equal {
+            return order;
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
 pub fn library_file_paths(cfg: &Config, detail: &VersionDetail) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut versions: Vec<Option<String>> = Vec::new();
+    let mut chosen: HashMap<String, usize> = HashMap::new();
+    let mut seen_paths: HashSet<String> = HashSet::new();
     for lib in &detail.libraries {
         if !rules_allow(lib.rules.as_ref()) || library_is_native(lib) {
             continue;
@@ -930,9 +1001,39 @@ pub fn library_file_paths(cfg: &Config, detail: &VersionDetail) -> Vec<PathBuf> 
             // 外部启动器生成的清单可能把同一个库列两遍（PCL 的整合包清单很常见），
             // 重复路径会让 BootstrapLauncher 构建 union 文件系统时因重复键直接崩溃：
             // Duplicate key .../gson-2.10.1.jar。这里按最终文件路径去重。
-            let key = full.to_string_lossy().to_lowercase();
-            if seen.insert(key) {
-                paths.push(full);
+            let path_key = full.to_string_lossy().to_lowercase();
+            if !seen_paths.insert(path_key.clone()) {
+                continue;
+            }
+            let parsed = maven_key_version(&lib.name);
+            let key = parsed
+                .as_ref()
+                .map(|(key, _)| key.clone())
+                .unwrap_or_else(|| format!("path:{path_key}"));
+            match chosen.get(&key).copied() {
+                Some(index) => {
+                    // PCL / 加载器合并时可能同时留下 asm 9.6 和 9.8，
+                    // Fabric 的 verifyClasspath 发现重复类会直接拒绝启动，
+                    // 这里折叠为版本更高的那一个。
+                    let Some((_, version)) = &parsed else {
+                        continue;
+                    };
+                    let newer = versions[index]
+                        .as_deref()
+                        .map(|current| {
+                            compare_versions(version, current) == std::cmp::Ordering::Greater
+                        })
+                        .unwrap_or(false);
+                    if newer {
+                        paths[index] = full;
+                        versions[index] = Some(version.clone());
+                    }
+                }
+                None => {
+                    chosen.insert(key, paths.len());
+                    paths.push(full);
+                    versions.push(parsed.map(|(_, version)| version));
+                }
             }
         }
     }

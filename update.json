@@ -1,6 +1,6 @@
 {
-  "version": "1.6.5",
-  "url": "https://github.com/dawo4/DOCL/releases/download/v1.6.5/DOCL_1.6.5_x64-setup.exe",
-  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.6.5/DOCL_1.6.5_portable.zip",
-  "notes": "Java 运行时支持手动添加任意位置的 java.exe，并识别 JDK/JRE 与发行版；下载新增 Eclipse Temurin、Azul Zulu、Amazon Corretto 官方源，可选 Java 8/11/16/17/21/25，Mojang 官方目录也会动态读取。崩溃日志新增加载器未装完、文件被占用等识别规则，一键修复会禁用与当前 Forge/NeoForge 不兼容的旧版 CustomSkinLoader。版本页游玩画像重新排版为两张全底图卡片，去掉多余边框和重复数据，并支持自定义卡片字体颜色；设置页新增界面字体（默认/黑体/宋体/楷体），内存设置也已精简。"
+  "version": "1.6.6",
+  "url": "https://github.com/dawo4/DOCL/releases/download/v1.6.6/DOCL_1.6.6_x64-setup.exe",
+  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.6.6/DOCL_1.6.6_portable.zip",
+  "notes": "修复从 PCL 导入整合包后 Fabric 启动报「duplicate ASM classes found on classpath」：启动时按 Maven 坐标合并同一个库的多个版本，只保留版本最高的一个，不再把 asm 9.6 和 9.8 一起塞进 classpath。PCL 导入也做了优化：兼容新版 PCL 的 LaunchFolders 多目录配置，优先使用当前 PCL 自己配置的游戏目录；Java 路径会先实际运行校验，预览里显示 Java 版本、发行版和 JDK/JRE；导入时会扫描版本清单中的重复依赖并自动清理，原文件保留 .pcl-import.bak 备份。拖拽导入整合包时现在可以自定义整合包名称。版本页游玩画像重新调整：7 天柱状图和时长分布条改为方正像素风，不再铺满整张卡片，最常玩版本的图标移到版本名左侧。"
 }

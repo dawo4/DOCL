@@ -4,6 +4,7 @@ import { api, type DroppedItem, type PackPreview } from "../api";
 import AppIcon from "./AppIcon.vue";
 import WoodButton from "./WoodButton.vue";
 import WoodModal from "./WoodModal.vue";
+import WoodInput from "./WoodInput.vue";
 import WoodSelect from "./WoodSelect.vue";
 import {
   importModpack,
@@ -84,6 +85,22 @@ function isServerPack(item: DroppedItem) {
 const clientPacks = computed(() => packs.value.filter((item) => !isServerPack(item)));
 const serverPacks = computed(() => packs.value.filter((item) => isServerPack(item)));
 
+/// 整合包实例名称，默认取清单解析出的名字，用户可以改
+const packNames = ref<Record<string, string>>({});
+
+watch(
+  packMeta,
+  (map) => {
+    for (const pack of clientPacks.value) {
+      if (packNames.value[pack.path] !== undefined) continue;
+      const preview = map[pack.path];
+      if (!preview) continue;
+      packNames.value = { ...packNames.value, [pack.path]: preview.name };
+    }
+  },
+  { immediate: true }
+);
+
 /// 未识别的条目要等用户选好分类才能导入
 const unresolved = computed(() => unknown.value.filter((item) => !overrides.value[item.path]));
 const canInstall = computed(
@@ -141,10 +158,11 @@ async function importPacks() {
   try {
     let last: string | null = null;
     for (const pack of clientPacks.value) {
+      const name = packNames.value[pack.path]?.trim() || "";
       const result = await importModpack(
         pack.path,
-        { parent_version: target.value || null },
-        pack.file_name
+        { parent_version: target.value || null, instance_name: name || null },
+        name || pack.file_name
       );
       if (result) last = result.instance_id;
     }
@@ -214,6 +232,16 @@ async function importServerPacks() {
             {{ item.label }}<template v-if="item.detail"> · {{ item.detail }}</template>
             <template v-if="isServerPack(item)"> · 服务端整合包</template>
           </span>
+          <div
+            v-if="item.kind === 'modpack' && packMeta[item.path] && !isServerPack(item)"
+            class="pack-name"
+          >
+            <WoodInput
+              v-model="packNames[item.path]"
+              :disabled="busy"
+              placeholder="整合包名称"
+            />
+          </div>
         </div>
         <span v-if="isServerPack(item)" class="tag tag--grass">服务端</span>
         <div v-if="item.kind === 'unknown'" class="drop-item__override">
@@ -346,6 +374,16 @@ async function importServerPacks() {
 .drop-item__override {
   width: 130px;
   flex-shrink: 0;
+}
+
+.pack-name {
+  margin-top: 5px;
+}
+
+.pack-name :deep(.input) {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12.5px;
 }
 
 .target {

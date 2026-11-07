@@ -874,9 +874,9 @@ async function chooseImage(id: string) {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 18px;
+  gap: 22px;
   min-height: 300px;
-  padding: 22px 24px 18px;
+  padding: 24px 26px 20px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -896,7 +896,7 @@ async function chooseImage(id: string) {
   z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 .hero-total {
@@ -1006,8 +1006,10 @@ async function chooseImage(id: string) {
 .week {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
+  /* 不铺满整卡，右侧留白 */
+  max-width: 440px;
 }
 
 .week__title {
@@ -1020,7 +1022,7 @@ async function chooseImage(id: string) {
 .week__bars {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  gap: 6px;
+  gap: 8px;
   align-items: end;
 }
 
@@ -1037,14 +1039,14 @@ async function chooseImage(id: string) {
   align-items: flex-end;
   justify-content: center;
   width: 100%;
-  height: 48px;
-  border-bottom: 1px solid var(--profile-muted);
+  height: 28px;
+  border-bottom: 2px solid var(--profile-muted);
 }
 
 .week__bar {
   display: block;
-  width: min(24px, 64%);
-  border-radius: 3px 3px 0 0;
+  width: min(38px, 78%);
+  border-radius: 0;
   background: linear-gradient(180deg, var(--moss-bright), var(--moss));
   transition: height var(--dur-3) var(--ease-out-expo);
 }
@@ -1078,14 +1080,16 @@ async function chooseImage(id: string) {
   z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 6px;
+  /* 比柱状图略宽，两条长度错开 */
+  max-width: 490px;
 }
 
 .hero-dist__bar {
   display: flex;
-  height: 7px;
+  height: 8px;
   overflow: hidden;
-  border-radius: 99px;
+  border-radius: 0;
   background: rgba(var(--accent-rgb), 0.08);
 }
 
@@ -1095,7 +1099,7 @@ async function chooseImage(id: string) {
 }
 
 .hero-dist__bar span:not(:last-child) {
-  box-shadow: 1px 0 0 rgba(255, 253, 246, 0.55);
+  box-shadow: 2px 0 0 rgba(24, 17, 10, 0.42);
 }
 
 .hero-dist__legend {
@@ -1115,9 +1119,9 @@ async function chooseImage(id: string) {
 
 .hero-dist__item i {
   flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  border-radius: 3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 0;
 }
 
 .hero-dist__item b {
@@ -1160,8 +1164,8 @@ async function chooseImage(id: string) {
 
 .stat-card--top {
   flex: none;
-  justify-content: space-between;
-  gap: 12px;
+  justify-content: flex-start;
+  gap: 10px;
   min-height: 200px;
   padding: 18px 20px 16px;
   background-image: var(--card-bg);
@@ -1214,10 +1218,11 @@ async function chooseImage(id: string) {
 .top-version {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 12px;
+  justify-content: flex-start;
+  gap: 10px;
   min-width: 0;
-  margin: 0;
+  /* 贴底、靠左：图标放到版本名侧边，不再悬在卡片正中 */
+  margin: auto 0 0;
 }
 
 .top-version__tile {
@@ -1225,8 +1230,8 @@ async function chooseImage(id: string) {
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  width: 46px;
-  height: 46px;
+  width: 38px;
+  height: 38px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
