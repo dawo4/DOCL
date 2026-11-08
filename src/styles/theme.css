@@ -906,10 +906,159 @@ a {
     0 6px 18px rgba(0, 0, 0, 0.35);
 }
 
+/* 主题：墨染（高对比黑白 + 朱红） */
+:root[data-theme="ink"] {
+  --paper: #f2f1ec;
+  --paper-2: #e7e5dd;
+  --panel: #fbfaf7;
+  --panel-2: #f3f1ea;
+  --walnut: #2c2c2c;
+  --walnut-deep: #141414;
+  --walnut-light: #6b6b6b;
+  --moss: #5d6b5a;
+  --moss-bright: #7d8c78;
+  --moss-soft: #e9ece6;
+  --amber: #b23a2e;
+  --ink: #1c1c1a;
+  --ink-soft: #4c4c48;
+  --muted: #8a8a82;
+  --line: #dcdad2;
+  --line-strong: #c9c6bc;
+  --danger: #a83a2a;
+  --danger-soft: #f3e3df;
+  --ambient-a: 178, 58, 46;
+  --ambient-b: 93, 107, 90;
+  --accent-rgb: 44, 44, 44;
+  --bar-a: #f0eee8;
+  --bar-b: #e8e5dc;
+  --hero-a: #fbfaf7;
+  --hero-b: #f0eee7;
+  --hero-c: #e4e1d6;
+  --hover: #f0eee8;
+  --glass-rgb: 251, 250, 247;
+  --btn-a: #3a3a38;
+  --btn-b: #2c2c2c;
+  --btn-c: #1c1c1a;
+  --btn-border: #141414;
+  --btn-fg: #f7f6f2;
+}
+
+/* 主题：霓虹（深色赛博，青 / 洋红） */
+:root[data-theme="neon"] {
+  --paper: #0b0a14;
+  --paper-2: #121022;
+  --panel: #161327;
+  --panel-2: #1c1833;
+  --walnut: #22d3ee;
+  --walnut-deep: #0e7490;
+  --walnut-light: #67e8f9;
+  --moss: #f472b6;
+  --moss-bright: #f9a8d4;
+  --moss-soft: #2a1a2e;
+  --amber: #fbbf24;
+  --ink: #e6e9f5;
+  --ink-soft: #a6adc8;
+  --muted: #7b7f9c;
+  --line: #2a2740;
+  --line-strong: #3a3556;
+  --danger: #f87171;
+  --danger-soft: #3a1a1f;
+  --ambient-a: 34, 211, 238;
+  --ambient-b: 244, 114, 182;
+  --accent-rgb: 34, 211, 238;
+  --bar-a: #121021;
+  --bar-b: #0e0c1a;
+  --hero-a: #1a1730;
+  --hero-b: #141126;
+  --hero-c: #0f0d1d;
+  --hover: #221e3c;
+  --glass-rgb: 22, 19, 39;
+  --btn-a: #67e8f9;
+  --btn-b: #22d3ee;
+  --btn-c: #0891b2;
+  --btn-border: #0e7490;
+  --btn-fg: #04141a;
+}
+
+/* 主题：麦田（暖黄稻草 + 橄榄绿） */
+:root[data-theme="wheat"] {
+  --paper: #f8f1dd;
+  --paper-2: #efe4c6;
+  --panel: #fffcf2;
+  --panel-2: #f6efd9;
+  --walnut: #7a5a26;
+  --walnut-deep: #57400f;
+  --walnut-light: #c2a463;
+  --moss: #7f8f4a;
+  --moss-bright: #9fae63;
+  --moss-soft: #ecefd8;
+  --amber: #d0a12c;
+  --ink: #2d2618;
+  --ink-soft: #5c5340;
+  --muted: #92876b;
+  --line: #e0d5b6;
+  --line-strong: #cdbf98;
+  --danger: #a8452c;
+  --danger-soft: #f5e3d8;
+  --ambient-a: 208, 161, 44;
+  --ambient-b: 127, 143, 74;
+  --accent-rgb: 122, 90, 38;
+  --bar-a: #f5ecd4;
+  --bar-b: #ede1c1;
+  --hero-a: #fffcf2;
+  --hero-b: #f8f0d8;
+  --hero-c: #efe4c0;
+  --hover: #f6efd9;
+  --glass-rgb: 255, 252, 242;
+  --btn-a: #8f6c2d;
+  --btn-b: #7a5a26;
+  --btn-c: #5e4416;
+  --btn-border: #4a350f;
+  --btn-fg: #fffcf2;
+}
+
+/* 主题：雪原（冷白冰蓝） */
+:root[data-theme="snow"] {
+  --paper: #f1f5f8;
+  --paper-2: #e3ebf2;
+  --panel: #fbfdff;
+  --panel-2: #f0f5fa;
+  --walnut: #3b5f7f;
+  --walnut-deep: #24405a;
+  --walnut-light: #8fb1cc;
+  --moss: #5f8f95;
+  --moss-bright: #7fb3b8;
+  --moss-soft: #e4eff0;
+  --amber: #4f86b3;
+  --ink: #1f2d3a;
+  --ink-soft: #546776;
+  --muted: #8395a6;
+  --line: #d5e0e9;
+  --line-strong: #bfcfdd;
+  --danger: #b04a3c;
+  --danger-soft: #f5e5e1;
+  --ambient-a: 79, 134, 179;
+  --ambient-b: 127, 179, 184;
+  --accent-rgb: 59, 95, 127;
+  --bar-a: #eaf1f7;
+  --bar-b: #e0eaf2;
+  --hero-a: #fbfdff;
+  --hero-b: #eff5fa;
+  --hero-c: #e1ebf3;
+  --hover: #eff5fa;
+  --glass-rgb: 251, 253, 255;
+  --btn-a: #4a7393;
+  --btn-b: #3b5f7f;
+  --btn-c: #2b4863;
+  --btn-border: #24405a;
+  --btn-fg: #f7fbfe;
+}
+
 /* 深色主题使用深色原生控件 */
 :root[data-theme="nocturne"],
 :root[data-theme="graphite"],
-:root[data-theme="forge"] {
+:root[data-theme="forge"],
+:root[data-theme="neon"] {
   color-scheme: dark;
 }
 
@@ -1025,6 +1174,121 @@ a {
     radial-gradient(ellipse 70% 28% at 30% 26%, rgba(120, 234, 190, 0.42), transparent 70%),
     radial-gradient(ellipse 55% 22% at 70% 40%, rgba(150, 130, 240, 0.4), transparent 70%),
     linear-gradient(180deg, #101a2c 0%, #172a42 46%, #101a2a 100%);
+}
+
+.wallpaper--parchment .wallpaper__builtin {
+  background-image: radial-gradient(
+      ellipse 55% 38% at 18% 16%,
+      rgba(120, 94, 62, 0.16),
+      transparent 70%
+    ),
+    radial-gradient(ellipse 48% 32% at 80% 82%, rgba(96, 72, 44, 0.18), transparent 72%),
+    repeating-linear-gradient(
+      4deg,
+      rgba(120, 96, 66, 0.05) 0 2px,
+      transparent 2px 7px
+    ),
+    repeating-linear-gradient(
+      88deg,
+      rgba(255, 255, 255, 0.18) 0 3px,
+      transparent 3px 11px
+    ),
+    linear-gradient(180deg, #f3ebd9 0%, #e9dcc3 55%, #dbc8a8 100%);
+}
+
+.wallpaper--porcelain .wallpaper__builtin {
+  background-image: radial-gradient(
+      ellipse 52% 34% at 24% 22%,
+      rgba(63, 107, 135, 0.2),
+      transparent 72%
+    ),
+    radial-gradient(ellipse 42% 28% at 76% 64%, rgba(63, 107, 135, 0.16), transparent 72%),
+    radial-gradient(circle at 50% 46%, rgba(255, 255, 255, 0.4) 0 12%, transparent 13%),
+    repeating-radial-gradient(
+      circle at 50% 50%,
+      rgba(214, 230, 238, 0.45) 0 18px,
+      transparent 18px 46px
+    ),
+    linear-gradient(180deg, #f6faf8 0%, #e6f0ec 48%, #d2e2dc 100%);
+}
+
+.wallpaper--cloud .wallpaper__builtin {
+  background-image: radial-gradient(
+      circle at 76% 16%,
+      rgba(255, 252, 240, 0.92) 0 3%,
+      rgba(255, 252, 240, 0.3) 3.1% 8%,
+      transparent 9%
+    ),
+    radial-gradient(ellipse 55% 26% at 22% 68%, rgba(255, 255, 255, 0.55), transparent 72%),
+    radial-gradient(ellipse 62% 24% at 78% 86%, rgba(255, 255, 255, 0.42), transparent 74%),
+    linear-gradient(180deg, #eaf1f7 0%, #d7e4ee 52%, #bfd1df 100%);
+}
+
+.wallpaper--mist .wallpaper__builtin {
+  background-image: radial-gradient(
+      ellipse 70% 30% at 30% 28%,
+      rgba(180, 156, 203, 0.36),
+      transparent 72%
+    ),
+    radial-gradient(ellipse 60% 26% at 72% 74%, rgba(150, 120, 190, 0.32), transparent 74%),
+    radial-gradient(ellipse 40% 18% at 52% 96%, rgba(255, 255, 255, 0.35), transparent 70%),
+    linear-gradient(180deg, #f5f0fa 0%, #e7def3 55%, #d5c7e6 100%);
+}
+
+.wallpaper--grid .wallpaper__builtin {
+  background-image: radial-gradient(ellipse 60% 30% at 50% 0%, rgba(159, 180, 199, 0.22), transparent 70%),
+    repeating-linear-gradient(
+      0deg,
+      rgba(159, 180, 199, 0.14) 0 1px,
+      transparent 1px 48px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(159, 180, 199, 0.14) 0 1px,
+      transparent 1px 48px
+    ),
+    linear-gradient(180deg, #14171a 0%, #1b1f24 55%, #121518 100%);
+}
+
+.wallpaper--neon .wallpaper__builtin {
+  background-image: radial-gradient(
+      ellipse 42% 26% at 18% 22%,
+      rgba(34, 211, 238, 0.35),
+      transparent 70%
+    ),
+    radial-gradient(ellipse 38% 24% at 82% 34%, rgba(244, 114, 182, 0.32), transparent 70%),
+    radial-gradient(ellipse 52% 20% at 52% 96%, rgba(120, 80, 220, 0.3), transparent 72%),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0 74px,
+      rgba(34, 211, 238, 0.08) 74px 75px,
+      transparent 75px 150px
+    ),
+    linear-gradient(180deg, #0a0814 0%, #120f26 52%, #0a0816 100%);
+}
+
+.wallpaper--wheat .wallpaper__builtin {
+  background-image: radial-gradient(
+      circle at 26% 18%,
+      rgba(255, 244, 200, 0.92) 0 3.4%,
+      rgba(255, 244, 200, 0.3) 3.5% 8%,
+      transparent 9%
+    ),
+    radial-gradient(ellipse 90% 40% at 20% 108%, #b98f34 0 58%, transparent 59%),
+    radial-gradient(ellipse 105% 44% at 88% 112%, #a67c25 0 60%, transparent 61%),
+    linear-gradient(180deg, #f8ecc4 0%, #ecd89b 46%, #cda851 100%);
+}
+
+.wallpaper--snow .wallpaper__builtin {
+  background-image: radial-gradient(
+      circle at 74% 14%,
+      rgba(255, 255, 255, 0.95) 0 3%,
+      rgba(255, 255, 255, 0.35) 3.1% 8%,
+      transparent 9%
+    ),
+    radial-gradient(ellipse 80% 40% at 10% 108%, #e8f1f8 0 58%, transparent 59%),
+    radial-gradient(ellipse 95% 45% at 92% 116%, #d7e6f2 0 60%, transparent 61%),
+    linear-gradient(180deg, #dfeefa 0%, #cbe1f1 46%, #accbe4 100%);
 }
 
 .wallpaper__dim {

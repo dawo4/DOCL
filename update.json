@@ -1,6 +1,6 @@
 {
-  "version": "1.6.6",
-  "url": "https://github.com/dawo4/DOCL/releases/download/v1.6.6/DOCL_1.6.6_x64-setup.exe",
-  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.6.6/DOCL_1.6.6_portable.zip",
-  "notes": "修复从 PCL 导入整合包后 Fabric 启动报「duplicate ASM classes found on classpath」：启动时按 Maven 坐标合并同一个库的多个版本，只保留版本最高的一个，不再把 asm 9.6 和 9.8 一起塞进 classpath。PCL 导入也做了优化：兼容新版 PCL 的 LaunchFolders 多目录配置，优先使用当前 PCL 自己配置的游戏目录；Java 路径会先实际运行校验，预览里显示 Java 版本、发行版和 JDK/JRE；导入时会扫描版本清单中的重复依赖并自动清理，原文件保留 .pcl-import.bak 备份。拖拽导入整合包时现在可以自定义整合包名称。版本页游玩画像重新调整：7 天柱状图和时长分布条改为方正像素风，不再铺满整张卡片，最常玩版本的图标移到版本名左侧。"
+  "version": "1.6.7",
+  "url": "https://github.com/dawo4/DOCL/releases/download/v1.6.7/DOCL_1.6.7_x64-setup.exe",
+  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.6.7/DOCL_1.6.7_portable.zip",
+  "notes": "崩溃诊断与一键修复大更新。新增启动前自检：版本清单、客户端 jar、启动库、重复 Mod、磁盘空间、路径长度、内存分配与 32 位 Java 都会提前检查；崩溃分析接入远端规则库（24 条规则，支持 match: any/all）、分级短路、退出码闸门、debug.log 与堆栈关键字反查。一键修复可按命中的规则补前置、切换 64 位 Java、重置画质、补全资源、备份后清 config、重装加载器，并支持一键回滚到修复前。修复 NeoForge 26.x 启动报「Minecraft-Dists / patched Minecraft jar missing」：不再把版本 jar 放进启动 classpath，交给 FML 生产模式按 libraries 自行定位补丁客户端与 NeoForge 本体。修复选中 NeoForge 实例后光影包、资源包搜索为空（加载器筛选现在只用于 Mod 与整合包）。光影包详情页会自动检测并推荐缺失的光影加载器：Iris / Oculus 可一键安装，原版实例显示 Fabric 安装提示。陶瓦联机组件下载改为多源 + SHA1 校验并显示下载进度。新增 4 套主题（墨染、霓虹、麦田、雪原）与 8 张内置底图。"
 }

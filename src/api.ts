@@ -309,7 +309,62 @@ export interface RepairReport {
   incompatible_mods: string[];
   duplicate_mods: string[];
   missing_deps: string[];
+  /// mods 目录里无法正常打开的 jar
+  broken_mods: string[];
   issues: string[];
+  /// 修复前的备份目录，null 表示没有改动任何文件
+  backup_dir: string | null;
+  /// 自动补装成功的前置
+  deps_installed: string[];
+  /// 自动切换后的 Java
+  java_switched: string | null;
+  /// 是否重置了画质选项
+  graphics_reset: boolean;
+  /// 补全的资源文件数量
+  assets_restored: number;
+  /// 补全失败的资源文件数量
+  assets_failed: number;
+  /// 是否清空过 config 目录
+  config_reset: boolean;
+  /// 是否重装过加载器
+  loader_reinstalled: boolean;
+}
+
+/// 实例的光影加载器检测结果
+export interface ShaderSupport {
+  loader: string;
+  game_version: string;
+  /// 已装的光影加载器，null 表示没有
+  provider: string | null;
+  /// 推荐安装的 Modrinth 项目 id
+  recommend: string | null;
+  recommend_label: string | null;
+}
+
+/// 一键修复的可选动作，默认全部关闭
+export interface RepairOptions {
+  install_deps?: boolean;
+  reset_graphics?: boolean;
+  repair_assets?: boolean;
+  reinstall_loader?: boolean;
+  /// 崩溃分析命中的规则 id，用于针对性修复
+  rules?: string[];
+}
+
+/// 启动前自检发现的单个问题
+export interface PreflightIssue {
+  id: string;
+  title: string;
+  detail: string;
+  /// 是否阻止启动
+  blocking: boolean;
+  /// 是否能交给一键修复处理
+  fixable: boolean;
+}
+
+export interface PreflightReport {
+  version_id: string;
+  issues: PreflightIssue[];
 }
 
 /// 下载源测速结果
@@ -806,8 +861,16 @@ export const api = {
     invoke<InstanceContext>("instance_context", { versionId }),
   checkInstanceFiles: (versionId: string) =>
     invoke<InstanceCheck>("check_instance_files", { versionId }),
-  repairInstance: (versionId: string) =>
-    invoke<RepairReport>("repair_instance", { versionId }),
+  repairInstance: (versionId: string, options?: RepairOptions) =>
+    invoke<RepairReport>("repair_instance", { versionId, options: options ?? null }),
+  repairRestore: (versionId: string) =>
+    invoke<number>("repair_restore", { versionId }),
+  shaderSupport: (versionId: string) =>
+    invoke<ShaderSupport>("shader_support", { versionId }),
+  installShaderLoader: (versionId: string) =>
+    invoke<string>("install_shader_loader", { versionId }),
+  preflightCheck: (versionId: string) =>
+    invoke<PreflightReport>("preflight_check", { versionId }),
   gameOptionsPresets: () => invoke<GameOptionsPreset[]>("game_options_presets"),
   saveGameOptionsPreset: (versionId: string, name: string) =>
     invoke<GameOptionsPreset>("save_game_options_preset", { versionId, name }),
@@ -865,8 +928,8 @@ export const api = {
     invoke<void>("portable_update_install", { path }),
   exportSettings: (path: string) => invoke<void>("export_settings", { path }),
   importSettings: (path: string) => invoke<Config>("import_settings", { path }),
-  crashAnalyze: (versionId: string) =>
-    invoke<CrashReport>("crash_analyze", { versionId }),
+  crashAnalyze: (versionId: string, exitCode?: number | null) =>
+    invoke<CrashReport>("crash_analyze", { versionId, exitCode: exitCode ?? null }),
   crashExport: (versionId: string) =>
     invoke<string>("crash_export", { versionId }),
   modUpdates: (versionId: string) =>

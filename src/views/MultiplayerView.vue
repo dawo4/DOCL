@@ -167,6 +167,17 @@ const serverUptime = computed(() => {
   return `${seconds} 秒`;
 });
 
+/// 组件下载进度：只有后端真的在下载（有总字节数）时才展示百分比
+const tcDownload = computed(() => {
+  const p = store.progress;
+  if (!p || p.stage !== "terracotta" || !p.bytes_total) return null;
+  return {
+    percent: Math.min(100, Math.round((p.bytes_done / p.bytes_total) * 100)),
+    done: (p.bytes_done / 1024 / 1024).toFixed(1),
+    total: (p.bytes_total / 1024 / 1024).toFixed(1),
+  };
+});
+
 const tcStateName = computed(() => tc.value?.state?.state ?? "");
 const tcWaiting = computed(
   () => !tc.value?.state || tcStateName.value === "waiting"
@@ -1037,7 +1048,13 @@ onBeforeUnmount(() => {
 
       <div v-if="tcPreparing" class="tc-state">
         <span class="mp-pulse" />
-        正在准备陶瓦联机组件，首次使用会下载约 10 MB…
+        <template v-if="tcDownload">
+          正在下载陶瓦联机组件 {{ tcDownload.percent }}%（{{ tcDownload.done }} /
+          {{ tcDownload.total }} MB）
+        </template>
+        <template v-else>
+          正在准备陶瓦联机组件，首次使用会下载约 10 MB…
+        </template>
       </div>
 
       <div v-else-if="tcError" class="tc-alert">

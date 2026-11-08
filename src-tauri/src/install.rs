@@ -1533,12 +1533,17 @@ pub(crate) fn verify_loader_manifest(
     let mut missing = Vec::new();
     // 1.17 起核心库改为 fmlloader 引导 + 处理器产出的补丁客户端当版本 jar，
     // 清单里不再有 forge universal 与 net.minecraft:client 条目
-    let split_client = game_version
+    // 26.x 起游戏版本改用年份号，判断逻辑按首个数字段兼容
+    let parts: Vec<u32> = game_version
         .split('.')
-        .nth(1)
-        .and_then(|value| value.parse::<u32>().ok())
-        .map(|minor| minor >= 17)
-        .unwrap_or(false);
+        .take(2)
+        .filter_map(|value| value.parse::<u32>().ok())
+        .collect();
+    let split_client = match parts.as_slice() {
+        [major, _] if *major >= 26 => true,
+        [_, minor] => *minor >= 17,
+        _ => false,
+    };
 
     if loader == "neoforge" {
         if !names.iter().any(|name| {
@@ -1559,6 +1564,8 @@ pub(crate) fn verify_loader_manifest(
     {
         missing.push("Forge 核心库");
     }
+    // 加载器本体由 FML 在生产模式下按 libraryDirectory 自行定位，
+    // 版本清单里本来就不会列出（官方安装器同样不列），这里不做检查
     if split_client
         && !cfg
             .game_root()

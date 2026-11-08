@@ -1,11 +1,12 @@
 use crate::config::Config;
 use crate::instance;
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
 use std::time::UNIX_EPOCH;
 
 /// 小文件整读；大文件只保留头部与尾部（崩溃堆栈在尾部）。
@@ -87,6 +88,155 @@ struct Rule {
     links: &'static [(&'static str, &'static str)],
     priority: u8,
     category: &'static str,
+}
+
+/// 远端规则库地址。规则只做文本匹配，不包含任何可执行内容。
+const RULES_URL: &str = "https://cdn.jsdelivr.net/gh/dawo4/DOCL@main/crash-rules.json";
+/// 防止远端配置异常拖慢分析
+const MAX_REMOTE_RULES: usize = 200;
+const MAX_PATTERNS_PER_RULE: usize = 40;
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteLink {
+    label: String,
+    url: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteRule {
+    id: String,
+    title: String,
+    #[serde(default)]
+    summary: String,
+    patterns: Vec<String>,
+    #[serde(default)]
+    advice: Vec<String>,
+    #[serde(default)]
+    links: Vec<RemoteLink>,
+    #[serde(default = "default_priority")]
+    priority: u8,
+    #[serde(default)]
+    category: String,
+    /// any（默认）：任一 pattern 命中；all：所有 pattern 都要命中
+    #[serde(default = "default_match", rename = "match")]
+    match_mode: String,
+}
+
+fn default_priority() -> u8 {
+    50
+}
+
+fn default_match() -> String {
+    "any".into()
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteRuleFile {
+    #[serde(default)]
+    #[allow(dead_code)]
+    rules_version: u32,
+    rules: Vec<RemoteRule>,
+}
+
+/// 内置规则编译在二进制里兜底，远端只做增量覆盖：
+/// 远端文件损坏、为空或离线时，已有规则照常工作。
+static REMOTE_RULES: OnceLock<RwLock<Vec<RemoteRule>>> = OnceLock::new();
+
+fn remote_store() -> &'static RwLock<Vec<RemoteRule>> {
+    REMOTE_RULES.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+fn remote_rules() -> Vec<RemoteRule> {
+    remote_store()
+        .read()
+        .map(|guard| guard.clone())
+        .unwrap_or_default()
+}
+
+/// 规则是否命中：any 只需要一条 pattern，all 要求全部出现。
+fn rule_matches(rule: &RemoteRule, lowered: &str) -> bool {
+    if rule.patterns.is_empty() {
+        return false;
+    }
+    if rule.match_mode == "all" {
+        rule.patterns
+            .iter()
+            .all(|pattern| lowered.contains(pattern.as_str()))
+    } else {
+        rule.patterns
+            .iter()
+            .any(|pattern| lowered.contains(pattern.as_str()))
+    }
+}
+
+fn rules_cache_path() -> PathBuf {
+    crate::config::data_dir().join("crash-rules.json")
+}
+
+/// 清洗远端规则：丢掉缺关键字段的条目，pattern 统一小写，并限制数量。
+fn sanitize(rules: Vec<RemoteRule>) -> Vec<RemoteRule> {
+    let mut rules: Vec<RemoteRule> = rules
+        .into_iter()
+        .filter(|rule| {
+            !rule.id.trim().is_empty()
+                && !rule.title.trim().is_empty()
+                && !rule.patterns.is_empty()
+        })
+        .map(|mut rule| {
+            rule.patterns = rule
+                .patterns
+                .iter()
+                .map(|pattern| pattern.trim().to_lowercase())
+                .filter(|pattern| !pattern.is_empty())
+                .take(MAX_PATTERNS_PER_RULE)
+                .collect();
+            // 只认 all，其余一律按 any 处理，避免远端写错字段导致规则永不命中
+            rule.match_mode = if rule.match_mode.trim().eq_ignore_ascii_case("all") {
+                "all".into()
+            } else {
+                "any".into()
+            };
+            rule
+        })
+        .filter(|rule| !rule.patterns.is_empty())
+        .collect();
+    rules.truncate(MAX_REMOTE_RULES);
+    rules
+}
+
+/// 启动时先读本地缓存，保证离线时也能用上一次拉到的规则。
+pub fn load_cached_rules() {
+    let Ok(text) = fs::read_to_string(rules_cache_path()) else {
+        return;
+    };
+    let Ok(file) = serde_json::from_str::<RemoteRuleFile>(&text) else {
+        return;
+    };
+    if let Ok(mut guard) = remote_store().write() {
+        *guard = sanitize(file.rules);
+    }
+}
+
+/// 拉取最新规则并写入缓存。失败时保留现有规则，不影响崩溃分析。
+pub async fn refresh_rules(client: &reqwest::Client) -> Result<usize> {
+    let response = client.get(RULES_URL).send().await?;
+    if !response.status().is_success() {
+        anyhow::bail!("规则库返回 HTTP {}", response.status());
+    }
+    let bytes = response.bytes().await?;
+    let file: RemoteRuleFile = serde_json::from_slice(&bytes)?;
+    let rules = sanitize(file.rules);
+    if rules.is_empty() {
+        anyhow::bail!("规则库内容为空");
+    }
+    let count = rules.len();
+    if let Ok(mut guard) = remote_store().write() {
+        *guard = rules;
+    }
+    if fs::create_dir_all(crate::config::data_dir()).is_ok() {
+        let _ = fs::write(rules_cache_path(), &bytes);
+    }
+    Ok(count)
 }
 
 const RULES: &[Rule] = &[
@@ -650,12 +800,69 @@ fn matches_in(text: &str) -> Vec<CrashMatch> {
             suspects: Vec::new(),
         });
     }
-    if result.is_empty() && looks_like_crash(text) {
-        result.push(generic_match());
+    // 远端规则：与内置规则同 id 时以内置为准，避免同一原因展示两遍
+    for rule in remote_rules() {
+        if RULES.iter().any(|builtin| builtin.id == rule.id) {
+            continue;
+        }
+        if !rule_matches(&rule, &lowered) {
+            continue;
+        }
+        let patterns: Vec<&str> = rule.patterns.iter().map(String::as_str).collect();
+        result.push(CrashMatch {
+            id: rule.id.clone(),
+            title: rule.title.clone(),
+            summary: if rule.summary.trim().is_empty() {
+                rule.title.clone()
+            } else {
+                rule.summary.clone()
+            },
+            advice: rule.advice.clone(),
+            evidence: evidence_for(text, &patterns),
+            links: rule
+                .links
+                .iter()
+                .map(|link| CrashLink {
+                    label: link.label.clone(),
+                    url: link.url.clone(),
+                })
+                .collect(),
+            priority: rule.priority,
+            category: if rule.category.trim().is_empty() {
+                "other".into()
+            } else {
+                rule.category.clone()
+            },
+            suspects: Vec::new(),
+        });
     }
+    if result.is_empty() {
+        if looks_like_crash(text) {
+            result.push(generic_match());
+        }
+        return result;
+    }
+    // 分级短路：只保留命中的最高一级，避免次要规则把主因淹没
+    let best_tier = result
+        .iter()
+        .map(|item| tier_of(item.priority))
+        .min()
+        .unwrap_or(0);
+    result.retain(|item| tier_of(item.priority) == best_tier);
     // 高优先级在前，同样优先级按规则表顺序
     result.sort_by(|a, b| b.priority.cmp(&a.priority));
     result
+}
+
+/// 规则分层：0 = 高优先（几乎可以断定原因），1 = 中等，2 = 兜底提示。
+fn tier_of(priority: u8) -> u8 {
+    if priority >= 86 {
+        0
+    } else if priority >= 70 {
+        1
+    } else {
+        2
+    }
 }
 
 fn looks_like_crash(text: &str) -> bool {
@@ -940,6 +1147,92 @@ fn locate_by_packages(mods: &[ModFile], packages: &[(String, usize)]) -> Vec<Cra
             },
             file_name: hit.file_name.clone(),
             package: package.clone(),
+            reason: "stack".into(),
+        });
+        if result.len() >= 3 {
+            break;
+        }
+    }
+    result
+}
+
+/// 从堆栈帧里提取可能对应 Mod 的关键字（类名 / 包名片段）。
+/// 只在包名反查失败时兜底使用，所以过滤得比较狠，宁可漏报也不误报。
+fn stack_keywords(text: &str) -> Vec<String> {
+    const NOISE: &[&str] = &[
+        "com", "org", "net", "io", "java", "javax", "jdk", "sun", "cpw", "mod", "mods", "api",
+        "core", "util", "utils", "impl", "internal", "common", "client", "server", "main",
+        "init", "event", "events", "config", "loader", "launch", "mixin", "mixins", "fabric",
+        "forge", "neoforge", "minecraft", "mojang", "lwjgl", "spongepowered", "objectweb",
+        "asm", "google", "apache", "jetbrains", "slf4j", "logback", "kotlin", "scala",
+    ];
+    let mut found: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("at ") else {
+            continue;
+        };
+        let Some(open) = rest.find('(') else {
+            continue;
+        };
+        let full = rest[..open].trim();
+        // 去掉方法名只留类路径；Mixin 的 Foo$Bar 统一成点号
+        let Some((class_path, _)) = full.rsplit_once('.') else {
+            continue;
+        };
+        let normalized = class_path.replace('$', ".");
+        for segment in normalized.split('.').take(4) {
+            let word = segment.trim();
+            if word.len() < 4 || word.chars().all(|ch| ch.is_ascii_digit()) {
+                continue;
+            }
+            if NOISE.contains(&word.to_ascii_lowercase().as_str()) {
+                continue;
+            }
+            if found.iter().any(|item| item.eq_ignore_ascii_case(word)) {
+                continue;
+            }
+            found.push(word.to_string());
+        }
+        if found.len() >= 10 {
+            break;
+        }
+    }
+    found
+}
+
+/// 关键字与 Mod 的 id / 文件名做模糊比对，作为最后一步兜底。
+fn locate_by_keywords(mods: &[ModFile], keywords: &[String]) -> Vec<CrashSuspect> {
+    let mut result: Vec<CrashSuspect> = Vec::new();
+    for keyword in keywords {
+        let needle = keyword.to_ascii_lowercase().replace('_', "");
+        if needle.len() < 4 {
+            continue;
+        }
+        let hit = mods.iter().find(|mod_file| {
+            let id = mod_file.mod_id.to_ascii_lowercase().replace('_', "");
+            let file = mod_file.file_name.to_ascii_lowercase().replace('_', "");
+            (id.len() >= 4 && (id.contains(&needle) || needle.contains(&id)))
+                || file.contains(&needle)
+        });
+        let Some(hit) = hit else {
+            continue;
+        };
+        if result.iter().any(|item| item.file_name == hit.file_name) {
+            continue;
+        }
+        result.push(CrashSuspect {
+            name: if hit.display_name.is_empty() {
+                if hit.mod_id.is_empty() {
+                    hit.file_name.clone()
+                } else {
+                    hit.mod_id.clone()
+                }
+            } else {
+                hit.display_name.clone()
+            },
+            file_name: hit.file_name.clone(),
+            package: keyword.clone(),
             reason: "stack".into(),
         });
         if result.len() >= 3 {
@@ -1241,9 +1534,11 @@ fn launcher_fatal(text: &str) -> bool {
     .any(|pattern| lowered.contains(pattern))
 }
 
-pub fn analyze(cfg: &Config, version_id: &str) -> Result<CrashReport> {
+pub fn analyze(cfg: &Config, version_id: &str, exit_code: Option<i32>) -> Result<CrashReport> {
     let game_dir = instance::game_dir(cfg, version_id);
     let latest_log = game_dir.join("logs").join("latest.log");
+    // latest.log 会被截断，debug.log 更完整；两者都读，堆栈更不容易丢
+    let debug_log = game_dir.join("logs").join("debug.log");
     // 启动器的 stderr 记录：JVM 在 Minecraft 日志初始化前失败（如类路径重复、
     // Java 参数错误）时，错误只出现在这里，游戏目录里的 latest.log 是上一次运行
     let launcher_log = crate::config::data_dir().join("logs").join("game.log");
@@ -1291,6 +1586,7 @@ pub fn analyze(cfg: &Config, version_id: &str) -> Result<CrashReport> {
         (crash_report.as_ref(), "crash-report", crash_report.is_some()),
         (hs_err.as_ref(), "hs-err", hs_err.is_some()),
         (Some(&latest_log), "latest-log", latest_log.exists()),
+        (Some(&debug_log), "debug-log", debug_log.exists()),
         (Some(&launcher_log), "launcher-log", launcher_failed),
     ] {
         if let Some(path) = path {
@@ -1345,16 +1641,30 @@ pub fn analyze(cfg: &Config, version_id: &str) -> Result<CrashReport> {
             combined.push_str(&read_text(path));
         }
     }
+    if debug_log.exists() && debug_log != primary {
+        combined.push('\n');
+        combined.push_str(&read_text(&debug_log));
+    }
 
     context.problematic_frame = problematic_frame(&combined);
 
     let description = description_of(&text);
-    let mut matches = matches_in(&combined);
+    // 退出码闸门：正常退出（0）且没有新的崩溃报告时，
+    // 日志里的异常只是历史残留，不应判成崩溃
+    let clean_exit = exit_code == Some(0) && !crash_fresh && !hs_err_fresh && !launcher_failed;
+    let mut matches = if clean_exit {
+        Vec::new()
+    } else {
+        matches_in(&combined)
+    };
 
     // 可疑 Mod：堆栈包名优先，其次是模块冲突名，最后是崩溃报告自带的 Suspected Mods
     let packages = suspicious_packages(&combined);
     let modules = module_conflicts(&combined);
-    let mods = if packages.is_empty() && modules.is_empty() && !combined.contains("Suspected Mod") {
+    // 正常退出时不需要扫 mods（读几百个 jar 很慢），也不该给出可疑 Mod
+    let mods = if clean_exit
+        || (packages.is_empty() && modules.is_empty() && !combined.contains("Suspected Mod"))
+    {
         Vec::new()
     } else {
         scan_mods(cfg, version_id)
@@ -1389,6 +1699,19 @@ pub fn analyze(cfg: &Config, version_id: &str) -> Result<CrashReport> {
             }
         }
     }
+    // 包名对不上任何 jar 时，用堆栈里的类名 / 包名片段再做一次模糊匹配
+    if suspects.len() < 3 && !mods.is_empty() {
+        let keywords = stack_keywords(&combined);
+        for suspect in locate_by_keywords(&mods, &keywords) {
+            if suspects.iter().any(|item| item.file_name == suspect.file_name) {
+                continue;
+            }
+            suspects.push(suspect);
+            if suspects.len() >= 3 {
+                break;
+            }
+        }
+    }
 
     // CustomSkinLoader 的模块冲突非常常见，命中时直接给出针对该 Mod 的结论
     let csl_conflict = modules
@@ -1412,7 +1735,9 @@ pub fn analyze(cfg: &Config, version_id: &str) -> Result<CrashReport> {
     apply_context(&mut matches, &context);
     attach_suspects(&mut matches, &suspects);
 
-    let headline = if source_kind == "crash-report" {
+    let headline = if clean_exit {
+        "上次运行正常退出（代码 0），日志里的异常不代表崩溃".into()
+    } else if source_kind == "crash-report" {
         description
             .as_ref()
             .map(|value| format!("崩溃原因：{value}"))
@@ -1545,7 +1870,8 @@ pub fn export(cfg: &Config, version_id: &str) -> Result<String> {
 }
 
 fn export_to(cfg: &Config, version_id: &str, dir: &Path) -> Result<String> {
-    let report = analyze(cfg, version_id)?;
+    // 导出是用户主动操作，拿不到本次退出码，按正常流程分析
+    let report = analyze(cfg, version_id, None)?;
     fs::create_dir_all(dir)?;
     let safe_id: String = version_id
         .chars()
@@ -1649,9 +1975,74 @@ mod tests {
         let report = matches_in(text);
         let ids: Vec<&str> = report.iter().map(|item| item.id.as_str()).collect();
         assert!(ids.contains(&"out-of-memory"));
-        assert!(ids.contains(&"graphics"));
-        // 高优先级排前面
         assert_eq!(report[0].id, "out-of-memory");
+    }
+
+    /// 分级短路：低一级的规则不应该和高优先规则一起堆到结果里
+    #[test]
+    fn short_circuits_on_highest_tier() {
+        let text = "java.lang.OutOfMemoryError: Java heap space\nGLFW error 65543: Failed to create window";
+        let report = matches_in(text);
+        assert!(report.iter().all(|item| item.id != "graphics"));
+        assert!(report
+            .iter()
+            .all(|item| tier_of(item.priority) == tier_of(report[0].priority)));
+    }
+
+    /// 包名对不上 jar 时，用堆栈里的类名 / 包名片段兜底定位 Mod
+    #[test]
+    fn stack_keywords_locate_mod_by_name() {
+        let text = "\tat com.example.coolmod.mixin.CoreMixin$Inner.apply(CoreMixin.java:12)\n\tat net.minecraft.client.Minecraft.run(Minecraft.java:1)";
+        let keywords = stack_keywords(text);
+        assert!(keywords
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case("coolmod")));
+        assert!(!keywords
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case("minecraft")));
+
+        let mods = vec![ModFile {
+            file_name: "CoolMod-1.0.jar".into(),
+            mod_id: "coolmod".into(),
+            display_name: "Cool Mod".into(),
+            packages: Vec::new(),
+        }];
+        let suspects = locate_by_keywords(&mods, &keywords);
+        assert_eq!(suspects.len(), 1);
+        assert_eq!(suspects[0].file_name, "CoolMod-1.0.jar");
+    }
+
+    /// 退出码为 0 时，latest.log 里的历史异常不应该被当成崩溃
+    #[test]
+    fn clean_exit_suppresses_stale_log_errors() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("docl-crash-exit-{stamp}"));
+        let logs = root.join("versions").join("testpack").join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(
+            logs.join("latest.log"),
+            "java.lang.OutOfMemoryError: Java heap space\n",
+        )
+        .unwrap();
+
+        let mut cfg = crate::config::Config::default();
+        cfg.game_dir = root.to_string_lossy().to_string();
+        cfg.version_isolation = true;
+
+        let clean = analyze(&cfg, "testpack", Some(0)).unwrap();
+        assert!(clean.found);
+        assert!(clean.matches.is_empty(), "正常退出不应产生崩溃结论");
+
+        let crashed = analyze(&cfg, "testpack", Some(1)).unwrap();
+        assert!(crashed
+            .matches
+            .iter()
+            .any(|item| item.id == "out-of-memory"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 外部启动器生成的清单重复列库时，NeoForge 引导器直接报 Duplicate key
@@ -1846,7 +2237,7 @@ mod tests {
         cfg.game_dir = root.to_string_lossy().to_string();
         cfg.version_isolation = true;
 
-        let report = analyze(&cfg, "testpack").unwrap();
+        let report = analyze(&cfg, "testpack", None).unwrap();
         assert!(report.found);
         assert_eq!(report.source_kind, "crash-report");
         assert!(
@@ -1868,5 +2259,77 @@ mod tests {
         assert!(Path::new(&path).is_file());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 仓库根目录的规则文件会由 CDN 直接下发，格式写错就等于线上规则不可用。
+    #[test]
+    fn shipped_rules_file_is_valid() {
+        let file: RemoteRuleFile = serde_json::from_str(include_str!("../../crash-rules.json"))
+            .expect("规则文件应当可解析");
+        let rules = sanitize(file.rules);
+        assert!(!rules.is_empty());
+        assert!(rules.iter().all(|rule| !rule.patterns.is_empty()));
+        // id 重复会让两条规则互相覆盖，直接拒绝
+        let mut ids: Vec<&str> = rules.iter().map(|rule| rule.id.as_str()).collect();
+        ids.sort_unstable();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(before, ids.len(), "规则 id 存在重复");
+    }
+
+    #[test]
+    fn remote_rules_are_sanitized() {
+        let rules = sanitize(vec![
+            RemoteRule {
+                id: "test-remote".into(),
+                title: "远端测试规则".into(),
+                summary: String::new(),
+                patterns: vec!["REMOTE_TOKEN".into()],
+                advice: vec!["按提示处理".into()],
+                links: Vec::new(),
+                priority: 64,
+                category: "mod".into(),
+                match_mode: String::new(),
+            },
+            RemoteRule {
+                id: "   ".into(),
+                title: "缺少 id".into(),
+                summary: String::new(),
+                patterns: vec!["x".into()],
+                advice: Vec::new(),
+                links: Vec::new(),
+                priority: 1,
+                category: String::new(),
+                match_mode: "all".into(),
+            },
+        ]);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].patterns[0], "remote_token");
+        // 缺省或写错一律按 any 处理
+        assert_eq!(rules[0].match_mode, "any");
+        assert!(rule_matches(&rules[0], "java.lang.exception: remote_token found"));
+    }
+
+    #[test]
+    fn rule_match_all_requires_every_pattern() {
+        let rule = RemoteRule {
+            id: "test-all".into(),
+            title: "组合规则".into(),
+            summary: String::new(),
+            patterns: vec!["alpha".into(), "beta".into()],
+            advice: Vec::new(),
+            links: Vec::new(),
+            priority: 70,
+            category: "mod".into(),
+            match_mode: "all".into(),
+        };
+        assert!(rule_matches(&rule, "alpha and beta"));
+        assert!(!rule_matches(&rule, "alpha only"));
+
+        let any_rule = RemoteRule {
+            match_mode: "any".into(),
+            ..rule.clone()
+        };
+        assert!(rule_matches(&any_rule, "alpha only"));
     }
 }

@@ -1,0 +1,394 @@
+{
+  "rules_version": 2,
+  "rules": [
+    {
+      "id": "mod-extracted",
+      "title": "Mod 文件被解压",
+      "summary": "mods 目录里放的是解压后的文件夹，而不是 jar 文件，加载器会直接拒绝启动。",
+      "patterns": [
+        "extracted mod jars found",
+        "the directories below appear to be extracted jar files"
+      ],
+      "advice": [
+        "打开 mods 目录，删掉被解压出来的文件夹，只保留 .jar 文件。",
+        "Mod 不需要解压，把压缩包原样放进 mods 即可。"
+      ],
+      "links": [],
+      "priority": 74,
+      "category": "mod"
+    },
+    {
+      "id": "optifine-sodium",
+      "title": "OptiFine 与 Sodium / Embeddium 同时安装",
+      "summary": "两个渲染优化 Mod 功能重复，同时安装会互相覆盖渲染流程，表现为 Mixin 注入失败或渲染异常。",
+      "match": "all",
+      "patterns": [
+        "optifine",
+        "sodium"
+      ],
+      "advice": [
+        "只保留其中一个：用 OptiFine 就删掉 Sodium / Embeddium，反之亦然。",
+        "如果是整合包自带，在版本设置 → 模组里禁用其中一个后重试。"
+      ],
+      "links": [],
+      "priority": 78,
+      "category": "mod"
+    },
+    {
+      "id": "night-config-bug",
+      "title": "NightConfig 解析异常",
+      "summary": "配置文件读取到一半就结束了，通常是配置文件损坏或写入不完整。",
+      "patterns": [
+        "com.electronwill.nightconfig.core.io.parsingexception: not enough data available"
+      ],
+      "advice": [
+        "删掉 config 目录下最近改动过的 .toml 文件，让 Mod 重新生成。",
+        "如果只想改单个 Mod 的设置，先备份 config 目录再删除。"
+      ],
+      "links": [],
+      "priority": 60,
+      "category": "mod"
+    },
+    {
+      "id": "disk-full",
+      "title": "磁盘空间不足",
+      "summary": "系统无法写入文件，通常是游戏目录所在磁盘已经写满。",
+      "patterns": [
+        "no space left on device",
+        "not enough space on the disk",
+        "there is not enough space on the disk"
+      ],
+      "advice": [
+        "清理游戏目录所在磁盘，至少留出几个 GB 再启动。",
+        "可以删掉 logs、crash-reports、旧版本和下载缓存；整合包较大时建议把游戏目录移到空间更大的盘。"
+      ],
+      "links": [],
+      "priority": 86,
+      "category": "file"
+    },
+    {
+      "id": "long-path",
+      "title": "文件路径过长或含非法字符",
+      "summary": "Windows 对路径长度和字符有限制，过深的目录会让游戏读不到文件。",
+      "patterns": [
+        "filename or extension is too long",
+        "invalidpathexception"
+      ],
+      "advice": [
+        "把游戏目录移到更短的位置，例如 D:\\Games\\Minecraft，避免多层嵌套的中文目录。",
+        "如果目录名里有特殊符号，改成字母、数字、减号或下划线后重试。"
+      ],
+      "links": [],
+      "priority": 70,
+      "category": "file"
+    },
+    {
+      "id": "vcredist-missing",
+      "title": "缺少 Microsoft Visual C++ 运行库",
+      "summary": "系统缺少 Java 或本地库依赖的 VC++ 运行库，进程无法正常启动。",
+      "patterns": [
+        "0xc000007b",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "vcruntime140.dll"
+      ],
+      "advice": [
+        "安装 Microsoft Visual C++ Redistributable（x64），装完重启一次。",
+        "如果已经装过，尝试修复安装或换成最新版本。"
+      ],
+      "links": [
+        {
+          "label": "下载 VC++ 运行库",
+          "url": "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist"
+        }
+      ],
+      "priority": 88,
+      "category": "java"
+    },
+    {
+      "id": "java-32bit-lowmem",
+      "title": "32 位 Java 无法分配内存",
+      "summary": "32 位 Java 的堆内存上限约 1.5 GB，分配到 1 GB 以上时可能直接失败。",
+      "match": "all",
+      "patterns": [
+        "could not reserve enough space",
+        "for 1048576kb object heap"
+      ],
+      "advice": [
+        "换成 64 位 Java，再按需要调整内存。",
+        "在「设置 → Java 运行时」里确认选中的是 64 位版本，必要时手动添加 64 位 JDK 路径。"
+      ],
+      "links": [],
+      "priority": 92,
+      "category": "java"
+    },
+    {
+      "id": "java-bitness-mismatch",
+      "title": "Java 位数与本地库不匹配",
+      "summary": "64 位系统上的 32 位 Java 无法加载 64 位的本地库，反之亦然。",
+      "patterns": [
+        "can't load this .dll on a amd 64-bit platform",
+        "can't load this .dll on a x86 platform"
+      ],
+      "advice": [
+        "换成与系统位数一致的 Java，64 位系统请使用 64 位 Java。",
+        "如果混装过多个 Java，检查版本设置里是否固定到了错误的路径。"
+      ],
+      "links": [],
+      "priority": 82,
+      "category": "java"
+    },
+    {
+      "id": "java-too-new",
+      "title": "Java 版本过高",
+      "summary": "当前 Java 太新，游戏或加载器使用了已被移除的内部接口。",
+      "patterns": [
+        "nosuchfieldexception: ucp",
+        "because module java.base does not export",
+        "classnotfoundexception: jdk.nashorn.api.scripting.nashornscriptenginefactory",
+        "classnotfoundexception: java.lang.invoke.lambdametafactory"
+      ],
+      "advice": [
+        "换成更低版本的 Java：1.16 及以下用 Java 8，1.17~1.20.4 用 17，1.20.5+ 才用 21。",
+        "在「设置 → Java 运行时」里改选匹配的版本后重新启动。"
+      ],
+      "links": [],
+      "priority": 84,
+      "category": "java"
+    },
+    {
+      "id": "jdk-or-openj9",
+      "title": "使用了 JDK 或 OpenJ9",
+      "summary": "游戏依赖的部分实现与 JDK / OpenJ9 不兼容，常见于被强制指定了这类运行时。",
+      "patterns": [
+        "classcastexception: java.base/jdk",
+        "open j9 is not supported",
+        ".j9vminternals."
+      ],
+      "advice": [
+        "换用标准 HotSpot 的 JRE/JDK（Temurin、Zulu、Corretto 均可），不要用 OpenJ9。",
+        "在「设置 → Java 运行时」里重新选择一个普通 JDK 路径。"
+      ],
+      "links": [],
+      "priority": 84,
+      "category": "java"
+    },
+    {
+      "id": "gpu-driver-crash",
+      "title": "显卡驱动导致 JVM 崩溃",
+      "summary": "崩溃日志的本机代码栈指向显卡驱动模块，通常由驱动版本或兼容性引起。",
+      "patterns": [
+        "# c  [ig",
+        "# c  [atio",
+        "# c  [nvoglv"
+      ],
+      "advice": [
+        "到显卡厂商官网更新驱动，不要依赖系统自动安装的版本。",
+        "日志里 # C 后面的模块名可以确认厂商：ig = Intel、atio = AMD、nvoglv = NVIDIA。",
+        "更新后仍崩溃，可尝试关闭光影、降低渲染距离，或在启动器设置里关闭硬件加速相关选项。"
+      ],
+      "links": [],
+      "priority": 78,
+      "category": "graphics"
+    },
+    {
+      "id": "opengl-1282",
+      "title": "光影或资源包导致 OpenGL 报错",
+      "summary": "渲染指令被显卡拒绝，常见于光影包与当前显卡或驱动不兼容。",
+      "patterns": [
+        "1282: invalid operation"
+      ],
+      "advice": [
+        "先关闭光影，确认游戏能正常启动。",
+        "再逐个启用光影或资源包，定位是哪一个引起的问题。"
+      ],
+      "links": [],
+      "priority": 72,
+      "category": "graphics"
+    },
+    {
+      "id": "texture-too-large",
+      "title": "材质过大或显存不足",
+      "summary": "资源包贴图超出显卡或内存能承受的范围，游戏在加载材质时崩溃。",
+      "patterns": [
+        "maybe try a lower resolution resourcepack?"
+      ],
+      "advice": [
+        "换用分辨率更低的资源包，或先移除高清材质再启动。",
+        "同时调低渲染距离与光影质量。"
+      ],
+      "links": [],
+      "priority": 68,
+      "category": "graphics"
+    },
+    {
+      "id": "optifine-forge-incompatible",
+      "title": "OptiFine 与当前 Forge 版本不兼容",
+      "summary": "OptiFine 调用的原版方法在当前 Forge / 游戏版本里已经改变，导致 NoSuchMethodError。",
+      "patterns": [
+        "spritecontents.<init>",
+        "rendersystem.getbackenddescription",
+        "bakedquad.<init>",
+        "forgegui.renderselecteditemname",
+        "font.ellipsize"
+      ],
+      "advice": [
+        "换成与当前游戏版本、Forge 版本匹配的 OptiFine 构建。",
+        "如果整合包已带优化 Mod，建议直接删掉 OptiFine。"
+      ],
+      "links": [],
+      "priority": 84,
+      "category": "mod"
+    },
+    {
+      "id": "shadersmod-optifine",
+      "title": "ShadersMod 与 OptiFine 同时安装",
+      "summary": "OptiFine 已内置光影支持，再装 ShadersMod 会直接冲突。",
+      "patterns": [
+        "shaders mod detected. please remove it"
+      ],
+      "advice": [
+        "删除 ShadersMod，光影交给 OptiFine 自带的功能即可。"
+      ],
+      "links": [],
+      "priority": 80,
+      "category": "mod"
+    },
+    {
+      "id": "mixinbootstrap-missing",
+      "title": "缺少 MixinBootstrap",
+      "summary": "旧版 Forge 需要 MixinBootstrap 才能加载 Mixin，缺失时启动直接失败。",
+      "patterns": [
+        "org.spongepowered.asm.launch.mixintweaker"
+      ],
+      "advice": [
+        "安装与当前 Forge 版本匹配的 MixinBootstrap。",
+        "装好后如果仍报错，把 Mod 文件名前加一个英文感叹号再试。"
+      ],
+      "links": [],
+      "priority": 82,
+      "category": "mod"
+    },
+    {
+      "id": "mod-name-special-char",
+      "title": "Mod 文件名包含特殊字符",
+      "summary": "Mod 文件名中的特殊字符会被当成非法的模块名，加载器无法识别。",
+      "patterns": [
+        "invalid module name: '' is not a java identifier"
+      ],
+      "advice": [
+        "把 Mod 文件名改成只含英文字母、数字、减号、下划线和点。",
+        "中文名、括号、空格都可能触发这个问题。"
+      ],
+      "links": [],
+      "priority": 78,
+      "category": "mod"
+    },
+    {
+      "id": "mod-id-limit",
+      "title": "Mod 过多导致方块 / 物品 ID 超限",
+      "summary": "旧版本游戏的 ID 空间被 Mod 占满，超出上限后无法继续注册。",
+      "patterns": [
+        "maximum id range exceeded"
+      ],
+      "advice": [
+        "减少 Mod 数量，或换用 1.13 以上不再受 ID 限制的版本。",
+        "优先移除内容量大的 Mod（新增方块、物品较多的）。"
+      ],
+      "links": [],
+      "priority": 76,
+      "category": "mod"
+    },
+    {
+      "id": "mod-config-corrupt",
+      "title": "Mod 配置文件损坏",
+      "summary": "读取 Mod 配置文件时失败，通常是文件写坏或格式不完整。",
+      "patterns": [
+        "failed loading config file"
+      ],
+      "advice": [
+        "备份后删除 config 目录下对应的配置文件，让 Mod 重新生成。",
+        "如果是整合包，重新导入一次整合包通常能恢复默认配置。"
+      ],
+      "links": [],
+      "priority": 76,
+      "category": "mod"
+    },
+    {
+      "id": "file-signer-mismatch",
+      "title": "文件签名校验失败",
+      "summary": "同一个包里的类来自不同签名的 jar，通常是手动替换或混装了不同来源的文件。",
+      "patterns": [
+        "signer information does not match"
+      ],
+      "advice": [
+        "删掉被手动替换过的 jar，重新从官方来源下载。",
+        "确认没有把不同版本的 Mod 复制进同一个 mods 目录。"
+      ],
+      "links": [],
+      "priority": 74,
+      "category": "file"
+    },
+    {
+      "id": "forge-incomplete",
+      "title": "Forge 安装不完整",
+      "summary": "Forge 的启动目标或依赖路径缺失，通常是安装过程被中断。",
+      "patterns": [
+        "cannot find launch target fmlclient",
+        "invalid paths argument, contained no existing paths"
+      ],
+      "advice": [
+        "在版本设置里点「重装加载器」，或直接删除该版本重新安装。",
+        "安装过程中不要关闭启动器或断网，安装完成前不要启动游戏。"
+      ],
+      "links": [],
+      "priority": 88,
+      "category": "loader"
+    },
+    {
+      "id": "multiple-forge-in-json",
+      "title": "版本 JSON 中存在多个 Forge",
+      "summary": "同一份版本清单里写了不止一个 Forge 版本，启动器无法判断该用哪个。",
+      "patterns": [
+        "found multiple arguments for option fml.forgeversion"
+      ],
+      "advice": [
+        "这个实例多半是由其他启动器生成的，建议重新安装一次 Forge。",
+        "也可以打开 versions 下该版本的 json，删掉重复的 forge 参数。"
+      ],
+      "links": [],
+      "priority": 86,
+      "category": "loader"
+    },
+    {
+      "id": "block-entity-crash",
+      "title": "特定方块或实体导致崩溃",
+      "summary": "崩溃报告中给出了方块或实体的具体位置，问题来自世界中的某个对象。",
+      "patterns": [
+        "block location: world:",
+        "entity's exact location:"
+      ],
+      "advice": [
+        "新建一个世界测试：新世界正常说明是该存档里的方块或实体有问题。",
+        "先用备份恢复存档；没有备份时可以用区块修复工具处理对应坐标。"
+      ],
+      "links": [],
+      "priority": 60,
+      "category": "world"
+    },
+    {
+      "id": "debug-crash-manual",
+      "title": "玩家手动触发的调试崩溃",
+      "summary": "这是游戏内主动触发的调试崩溃，不是真正的故障。",
+      "patterns": [
+        "manually triggered debug crash"
+      ],
+      "advice": [
+        "这是按 F3 + C 手动触发的调试崩溃，用来生成崩溃报告，可以忽略。",
+        "如果没有主动触发过，检查键盘是不是误触了 F3 + C。"
+      ],
+      "links": [],
+      "priority": 40,
+      "category": "other"
+    }
+  ]
+}

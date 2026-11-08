@@ -783,10 +783,11 @@ pub fn instance_world_seed(
 pub async fn crash_analyze(
     state: State<'_, AppState>,
     version_id: String,
+    exit_code: Option<i32>,
 ) -> CmdResult<crash::CrashReport> {
     let cfg = state.config.lock().unwrap().clone();
     // 会扫描 mods 目录、读大日志并检测 Java，放到阻塞线程池避免卡界面
-    tokio::task::spawn_blocking(move || crash::analyze(&cfg, &version_id))
+    tokio::task::spawn_blocking(move || crash::analyze(&cfg, &version_id, exit_code))
         .await
         .map_err(|error| format!("分析崩溃日志失败：{error}"))?
         .map_err(err)
@@ -1168,7 +1169,9 @@ pub async fn repair_instance(
     app: AppHandle,
     state: State<'_, AppState>,
     version_id: String,
+    options: Option<repair::RepairOptions>,
 ) -> CmdResult<repair::RepairReport> {
+    let options = options.unwrap_or_default();
     let cfg = state.config.lock().unwrap().clone();
     {
         let guard = state.progress.lock().unwrap();
@@ -1183,12 +1186,69 @@ pub async fn repair_instance(
     *state.progress.lock().unwrap() = Some(progress.clone());
     download::reset_failed_batch();
 
-    let result = repair::run(&app, &state.client, &cfg, &version_id, progress.clone()).await;
+    let result = repair::run(
+        &app,
+        &state.client,
+        &cfg,
+        &version_id,
+        &options,
+        progress.clone(),
+    )
+    .await;
 
     progress.active.store(false, Ordering::Relaxed);
     download::emit_now(&app, &progress);
     *state.progress.lock().unwrap() = None;
 
+    result.map_err(err)
+}
+
+/// 还原最近一次一键修复前的备份文件。
+#[tauri::command]
+pub fn repair_restore(state: State<'_, AppState>, version_id: String) -> CmdResult<usize> {
+    let cfg = state.config.lock().unwrap().clone();
+    repair::restore(&cfg, &version_id).map_err(err)
+}
+
+/// 检查实例有没有装光影加载器，没有就给出推荐
+#[tauri::command]
+pub fn shader_support(state: State<'_, AppState>, version_id: String) -> crate::moddeps::ShaderSupport {
+    let cfg = state.config.lock().unwrap().clone();
+    crate::moddeps::shader_support(&cfg, &version_id)
+}
+
+/// 给实例装一个推荐的光影加载器（Iris / Oculus）
+#[tauri::command]
+pub async fn install_shader_loader(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    version_id: String,
+) -> CmdResult<String> {
+    {
+        let guard = state.progress.lock().unwrap();
+        if let Some(p) = guard.as_ref() {
+            if p.active.load(Ordering::Relaxed) {
+                return Err("已有下载任务正在进行".into());
+            }
+        }
+    }
+    let cfg = state.config.lock().unwrap().clone();
+    let progress = ProgressState::new("shader");
+    *state.progress.lock().unwrap() = Some(progress.clone());
+    download::begin_stage(&app, &progress, "准备安装光影加载器…");
+
+    let result = crate::moddeps::install_shader_loader(
+        &app,
+        &state.client,
+        &cfg,
+        &version_id,
+        progress.clone(),
+    )
+    .await;
+
+    progress.active.store(false, Ordering::Relaxed);
+    download::emit_now(&app, &progress);
+    *state.progress.lock().unwrap() = None;
     result.map_err(err)
 }
 
@@ -1969,6 +2029,16 @@ async fn resolve_account(app: &AppHandle, state: &AppState, cfg: &Config) -> Acc
     account
 }
 
+/// 启动前自检：只读检查版本清单、客户端 jar、启动库、重复 Mod、磁盘与路径。
+#[tauri::command]
+pub fn preflight_check(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> CmdResult<crate::preflight::PreflightReport> {
+    let cfg = instance::apply(&state.config.lock().unwrap().clone(), &version_id);
+    Ok(crate::preflight::check(&cfg, &version_id))
+}
+
 #[tauri::command]
 pub async fn launch_version(
     app: AppHandle,
@@ -2082,8 +2152,31 @@ pub fn server_stop() -> CmdResult<()> {
 }
 
 #[tauri::command]
-pub async fn terracotta_prepare(state: State<'_, AppState>) -> CmdResult<terracotta::TcStatus> {
-    terracotta::prepare(&state.client).await.map_err(err)
+pub async fn terracotta_prepare(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CmdResult<terracotta::TcStatus> {
+    {
+        // 进度槽是全局共用的，别的下载还在跑时不能抢
+        let guard = state.progress.lock().unwrap();
+        if let Some(p) = guard.as_ref() {
+            if p.active.load(Ordering::Relaxed) {
+                return Err("已有下载任务正在进行".into());
+            }
+        }
+    }
+    // 组件本身不大，但走国内加速源可能要几分钟，用同一条下载进度展示
+    let progress = ProgressState::new("terracotta");
+    *state.progress.lock().unwrap() = Some(progress.clone());
+    // 进度条刷新由这里的 ticker 负责，下载过程只更新计数与文案
+    download::begin_stage(&app, &progress, "准备陶瓦联机…");
+
+    let result = terracotta::prepare(&state.client, Some(progress.clone())).await;
+
+    progress.active.store(false, Ordering::Relaxed);
+    download::emit_now(&app, &progress);
+    *state.progress.lock().unwrap() = None;
+    result.map_err(err)
 }
 
 #[tauri::command]

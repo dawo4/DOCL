@@ -74,7 +74,7 @@ async function load() {
   loading.value = true;
   error.value = "";
   try {
-    report.value = await api.crashAnalyze(versionId);
+    report.value = await api.crashAnalyze(versionId, store.crashExitCode);
   } catch (err) {
     report.value = null;
     error.value = String(err);
@@ -113,7 +113,9 @@ async function runRepair() {
   if (!versionId || repairing.value) return;
   repairing.value = true;
   try {
-    const result = await repairInstance(versionId);
+    // 把命中的规则带进去，修复才能针对具体原因下手
+    const rules = (report.value?.matches ?? []).map((item) => item.id);
+    const result = await repairInstance(versionId, { rules });
     if (!result) return;
     close();
     const parts: string[] = [];
@@ -124,6 +126,11 @@ async function runRepair() {
       parts.push(`禁用 ${result.disabled_mods.length} 个重复模组`);
     if (result.incompatible_mods.length)
       parts.push(`禁用 ${result.incompatible_mods.length} 个不兼容模组`);
+    if (result.java_switched) parts.push("切换 Java");
+    if (result.config_reset) parts.push("重置 Mod 配置");
+    if (result.loader_reinstalled) parts.push("重装加载器");
+    if (result.deps_installed.length)
+      parts.push(`补装 ${result.deps_installed.length} 个前置`);
     const pending = result.issues.length + result.files_failed.length;
     if (parts.length) {
       notify(

@@ -522,3 +522,140 @@ pub async fn install_missing(
 
     report
 }
+
+/// 按 mod id 列表补齐前置（一键修复用）。
+/// 只有在 Modrinth 上能明确解析到当前加载器 / 游戏版本的文件才会下载，其余记为未解决。
+pub async fn install_requirements(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &Config,
+    instance_id: &str,
+    ids: &[String],
+    progress: Arc<ProgressState>,
+) -> DependencyReport {
+    let mut report = DependencyReport::default();
+    if ids.is_empty() {
+        return report;
+    }
+    let Ok(mods_dir) = instance::content_dir(cfg, instance_id, "mods") else {
+        return report;
+    };
+    let (loader, game_version) = instance_env(cfg, instance_id);
+
+    let mut resolved = Vec::new();
+    for id in ids {
+        if resolved.len() >= MAX_AUTO_DEPS {
+            break;
+        }
+        let Some(item) = resolve(client, id, &loader, &game_version).await else {
+            report.unresolved.push(id.clone());
+            continue;
+        };
+        resolved.push(item);
+    }
+
+    for item in resolved {
+        if progress.is_cancelled() {
+            break;
+        }
+        progress.set_message(format!("补齐前置 {}…", item.name));
+        download::emit_now(app, &progress);
+        let task = FileTask {
+            url: item.url,
+            dest: mods_dir.join(&item.file_name),
+            sha1: None,
+            size: item.size,
+            label: item.file_name.clone(),
+        };
+        match download::run_tasks(app, client, vec![task], 1, cfg.use_mirror(), progress.clone()).await {
+            Ok(()) => report.installed.push(item.name),
+            Err(_) => report.failed.push(item.name),
+        }
+    }
+
+    report
+}
+
+/// 光影加载器检测结果：有没有装、装的是哪个、没装时推荐哪个
+#[derive(Debug, Clone, Serialize)]
+pub struct ShaderSupport {
+    pub loader: String,
+    pub game_version: String,
+    /// 已检测到的光影加载器；空表示没有
+    pub provider: Option<String>,
+    /// 推荐安装的 Modrinth 项目 id
+    pub recommend: Option<String>,
+    pub recommend_label: Option<String>,
+}
+
+/// 只在本地扫描 mods 目录，不联网
+pub fn shader_support(cfg: &Config, version_id: &str) -> ShaderSupport {
+    let (loader, game_version) = instance_env(cfg, version_id);
+    let mut provider: Option<&str> = None;
+    if let Ok(dir) = instance::content_dir(cfg, version_id, "mods") {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if !name.ends_with(".jar") {
+                continue;
+            }
+            if name.contains("iris") {
+                provider = Some("Iris");
+                break;
+            }
+            if name.contains("oculus") {
+                provider = Some("Oculus");
+            } else if provider.is_none() && name.contains("optifine") {
+                provider = Some("OptiFine");
+            }
+        }
+    }
+    let (recommend, recommend_label) = match loader.as_str() {
+        "fabric" | "quilt" | "neoforge" => (Some("iris".to_string()), Some("Iris".to_string())),
+        "forge" => (Some("oculus".to_string()), Some("Oculus".to_string())),
+        _ => (None, None),
+    };
+    ShaderSupport {
+        loader,
+        game_version,
+        provider: provider.map(str::to_string),
+        recommend,
+        recommend_label,
+    }
+}
+
+/// 给实例装上一个推荐的光影加载器，返回装上的名字
+pub async fn install_shader_loader(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &Config,
+    instance_id: &str,
+    progress: Arc<ProgressState>,
+) -> anyhow::Result<String> {
+    let support = shader_support(cfg, instance_id);
+    if let Some(provider) = support.provider.clone() {
+        return Ok(provider);
+    }
+    let Some(project) = support.recommend.clone() else {
+        anyhow::bail!("原版实例没有光影支持，建议先安装 Fabric + Iris，或改装 OptiFine");
+    };
+    let Some(item) = resolve(client, &project, &support.loader, &support.game_version).await
+    else {
+        anyhow::bail!(
+            "没找到与 {} {} 匹配的光影加载器，请手动下载",
+            support.loader,
+            support.game_version
+        );
+    };
+    let mods_dir = instance::content_dir(cfg, instance_id, "mods")?;
+    progress.set_message(format!("正在安装 {}…", item.name));
+    download::emit_now(app, &progress);
+    let task = FileTask {
+        url: item.url,
+        dest: mods_dir.join(&item.file_name),
+        sha1: None,
+        size: item.size,
+        label: item.file_name.clone(),
+    };
+    download::run_tasks(app, client, vec![task], 1, cfg.use_mirror(), progress.clone()).await?;
+    Ok(item.name)
+}

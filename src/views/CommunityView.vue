@@ -19,6 +19,7 @@ import {
   downloadModpack,
   importModpack,
   installCfFile,
+  installShaderLoader,
   notify,
   openInstance,
   refreshVersions,
@@ -273,6 +274,15 @@ const filesLoading = ref(false);
 const filesError = ref("");
 /// 文件列表按 MC 版本筛选的 tab
 const versionTab = ref("all");
+/// 光影类目下自动检测出的加载器推荐（缺加载器时展示）
+const shaderLoaderHint = ref<{
+  name: string;
+  summary: string;
+  /// 推荐的光影加载器项目；原版实例没有
+  project: CfProject | null;
+  /// 原版实例需要先装的加载器
+  vanilla: { loader: string; gameVersion: string } | null;
+} | null>(null);
 
 const showImport = ref(false);
 const packPath = ref("");
@@ -346,6 +356,11 @@ const visibleFiles = computed(() =>
 watch([active, files], () => {
   versionTab.value = "all";
 });
+
+/// 进入光影包详情或切换实例时，自动检测并展示缺失的光影加载器
+watch([active, instanceId, () => props.kind], () => {
+  void loadShaderLoaderHint();
+});
 const parentOptions = computed(() =>
   store.installed
     .filter((item) => !item.dependency)
@@ -408,6 +423,10 @@ const loader = computed(() => {
   }
   return null;
 });
+/// 加载器筛选只对 Mod 和整合包有意义；光影/资源包/数据包带上它会被筛成 0 条
+const searchLoader = computed(() =>
+  props.kind === "mods" || props.kind === "modpacks" ? loader.value : null
+);
 const activeSources = computed<SourceKey[]>(() =>
   source.value === "all" ? ["curseforge", "modrinth"] : [source.value]
 );
@@ -599,7 +618,7 @@ async function fetchBucket(key: SourceKey, offset: number) {
           CLASS_IDS[props.kind] ?? 6,
           query.value,
           version,
-          loader.value,
+          searchLoader.value,
           offset,
           Number(sortField.value),
           cfCategory
@@ -608,7 +627,7 @@ async function fetchBucket(key: SourceKey, offset: number) {
           props.kind,
           query.value,
           version,
-          loader.value,
+          searchLoader.value,
           offset,
           Number(sortField.value),
           mrCategory
@@ -761,6 +780,60 @@ function install(project: CfProject, file: CfFileView) {
     file.file_name,
     `${project.name} ${file.name}`
   );
+}
+
+/// 进入光影包详情时自动检测实例的光影加载器，缺了就给出推荐项
+async function loadShaderLoaderHint() {
+  shaderLoaderHint.value = null;
+  const target = instanceId.value;
+  if (props.kind !== "shaders" || !target) return;
+  try {
+    const support = await api.shaderSupport(target);
+    if (support.provider) return;
+    if (support.recommend) {
+      shaderLoaderHint.value = {
+        name: support.recommend_label ?? support.recommend,
+        summary: "装好这个光影加载器，光影包才能在当前实例生效",
+        project: null,
+        vanilla: null,
+      };
+      try {
+        const list = await api.contentProjects("modrinth", [support.recommend]);
+        const project =
+          list.find((item) => item.id === support.recommend) ?? list[0] ?? null;
+        if (project) {
+          shaderLoaderHint.value = {
+            name: project.name,
+            summary: project.summary,
+            project,
+            vanilla: null,
+          };
+          void loadTranslations([project]);
+          void loadChineseNames([project]);
+        }
+      } catch {
+        // 取不到项目详情就保留占位推荐
+      }
+      return;
+    }
+    shaderLoaderHint.value = {
+      name: "Fabric",
+      summary: "原版实例需要先装 Fabric，再装 Iris 才能加载光影",
+      project: null,
+      vanilla: { loader: "fabric", gameVersion: support.game_version },
+    };
+  } catch {
+    shaderLoaderHint.value = null;
+  }
+}
+
+/// 点击推荐项：直接装光影加载器；原版实例只是提示，不跳转
+async function installHintLoader() {
+  const hint = shaderLoaderHint.value;
+  const target = instanceId.value;
+  if (!hint || !target || hint.vanilla) return;
+  const installed = await installShaderLoader(target);
+  if (installed) shaderLoaderHint.value = null;
 }
 
 function releaseTag(type: number) {
@@ -1241,6 +1314,50 @@ async function confirmImport() {
               复制名称
             </button>
           </div>
+        </div>
+      </div>
+
+      <div v-if="shaderLoaderHint" class="card card-pad shader-loader reveal">
+        <span class="cf-deps__title">光影加载器</span>
+        <div class="cf-deps__list">
+          <component
+            :is="shaderLoaderHint.vanilla ? 'div' : 'button'"
+            class="cf-dep"
+            :class="{ 'cf-dep--static': shaderLoaderHint.vanilla }"
+            :type="shaderLoaderHint.vanilla ? undefined : 'button'"
+            @click="installHintLoader"
+          >
+            <img
+              v-if="shaderLoaderHint.project?.logo_url"
+              class="cf-dep__logo"
+              :src="shaderLoaderHint.project.logo_url"
+              alt=""
+            />
+            <span v-else class="cf-dep__logo cf-dep__logo--empty" />
+            <div class="cf-dep__text">
+              <strong>
+                {{
+                  shaderLoaderHint.project
+                    ? displayName(shaderLoaderHint.project)
+                    : shaderLoaderHint.name
+                }}
+              </strong>
+              <span>
+                {{
+                  shaderLoaderHint.project
+                    ? displaySummary(shaderLoaderHint.project)
+                    : shaderLoaderHint.summary
+                }}
+              </span>
+            </div>
+            <span class="tag">{{ shaderLoaderHint.vanilla ? "加载器" : "Modrinth" }}</span>
+            <AppIcon
+              v-if="!shaderLoaderHint.vanilla"
+              class="shader-loader__go"
+              name="download"
+              :size="14"
+            />
+          </component>
         </div>
       </div>
 
@@ -2141,6 +2258,26 @@ async function confirmImport() {
   border-radius: 4px;
   border: 1px solid var(--line);
   background: var(--panel-2);
+}
+
+.shader-loader {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.shader-loader__go {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.cf-dep--static {
+  cursor: default;
+}
+
+.cf-dep--static:hover {
+  background: transparent;
+  border-color: transparent;
 }
 
 .cf-deps__title {

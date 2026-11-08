@@ -14,6 +14,7 @@ import {
   type InstanceMeta,
   type JavaInfo,
   type LogLine,
+  type PreflightIssue,
   type ProgressSnapshot,
   type SystemMemory,
   type UpdateInfo,
@@ -35,6 +36,7 @@ export const store = reactive({
   instanceId: null as string | null,
   /// 实例内容被外部改动（例如拖入导入）后自增，用于通知已打开的实例页刷新
   contentRevision: 0,
+
   metas: {} as Record<string, InstanceMeta>,
   communityContext: null as {
     kind: string;
@@ -94,6 +96,14 @@ export const store = reactive({
     current?: number;
     /// 「仍然启动」时重跑这次启动（跳过预检）
     retry?: () => void;
+  },
+  /// 启动前自检弹窗
+  preflightPrompt: null as null | {
+    versionId: string;
+    issues: PreflightIssue[];
+    blocking: boolean;
+    /// 「仍然启动」时重跑这次启动（跳过自检）
+    retry: () => void;
   },
   /// 打开设置页时要定位的分类（打开后被设置页消费并清空）
   settingsFocus: null as string | null,
@@ -562,7 +572,10 @@ export async function retryFailedDownloads() {
 }
 
 /// 一键自愈：修清单、补缺失文件、禁用重复模组
-export async function repairInstance(versionId: string) {
+export async function repairInstance(
+  versionId: string,
+  options?: import("./api").RepairOptions
+) {
   if (store.installingId) {
     notify("已有下载任务正在进行", "err");
     return null;
@@ -576,7 +589,7 @@ export async function repairInstance(versionId: string) {
   store.downloadPanel = "open";
   primeProgress("repair", "准备检查版本文件…");
   try {
-    return await api.repairInstance(versionId);
+    return await api.repairInstance(versionId, options);
   } catch (err) {
     store.lastJobError = String(err);
     notify(`修复失败：${String(err)}`, "err");
@@ -586,6 +599,39 @@ export async function repairInstance(versionId: string) {
     window.setTimeout(() => {
       if (!store.progress?.active) store.progress = null;
     }, 800);
+  }
+}
+
+/// 给实例装一个推荐的光影加载器（Iris / Oculus）
+export async function installShaderLoader(versionId: string) {
+  if (store.installingId) {
+    notify("已有下载任务正在进行", "err");
+    return null;
+  }
+  store.installingId = versionId;
+  primeProgress("download", "正在安装光影加载器…");
+  try {
+    const name = await api.installShaderLoader(versionId);
+    notify(`已安装 ${name}，进游戏就能加载光影了`);
+    return name;
+  } catch (err) {
+    notify(`安装光影加载器失败：${String(err)}`, "err");
+    return null;
+  } finally {
+    store.installingId = null;
+    store.progress = null;
+  }
+}
+
+/// 还原最近一次一键修复前的备份
+export async function restoreRepairBackup(versionId: string) {
+  try {
+    const count = await api.repairRestore(versionId);
+    notify(`已还原 ${count} 个文件`);
+    return count;
+  } catch (err) {
+    notify(`还原失败：${String(err)}`, "err");
+    return 0;
   }
 }
 
@@ -729,10 +775,40 @@ function javaMismatchMessage(target: string, required: number, current: number) 
   return `「${target}」需要 Java ${required}，当前手动指定的是 Java ${current}，不适用。启动器会自动改用本机匹配的运行时；如果本机没有，启动会失败。`;
 }
 
+/// 本会话内已经确认过「只有警告」的实例，避免每次启动都弹同一个框
+const preflightConfirmed = new Set<string>();
+
+/// 启动前自检。返回 false 表示发现问题、已弹出提示，本次不应继续启动。
+async function preflightGate(target: string, retry: () => void): Promise<boolean> {
+  let issues: PreflightIssue[];
+  try {
+    issues = (await api.preflightCheck(target)).issues;
+  } catch {
+    // 自检本身出错时放行，不能因为它挡住正常启动
+    return true;
+  }
+  if (!issues.length) return true;
+  const blocking = issues.some((issue) => issue.blocking);
+  if (!blocking && preflightConfirmed.has(target)) return true;
+  store.preflightPrompt = {
+    versionId: target,
+    issues,
+    blocking,
+    retry: () => {
+      if (!blocking) preflightConfirmed.add(target);
+      retry();
+    },
+  };
+  return false;
+}
+
 /// Java 预检是异步的，期间挡住重复点击，避免同时拉起两个进程
 let launchGuard = false;
 
-export async function launchVersion(id?: string, opts?: { skipJavaCheck?: boolean }) {
+export async function launchVersion(
+  id?: string,
+  opts?: { skipJavaCheck?: boolean; skipPreflight?: boolean }
+) {
   const target = id ?? selectedVersion.value?.id;
   if (!target) {
     notify("请先安装一个游戏版本", "err");
@@ -763,6 +839,19 @@ export async function launchVersion(id?: string, opts?: { skipJavaCheck?: boolea
       return;
     }
   }
+  if (!opts?.skipPreflight) {
+    launchGuard = true;
+    let passed = true;
+    try {
+      passed = await preflightGate(
+        target,
+        () => void launchVersion(target, { skipJavaCheck: true, skipPreflight: true })
+      );
+    } finally {
+      launchGuard = false;
+    }
+    if (!passed) return;
+  }
   store.runningVersionId = target;
   store.stoppedByUser = false;
   store.gameRunning = true;
@@ -784,7 +873,11 @@ export async function launchVersion(id?: string, opts?: { skipJavaCheck?: boolea
   }
 }
 
-export async function launchServer(address: string, id?: string, opts?: { skipJavaCheck?: boolean }) {
+export async function launchServer(
+  address: string,
+  id?: string,
+  opts?: { skipJavaCheck?: boolean; skipPreflight?: boolean }
+) {
   const target = id ?? selectedVersion.value?.id;
   if (!target) {
     notify("请先安装一个游戏版本", "err");
@@ -813,6 +906,19 @@ export async function launchServer(address: string, id?: string, opts?: { skipJa
       };
       return;
     }
+  }
+  if (!opts?.skipPreflight) {
+    launchGuard = true;
+    let passed = true;
+    try {
+      passed = await preflightGate(
+        target,
+        () => void launchServer(address, target, { skipJavaCheck: true, skipPreflight: true })
+      );
+    } finally {
+      launchGuard = false;
+    }
+    if (!passed) return;
   }
   store.runningVersionId = target;
   store.stoppedByUser = false;

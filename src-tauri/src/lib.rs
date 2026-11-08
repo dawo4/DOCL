@@ -27,6 +27,7 @@ mod models;
 mod news;
 mod pclimport;
 mod ping;
+mod preflight;
 mod probes;
 mod repair;
 mod server;
@@ -105,6 +106,12 @@ pub fn run() {
                     }
                 });
             }
+            // 崩溃规则：先读本地缓存，再后台拉取最新；失败时保留内置规则
+            crash::load_cached_rules();
+            let rules_client = http::client();
+            tauri::async_runtime::spawn(async move {
+                let _ = crash::refresh_rules(&rules_client).await;
+            });
             Ok(())
         })
         .manage(AppState {
@@ -176,6 +183,9 @@ pub fn run() {
             commands::instance_context,
             commands::check_instance_files,
             commands::repair_instance,
+            commands::repair_restore,
+            commands::shader_support,
+            commands::install_shader_loader,
             gameopts::game_options_presets,
             gameopts::save_game_options_preset,
             gameopts::apply_game_options_preset,
@@ -226,6 +236,7 @@ pub fn run() {
             commands::java_runtime_majors,
             commands::install_java,
             commands::delete_java,
+            commands::preflight_check,
             commands::launch_version,
             commands::launch_server,
             commands::lan_rooms,

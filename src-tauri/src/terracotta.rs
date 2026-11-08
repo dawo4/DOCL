@@ -1,13 +1,15 @@
 use crate::config;
-use crate::download;
+use crate::download::ProgressState;
 use anyhow::{anyhow, bail, Context, Result};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 const PKG_URL: &str =
@@ -15,6 +17,14 @@ const PKG_URL: &str =
 const PKG_SHA1: &str = "4d634eff075da6cf86514ec88f34168620b60991";
 const PKG_EXE: &str = "terracotta-0.4.2-windows-x86_64.exe";
 const BIN_NAME: &str = "terracotta.exe";
+
+/// GitHub Releases 在国内经常连不上，按顺序再试几个公共加速前缀。
+/// 组件包带 SHA1 校验，经由任何中转下载都不会被污染。
+const GH_PROXIES: [&str; 3] = [
+    "https://gh-proxy.com/",
+    "https://ghfast.top/",
+    "https://ghproxy.net/",
+];
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct TcStatus {
@@ -68,7 +78,87 @@ fn hide_console(command: &mut Command) {
     }
 }
 
-async fn ensure_binary(client: &reqwest::Client) -> Result<PathBuf> {
+/// 下载地址：官方直链优先（挂了代理时最快），失败再依次走加速前缀。
+fn package_urls() -> Vec<String> {
+    let mut urls = vec![PKG_URL.to_string()];
+    for prefix in GH_PROXIES {
+        urls.push(format!("{prefix}{PKG_URL}"));
+    }
+    urls
+}
+
+/// 下载单个源，边下边更新进度。组件包只有 8 MB 左右，
+/// 但走国内加速源可能要几分钟，没有进度用户会以为卡死。
+async fn fetch_one(
+    url: &str,
+    client: &reqwest::Client,
+    progress: Option<&Arc<ProgressState>>,
+) -> Result<Vec<u8>> {
+    let response = client
+        .get(url)
+        .timeout(Duration::from_secs(600))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        bail!("HTTP {}", response.status());
+    }
+    let total = response.content_length().unwrap_or(0);
+    if let Some(progress) = progress {
+        progress.files_total.store(1, Ordering::Relaxed);
+        progress.files_done.store(0, Ordering::Relaxed);
+        progress.bytes_total.store(total, Ordering::Relaxed);
+        progress.bytes_done.store(0, Ordering::Relaxed);
+        progress.set_message("正在下载陶瓦联机组件…");
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer: Vec<u8> = Vec::with_capacity(total as usize);
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if let Some(progress) = progress {
+            progress
+                .bytes_done
+                .fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        }
+        buffer.extend_from_slice(&chunk);
+    }
+    if let Some(progress) = progress {
+        progress.files_done.store(1, Ordering::Relaxed);
+    }
+    Ok(buffer)
+}
+
+/// 逐个源重试，拿到内容后立刻校验 SHA1，校验不过直接换下一个源。
+async fn download_package(
+    client: &reqwest::Client,
+    progress: Option<&Arc<ProgressState>>,
+) -> Result<Vec<u8>> {
+    let mut last_err: Option<anyhow::Error> = None;
+    for url in package_urls() {
+        for attempt in 0..2 {
+            match fetch_one(&url, client, progress).await {
+                Ok(bytes) => {
+                    if format!("{:x}", Sha1::digest(&bytes)).eq_ignore_ascii_case(PKG_SHA1) {
+                        return Ok(bytes);
+                    }
+                    last_err = Some(anyhow!("组件校验失败（{url}）"));
+                    // 内容已经不对，重试同一个源没有意义
+                    break;
+                }
+                Err(err) => last_err = Some(err),
+            }
+            if attempt == 0 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("没有可用的下载地址")))
+}
+
+async fn ensure_binary(
+    client: &reqwest::Client,
+    progress: Option<&Arc<ProgressState>>,
+) -> Result<PathBuf> {
     let dir = terracotta_dir();
     std::fs::create_dir_all(&dir)?;
     let target = dir.join(BIN_NAME);
@@ -79,12 +169,11 @@ async fn ensure_binary(client: &reqwest::Client) -> Result<PathBuf> {
         return Ok(target);
     }
 
-    let bytes = download::get_bytes(client, PKG_URL, false)
+    let bytes = download_package(client, progress)
         .await
         .context("下载陶瓦联机组件失败，请检查网络后重试")?;
-    let actual = format!("{:x}", Sha1::digest(&bytes));
-    if !actual.eq_ignore_ascii_case(PKG_SHA1) {
-        bail!("陶瓦联机组件校验失败，文件可能已损坏，请稍后重试");
+    if let Some(progress) = progress {
+        progress.set_message("正在解压陶瓦联机组件…");
     }
     let pkg = dir.join("terracotta-pkg.tar.gz");
     std::fs::write(&pkg, &bytes)?;
@@ -204,7 +293,10 @@ async fn reachable(port: u16) -> bool {
 }
 
 /// 首次使用时下载并启动陶瓦联机组件，随后返回当前状态。
-pub async fn prepare(client: &reqwest::Client) -> Result<TcStatus> {
+pub async fn prepare(
+    client: &reqwest::Client,
+    progress: Option<Arc<ProgressState>>,
+) -> Result<TcStatus> {
     let _guard = prepare_lock().lock().await;
 
     if let Ok((port, _http)) = current() {
@@ -222,7 +314,10 @@ pub async fn prepare(client: &reqwest::Client) -> Result<TcStatus> {
         None => false,
     };
 
-    let exe = ensure_binary(client).await?;
+    let exe = ensure_binary(client, progress.as_ref()).await?;
+    if let Some(progress) = progress.as_ref() {
+        progress.set_message("正在启动陶瓦联机…");
+    }
     let (port, child) = start_process(&exe)?;
     let http = local_client();
     let version = match http
@@ -405,6 +500,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn package_urls_try_official_first_then_proxies() {
+        let urls = package_urls();
+        assert_eq!(urls[0], PKG_URL);
+        assert_eq!(urls.len(), GH_PROXIES.len() + 1);
+        for (index, prefix) in GH_PROXIES.iter().enumerate() {
+            assert_eq!(urls[index + 1], format!("{prefix}{PKG_URL}"));
+        }
+    }
+
+    #[test]
     fn parses_public_nodes() {
         let nodes = parse_nodes(
             "https://etnode.example.org/node1, https://etnode.example.org/node2\nhttps://etnode.example.org/node1 随便写的文字",
@@ -422,7 +527,7 @@ mod tests {
     #[ignore]
     async fn prepare_real_terracotta() {
         let client = crate::http::client();
-        let initial = prepare(&client).await.expect("准备陶瓦联机失败");
+        let initial = prepare(&client, None).await.expect("准备陶瓦联机失败");
         println!("{}", serde_json::to_string_pretty(&initial).unwrap_or_default());
         assert!(initial.running);
         let state = initial.state.clone().expect("缺少 state");

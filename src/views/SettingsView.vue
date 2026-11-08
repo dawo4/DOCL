@@ -255,6 +255,10 @@ const themes = [
   { value: "nocturne", label: "夜墨", colors: ["#1d1a16", "#c08a55", "#88a867"] },
   { value: "graphite", label: "石墨", colors: ["#1b1d20", "#9fb4c7", "#8aa88a"] },
   { value: "forge", label: "硬朗", colors: ["#0d1217", "#eef3f7", "#6fae67"] },
+  { value: "ink", label: "墨染", colors: ["#f2f1ec", "#2c2c2c", "#b23a2e"] },
+  { value: "neon", label: "霓虹", colors: ["#0b0a14", "#22d3ee", "#f472b6"] },
+  { value: "wheat", label: "麦田", colors: ["#f8f1dd", "#7a5a26", "#d0a12c"] },
+  { value: "snow", label: "雪原", colors: ["#f1f5f8", "#3b5f7f", "#7fb3c8"] },
 ];
 
 const builtinBackgrounds = [
@@ -264,6 +268,14 @@ const builtinBackgrounds = [
   { value: "sakura", label: "樱花季" },
   { value: "ocean", label: "深海波光" },
   { value: "aurora", label: "极光" },
+  { value: "parchment", label: "宣纸纹" },
+  { value: "porcelain", label: "青花瓷" },
+  { value: "cloud", label: "云海" },
+  { value: "mist", label: "薄雾" },
+  { value: "grid", label: "石墨网格" },
+  { value: "neon", label: "霓虹街区" },
+  { value: "wheat", label: "麦浪" },
+  { value: "snow", label: "雪原" },
 ];
 
 const radiusOptions = [
@@ -518,6 +530,22 @@ const presetPreview: Record<string, string> = {
   ocean: "linear-gradient(180deg, #dff1f7 0 36%, #5f9cb2 37% 66%, #2f6076 67%)",
   aurora:
     "radial-gradient(circle at 30% 25%, #78eabe 0 18%, transparent 40%), radial-gradient(circle at 70% 45%, #9682f0 0 14%, transparent 36%), linear-gradient(180deg, #101a2c 0 46%, #172a42 47% 72%, #101a2a 73%)",
+  parchment:
+    "radial-gradient(ellipse at 20% 16%, rgba(120,94,62,0.28), transparent 65%), linear-gradient(180deg, #f3ebd9 0 40%, #e9dcc3 41% 62%, #dbc8a8 63%)",
+  porcelain:
+    "radial-gradient(circle at 26% 22%, rgba(63,107,135,0.32), transparent 52%), radial-gradient(circle at 76% 68%, rgba(63,107,135,0.24), transparent 50%), linear-gradient(180deg, #f6faf8 0 40%, #e6f0ec 41% 66%, #d2e2dc 67%)",
+  cloud:
+    "radial-gradient(circle at 76% 18%, #fffcf0 0 8%, transparent 18%), radial-gradient(ellipse at 24% 70%, #ffffff 0 20%, transparent 50%), linear-gradient(180deg, #eaf1f7 0 44%, #d7e4ee 45% 68%, #bfd1df 69%)",
+  mist:
+    "radial-gradient(ellipse at 30% 28%, rgba(180,156,203,0.55), transparent 60%), radial-gradient(ellipse at 74% 74%, rgba(150,120,190,0.5), transparent 60%), linear-gradient(180deg, #f5f0fa 0 42%, #e7def3 43% 68%, #d5c7e6 69%)",
+  grid:
+    "radial-gradient(ellipse at 50% 0%, rgba(159,180,199,0.25), transparent 55%), linear-gradient(180deg, #14171a 0 46%, #1b1f24 47% 72%, #121518 73%)",
+  neon:
+    "radial-gradient(circle at 18% 24%, rgba(34,211,238,0.6) 0 16%, transparent 38%), radial-gradient(circle at 82% 36%, rgba(244,114,182,0.55) 0 14%, transparent 34%), linear-gradient(180deg, #0a0814 0 46%, #120f26 47% 72%, #0a0816 73%)",
+  wheat:
+    "radial-gradient(circle at 26% 18%, #fff4c8 0 9%, transparent 20%), radial-gradient(ellipse at 20% 108%, #b98f34 0 58%, transparent 59%), linear-gradient(180deg, #f8ecc4 0 46%, #ecd89b 47% 72%, #cda851 73%)",
+  snow:
+    "radial-gradient(circle at 74% 16%, #ffffff 0 8%, transparent 18%), radial-gradient(ellipse at 14% 108%, #e8f1f8 0 58%, transparent 59%), linear-gradient(180deg, #dfeefa 0 46%, #cbe1f1 47% 72%, #accbe4 73%)",
 };
 
 const hasBackground = computed(
@@ -3087,6 +3115,51 @@ async function removeJava(path: string) {
   background-image: radial-gradient(circle at 30% 25%, #78eabe 0 18%, transparent 40%),
     radial-gradient(circle at 70% 45%, #9682f0 0 14%, transparent 36%),
     linear-gradient(180deg, #101a2c 0 46%, #172a42 47% 72%, #101a2a 73%);
+}
+
+.bg-chip__swatch--parchment {
+  background-image: radial-gradient(ellipse at 20% 16%, rgba(120, 94, 62, 0.3), transparent 60%),
+    linear-gradient(180deg, #f3ebd9 0 40%, #e9dcc3 41% 62%, #dbc8a8 63%);
+}
+
+.bg-chip__swatch--porcelain {
+  background-image: radial-gradient(circle at 26% 22%, rgba(63, 107, 135, 0.35), transparent 52%),
+    radial-gradient(circle at 76% 68%, rgba(63, 107, 135, 0.26), transparent 50%),
+    linear-gradient(180deg, #f6faf8 0 40%, #e6f0ec 41% 66%, #d2e2dc 67%);
+}
+
+.bg-chip__swatch--cloud {
+  background-image: radial-gradient(circle at 76% 18%, #fffcf0 0 8%, transparent 18%),
+    radial-gradient(ellipse at 24% 70%, #ffffff 0 20%, transparent 50%),
+    linear-gradient(180deg, #eaf1f7 0 44%, #d7e4ee 45% 68%, #bfd1df 69%);
+}
+
+.bg-chip__swatch--mist {
+  background-image: radial-gradient(ellipse at 30% 28%, rgba(180, 156, 203, 0.6), transparent 60%),
+    radial-gradient(ellipse at 74% 74%, rgba(150, 120, 190, 0.55), transparent 60%),
+    linear-gradient(180deg, #f5f0fa 0 42%, #e7def3 43% 68%, #d5c7e6 69%);
+}
+
+.bg-chip__swatch--grid {
+  background-image: linear-gradient(180deg, #14171a 0 46%, #1b1f24 47% 72%, #121518 73%);
+}
+
+.bg-chip__swatch--neon {
+  background-image: radial-gradient(circle at 18% 24%, rgba(34, 211, 238, 0.65) 0 16%, transparent 38%),
+    radial-gradient(circle at 82% 36%, rgba(244, 114, 182, 0.6) 0 14%, transparent 34%),
+    linear-gradient(180deg, #0a0814 0 46%, #120f26 47% 72%, #0a0816 73%);
+}
+
+.bg-chip__swatch--wheat {
+  background-image: radial-gradient(circle at 26% 18%, #fff4c8 0 9%, transparent 20%),
+    radial-gradient(ellipse at 20% 108%, #b98f34 0 58%, transparent 59%),
+    linear-gradient(180deg, #f8ecc4 0 46%, #ecd89b 47% 72%, #cda851 73%);
+}
+
+.bg-chip__swatch--snow {
+  background-image: radial-gradient(circle at 74% 16%, #ffffff 0 8%, transparent 18%),
+    radial-gradient(ellipse at 14% 108%, #e8f1f8 0 58%, transparent 59%),
+    linear-gradient(180deg, #dfeefa 0 46%, #cbe1f1 47% 72%, #accbe4 73%);
 }
 
 .bg-chip__swatch--none {

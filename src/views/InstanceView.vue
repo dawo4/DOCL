@@ -37,6 +37,7 @@ import {
   refreshInstanceMetas,
   reinstallLoader,
   repairInstance,
+  restoreRepairBackup,
   store,
 } from "../store";
 import { ICON_PRESETS, formatBytes, formatDate, kindLabel } from "../utils";
@@ -608,6 +609,8 @@ function toggleFavorite() {
 
 async function loadFiles() {
   if (!store.instanceId) return;
+  // 概览/启动设置等非内容页也会触发刷新，别把空分类发给后端
+  if (!contentKind.value) return;
   if (tab.value === "datapacks" && !datapackWorld.value) {
     files.value = [];
     return;
@@ -784,6 +787,14 @@ const repairOpen = ref(false);
 const repairing = ref(false);
 const repairResult = ref<RepairReport | null>(null);
 const reinstalling = ref(false);
+/// 修复前的可选项：下载量大或会改设置的动作默认关闭
+const repairOptionsOpen = ref(false);
+const repairOptions = ref({
+  install_deps: false,
+  reset_graphics: false,
+  repair_assets: false,
+  reinstall_loader: false,
+});
 
 /// 只对标准加载器实例显示重装入口，整合包重装会破坏包内清单
 const canReinstallLoader = computed(() => {
@@ -820,7 +831,7 @@ async function runRepair() {
   repairing.value = true;
   repairResult.value = null;
   try {
-    const result = await repairInstance(versionId);
+    const result = await repairInstance(versionId, repairOptions.value);
     if (!result) return;
     repairResult.value = result;
     repairOpen.value = true;
@@ -851,8 +862,40 @@ const repairLines = computed(() => {
     );
   if (result.missing_deps.length)
     lines.push(`缺少前置模组：${result.missing_deps.slice(0, 6).join("、")}`);
+  if (result.broken_mods?.length)
+    lines.push(
+      `发现 ${result.broken_mods.length} 个损坏的 Mod 文件：${result.broken_mods
+        .slice(0, 4)
+        .join("、")}`
+    );
+  if (result.deps_installed?.length)
+    lines.push(`已自动补装前置：${result.deps_installed.slice(0, 5).join("、")}`);
+  if (result.java_switched) lines.push(`已切换 Java：${result.java_switched}`);
+  if (result.graphics_reset) lines.push("画质相关选项已调低（渲染距离 / 阴影 / 粒子）");
+  if (result.assets_restored)
+    lines.push(`补全了 ${result.assets_restored} 个资源文件`);
+  if (result.config_reset) lines.push("已备份并清空 config 目录，Mod 会重新生成配置");
+  if (result.loader_reinstalled) lines.push("已重装加载器（mods 与存档保留）");
   return lines;
 });
+
+/// 还原本次修复改动过的文件
+const restoring = ref(false);
+async function undoRepair() {
+  const versionId = store.instanceId;
+  if (!versionId || restoring.value) return;
+  restoring.value = true;
+  try {
+    const count = await restoreRepairBackup(versionId);
+    if (count > 0) {
+      repairOpen.value = false;
+      await refreshFiles();
+      notify("已还原到修复前的状态，重新启动后生效");
+    }
+  } finally {
+    restoring.value = false;
+  }
+}
 
 /// 修复结果里仍然需要手动处理的问题
 const repairProblems = computed(() => {
@@ -1215,7 +1258,7 @@ function launch() {
           variant="soft"
           :size="34"
           :disabled="repairing"
-          @click="runRepair"
+          @click="repairOptionsOpen = true"
         />
         <IconButton
           icon="search"
@@ -2073,6 +2116,59 @@ function launch() {
     </WoodModal>
 
     <WoodModal
+      v-if="repairOptionsOpen"
+      title="一键修复"
+      :width="470"
+      @close="repairOptionsOpen = false"
+    >
+      <div class="check-body">
+        <p class="muted small">
+          会修版本清单、补回缺失文件、重解本地库，并禁用重复或不兼容的模组。
+          下面几项需要联网下载或修改设置，按需勾选：
+        </p>
+        <label class="repair-option">
+          <input v-model="repairOptions.install_deps" type="checkbox" />
+          <span>
+            <strong>自动补装缺失前置</strong>
+            <em>从 Modrinth 下载缺少的前置 Mod，可能涉及多个文件</em>
+          </span>
+        </label>
+        <label class="repair-option">
+          <input v-model="repairOptions.reset_graphics" type="checkbox" />
+          <span>
+            <strong>重置画质</strong>
+            <em>把渲染距离、阴影、粒子调低，会修改 options.txt</em>
+          </span>
+        </label>
+        <label class="repair-option">
+          <input v-model="repairOptions.repair_assets" type="checkbox" />
+          <span>
+            <strong>校验并补全资源文件</strong>
+            <em>补齐缺失的声音与语言文件，可能需要下载数百 MB</em>
+          </span>
+        </label>
+        <label class="repair-option">
+          <input v-model="repairOptions.reinstall_loader" type="checkbox" />
+          <span>
+            <strong>加载器损坏时重装</strong>
+            <em>只清加载器产物，mods 与存档保留；会重新下载依赖</em>
+          </span>
+        </label>
+      </div>
+      <template #footer>
+        <WoodButton variant="ghost" size="sm" @click="repairOptionsOpen = false">取消</WoodButton>
+        <WoodButton
+          variant="primary"
+          size="sm"
+          :disabled="repairing"
+          @click="repairOptionsOpen = false; runRepair()"
+        >
+          开始修复
+        </WoodButton>
+      </template>
+    </WoodModal>
+
+    <WoodModal
       v-if="repairOpen && repairResult"
       title="一键修复结果"
       :width="470"
@@ -2110,6 +2206,15 @@ function launch() {
           @click="reinstallCurrentLoader"
         >
           {{ reinstalling ? "正在重装…" : "重装加载器" }}
+        </WoodButton>
+        <WoodButton
+          v-if="repairResult?.backup_dir"
+          variant="ghost"
+          size="sm"
+          :disabled="restoring"
+          @click="undoRepair"
+        >
+          {{ restoring ? "还原中…" : "还原修复前状态" }}
         </WoodButton>
         <WoodButton variant="ghost" size="sm" @click="repairOpen = false">关闭</WoodButton>
         <WoodButton variant="soft" size="sm" @click="openVersionFolder">
@@ -2818,6 +2923,41 @@ function launch() {
   list-style: none;
   max-height: 260px;
   overflow-y: auto;
+}
+
+.repair-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-2);
+  cursor: pointer;
+}
+
+.repair-option input {
+  margin-top: 3px;
+  accent-color: var(--moss);
+}
+
+.repair-option span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.repair-option strong {
+  font-size: 12.5px;
+  color: var(--walnut-deep);
+}
+
+.repair-option em {
+  font-style: normal;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
 }
 
 .check-item {

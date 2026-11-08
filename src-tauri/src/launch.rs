@@ -192,6 +192,17 @@ pub fn build(
     // minecraft 模块导出同一批包直接崩（ResolutionException）。
     // 注意官方清单没有 kind 字段，不能拿 kind 判断是否需要复制
     let mut jar_id = merged.jar_id.clone();
+    // FML 11（NeoForge 26+）只要在 classpath 上看到 Minecraft 类就判定为开发环境，
+    // 要求补丁 jar 带 Minecraft-Dists；生产模式下它自己按 libraryDirectory 定位
+    // 补丁客户端与加载器本体，所以版本 jar 不能进 classpath。
+    let fml_startup = detail
+        .main_class
+        .as_deref()
+        .map(|name| name.starts_with("net.neoforged.fml.startup"))
+        .unwrap_or(false);
+    if fml_startup {
+        jar_id = None;
+    }
     if let Some(source_id) = jar_id.as_deref() {
         if source_id != version_id {
             let source = game_root

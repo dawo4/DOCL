@@ -26,6 +26,7 @@ import {
   launchVersion,
   loadBackground,
   notify,
+  repairInstance,
   startupUpdate,
   store,
   type Page,
@@ -208,6 +209,31 @@ function retryLaunchWithJava() {
   retry?.();
 }
 
+const preflightRepairing = ref(false);
+
+/// 自检提示里点「仍然启动」
+function retryLaunchAfterPreflight() {
+  const retry = store.preflightPrompt?.retry;
+  store.preflightPrompt = null;
+  retry?.();
+}
+
+/// 自检提示里直接跑一键修复，修完重新走一遍启动流程
+async function repairFromPreflight() {
+  const prompt = store.preflightPrompt;
+  if (!prompt || preflightRepairing.value) return;
+  preflightRepairing.value = true;
+  try {
+    const result = await repairInstance(prompt.versionId);
+    if (!result) return;
+    store.preflightPrompt = null;
+    notify("修复完成，正在重新检查…");
+    await launchVersion(prompt.versionId);
+  } finally {
+    preflightRepairing.value = false;
+  }
+}
+
 /// 按设置里的更新策略在启动时静默检查；失败不打扰用户。
 async function checkStartupUpdate() {
   const config = store.config;
@@ -349,6 +375,61 @@ const currentView = computed(() => views[store.page as Page]);
       </template>
     </WoodModal>
 
+    <WoodModal
+      v-if="store.preflightPrompt"
+      title="启动前检查"
+      :width="480"
+      :z-index="120"
+      @close="store.preflightPrompt = null"
+    >
+      <p class="java-prompt__text">
+        {{
+          store.preflightPrompt.blocking
+            ? "发现会阻止启动的问题，建议先修复再启动："
+            : "发现一些可能影响游戏运行的问题："
+        }}
+      </p>
+      <ul class="preflight-list">
+        <li v-for="issue in store.preflightPrompt.issues" :key="issue.id">
+          <span
+            class="preflight-list__tag"
+            :class="{ 'preflight-list__tag--warn': !issue.blocking }"
+          >
+            {{ issue.blocking ? "必须处理" : "注意" }}
+          </span>
+          <div class="preflight-list__body">
+            <strong>{{ issue.title }}</strong>
+            <span>{{ issue.detail }}</span>
+          </div>
+        </li>
+      </ul>
+      <p class="java-prompt__hint muted small">
+        自检不会修改任何文件；一键修复会先备份再处理。
+      </p>
+      <template #footer>
+        <WoodButton variant="ghost" size="sm" @click="store.preflightPrompt = null">
+          取消
+        </WoodButton>
+        <WoodButton
+          v-if="store.preflightPrompt.issues.some((issue) => issue.fixable)"
+          variant="soft"
+          size="sm"
+          :disabled="preflightRepairing"
+          @click="repairFromPreflight"
+        >
+          {{ preflightRepairing ? "修复中…" : "一键修复" }}
+        </WoodButton>
+        <WoodButton
+          v-if="!store.preflightPrompt.blocking"
+          variant="primary"
+          size="sm"
+          @click="retryLaunchAfterPreflight"
+        >
+          仍然启动
+        </WoodButton>
+      </template>
+    </WoodModal>
+
     <Transition name="drop">
       <div v-if="dropActive" class="drop-hint">
         <div class="drop-hint__card">
@@ -385,6 +466,60 @@ const currentView = computed(() => views[store.page as Page]);
 .java-prompt__hint {
   margin: 0;
   line-height: 1.7;
+}
+
+.preflight-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.preflight-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel-2);
+}
+
+.preflight-list__tag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+}
+
+.preflight-list__tag--warn {
+  background: color-mix(in srgb, var(--amber) 22%, transparent);
+  color: color-mix(in srgb, var(--amber) 72%, var(--walnut-deep));
+}
+
+.preflight-list__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.preflight-list__body strong {
+  font-size: 12.5px;
+  color: var(--walnut-deep);
+}
+
+.preflight-list__body span {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--muted);
+  word-break: break-all;
 }
 
 .drop-hint {
