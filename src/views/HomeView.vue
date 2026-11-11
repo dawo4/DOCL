@@ -291,7 +291,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   gap: 7px;
   padding: 4px 10px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 0;
   font-size: 11px;
   color: var(--ink-soft);
   background: rgba(255, 255, 255, 0.03);
@@ -301,7 +301,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
 .home__dot {
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: 0;
   background: var(--moss-bright);
   box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.55);
 }
@@ -326,11 +326,17 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   gap: 10px;
   min-height: 0;
   padding: 16px;
-  border: 1px solid var(--line);
+  /* 启动台主卡：和按键同源的 2px 浮雕外框 */
+  border: 2px solid var(--frame);
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
   border-radius: var(--radius);
   background:
     radial-gradient(120% 70% at 50% 0%, color-mix(in srgb, var(--ambient) 14%, transparent), transparent 66%),
     linear-gradient(180deg, var(--panel-2), var(--panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel) 46%, #fff);
   overflow: hidden;
 }
 
@@ -408,25 +414,30 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   height: 44px;
   flex-shrink: 0;
   border: 1px solid var(--btn-border);
-  border-radius: var(--radius-sm);
-  background: linear-gradient(180deg, var(--btn-a), var(--btn-b) 55%, var(--btn-c));
+  border-bottom-width: 5px;
+  border-radius: 2px;
+  background: var(--btn-b);
+  border-bottom-color: color-mix(in srgb, var(--btn-b) 56%, #000);
   color: var(--btn-fg);
   font-size: 14px;
   font-weight: 800;
   letter-spacing: 0.04em;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.32);
   cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
   transition:
-    filter var(--dur-2) ease,
-    transform var(--dur-2) var(--ease-out-expo);
+    background var(--dur-1) ease,
+    border-color var(--dur-1) ease,
+    transform var(--dur-1) ease;
 }
 
 .play:hover:not(:disabled) {
-  filter: brightness(1.07);
+  background: var(--btn-a);
+  border-bottom-color: color-mix(in srgb, var(--btn-a) 56%, #000);
 }
 
 .play:active:not(:disabled) {
-  transform: translateY(1px);
+  transform: translateY(4px);
+  border-bottom-width: 1px;
 }
 
 .play:disabled {
@@ -436,8 +447,14 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
 
 .play--stop {
   border-color: #6d3a33;
-  background: linear-gradient(180deg, #d07161, #bd5c4e 55%, #a54a3f);
+  border-bottom-color: #7c382e;
+  background: #bd5c4e;
   color: #fff5f2;
+}
+
+.play--stop:hover:not(:disabled) {
+  background: #c96a5b;
+  border-bottom-color: #7c382e;
 }
 
 .cover__row {
@@ -509,7 +526,11 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   max-height: 280px;
   overflow-y: auto;
   padding: 5px;
-  border: 1px solid var(--line-strong);
+  border: 2px solid var(--frame);
+  border-top-color: color-mix(in srgb, var(--frame) 62%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 62%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 76%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 76%, #000);
   border-radius: var(--radius-sm);
   background: var(--panel-2);
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.42);
@@ -646,10 +667,14 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   min-height: 0;
   margin: 0;
   padding: 14px 16px;
-  border: 1px solid var(--line);
+  border: 2px solid var(--frame);
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
   border-radius: var(--radius);
   background: var(--panel);
-  box-shadow: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel) 46%, #fff);
   overflow: hidden;
 }
 

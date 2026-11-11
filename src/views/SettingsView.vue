@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿﻿<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -81,7 +81,6 @@ const form = reactive<Config>({
   profile_hero_image: null,
   profile_card_image: null,
   profile_text_color: null,
-  ui_radius: "default",
   ui_font: "default",
   ui_density: "normal",
   window_vibrancy: false,
@@ -120,7 +119,6 @@ const autoSaveKeys: (keyof Config)[] = [
   "profile_hero_image",
   "profile_card_image",
   "profile_text_color",
-  "ui_radius",
   "ui_font",
   "ui_density",
   "animations",
@@ -252,19 +250,16 @@ const themes = [
   { value: "sakura", label: "樱花", colors: ["#fdf1f2", "#b0566e", "#d99aab"] },
   { value: "ocean", label: "深海", colors: ["#eaf2f6", "#2f6076", "#3e8c8c"] },
   { value: "lavender", label: "香芋", colors: ["#f3eff8", "#6d5590", "#b49ccb"] },
-  { value: "nocturne", label: "夜墨", colors: ["#1d1a16", "#c08a55", "#88a867"] },
   { value: "graphite", label: "石墨", colors: ["#1b1d20", "#9fb4c7", "#8aa88a"] },
   { value: "forge", label: "硬朗", colors: ["#0d1217", "#eef3f7", "#6fae67"] },
   { value: "ink", label: "墨染", colors: ["#f2f1ec", "#2c2c2c", "#b23a2e"] },
   { value: "neon", label: "霓虹", colors: ["#0b0a14", "#22d3ee", "#f472b6"] },
-  { value: "wheat", label: "麦田", colors: ["#f8f1dd", "#7a5a26", "#d0a12c"] },
-  { value: "snow", label: "雪原", colors: ["#f1f5f8", "#3b5f7f", "#7fb3c8"] },
+  { value: "launcher", label: "官方", colors: ["#1d1d1d", "#6cc349", "#3c8527"] },
 ];
 
 const builtinBackgrounds = [
   { value: "forest", label: "林间晨雾" },
   { value: "dune", label: "赤陶沙丘" },
-  { value: "night", label: "夜航星空" },
   { value: "sakura", label: "樱花季" },
   { value: "ocean", label: "深海波光" },
   { value: "aurora", label: "极光" },
@@ -274,14 +269,6 @@ const builtinBackgrounds = [
   { value: "mist", label: "薄雾" },
   { value: "grid", label: "石墨网格" },
   { value: "neon", label: "霓虹街区" },
-  { value: "wheat", label: "麦浪" },
-  { value: "snow", label: "雪原" },
-];
-
-const radiusOptions = [
-  { value: "sharp", label: "硬朗直角" },
-  { value: "default", label: "标准圆角" },
-  { value: "round", label: "柔和圆润" },
 ];
 
 const densityOptions = [
@@ -380,11 +367,10 @@ watch(
 );
 
 watch(
-  () => [form.background_dim, form.ui_radius, form.ui_font, form.ui_density],
+  () => [form.background_dim, form.ui_font, form.ui_density],
   () => {
     if (!store.config) return;
     store.config.background_dim = form.background_dim;
-    store.config.ui_radius = form.ui_radius;
     store.config.ui_font = form.ui_font;
     store.config.ui_density = form.ui_density;
   }
@@ -525,7 +511,6 @@ const fitOptions = [
 const presetPreview: Record<string, string> = {
   forest: "linear-gradient(180deg, #b7ccb0 0 40%, #7d9a6b 41% 60%, #45603c 61%)",
   dune: "linear-gradient(180deg, #f7dfc0 0 40%, #d9a97f 41% 60%, #a8623f 61%)",
-  night: "linear-gradient(180deg, #141d2e 0 46%, #1e2c42 47% 72%, #16202e 73%)",
   sakura: "linear-gradient(180deg, #fdeef2 0 38%, #f8d7e1 39% 66%, #e6a3ba 67%)",
   ocean: "linear-gradient(180deg, #dff1f7 0 36%, #5f9cb2 37% 66%, #2f6076 67%)",
   aurora:
@@ -542,10 +527,6 @@ const presetPreview: Record<string, string> = {
     "radial-gradient(ellipse at 50% 0%, rgba(159,180,199,0.25), transparent 55%), linear-gradient(180deg, #14171a 0 46%, #1b1f24 47% 72%, #121518 73%)",
   neon:
     "radial-gradient(circle at 18% 24%, rgba(34,211,238,0.6) 0 16%, transparent 38%), radial-gradient(circle at 82% 36%, rgba(244,114,182,0.55) 0 14%, transparent 34%), linear-gradient(180deg, #0a0814 0 46%, #120f26 47% 72%, #0a0816 73%)",
-  wheat:
-    "radial-gradient(circle at 26% 18%, #fff4c8 0 9%, transparent 20%), radial-gradient(ellipse at 20% 108%, #b98f34 0 58%, transparent 59%), linear-gradient(180deg, #f8ecc4 0 46%, #ecd89b 47% 72%, #cda851 73%)",
-  snow:
-    "radial-gradient(circle at 74% 16%, #ffffff 0 8%, transparent 18%), radial-gradient(ellipse at 14% 108%, #e8f1f8 0 58%, transparent 59%), linear-gradient(180deg, #dfeefa 0 46%, #cbe1f1 47% 72%, #accbe4 73%)",
 };
 
 const hasBackground = computed(
@@ -1692,30 +1673,6 @@ async function removeJava(path: string) {
         </div>
       </div>
 
-      <div class="setting setting--stack">
-        <div class="setting__label">
-          <strong>界面圆角</strong>
-          <span>卡片与面板的边角风格</span>
-        </div>
-        <div class="setting__control">
-          <div class="option-cards">
-            <button
-              v-for="opt in radiusOptions"
-              :key="opt.value"
-              class="option-card"
-              :class="{ 'option-card--active': form.ui_radius === opt.value }"
-              @click="form.ui_radius = opt.value"
-            >
-              <span
-                class="option-card__preview option-card__preview--radius"
-                :class="`radius--${opt.value}`"
-              />
-              <span class="option-card__name">{{ opt.label }}</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
       <div class="setting">
         <div class="setting__label">
           <strong>记住窗口大小</strong>
@@ -2137,9 +2094,10 @@ async function removeJava(path: string) {
   align-items: center;
   gap: 9px;
   padding: 10px 12px;
-  border-radius: 4px;
-  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--line-strong));
   background: var(--danger-soft);
+  box-shadow: inset 0 1px 2px rgba(90, 40, 30, 0.12);
   color: var(--danger);
   font-size: 12px;
 }
@@ -2153,8 +2111,12 @@ async function removeJava(path: string) {
   flex-direction: column;
   gap: 10px;
   padding: 12px 14px;
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
+  border: 2px solid var(--frame);
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-radius: 2px;
   background: var(--panel-2);
 }
 
@@ -2195,17 +2157,20 @@ async function removeJava(path: string) {
 
 .update-progress__bar {
   flex: 1;
-  height: 6px;
-  border-radius: 3px;
-  background: rgba(var(--accent-rgb), 0.12);
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid var(--line);
+  background: var(--paper-2);
+  box-shadow: inset 0 1px 2px rgba(40, 28, 16, 0.14);
   overflow: hidden;
 }
 
 .update-progress__bar > span {
   display: block;
   height: 100%;
-  border-radius: 3px;
-  background: linear-gradient(90deg, var(--moss), var(--walnut-light));
+  border-radius: 1px;
+  background: var(--moss);
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.18);
   transition: width 0.2s ease;
 }
 
@@ -2216,6 +2181,7 @@ async function removeJava(path: string) {
   align-items: start;
 }
 
+/* 侧栏和联机页一致：行距收紧、纯色块高亮，不做按键浮雕 */
 .settings-side {
   padding: 10px 8px;
   display: flex;
@@ -2226,41 +2192,42 @@ async function removeJava(path: string) {
 }
 
 .settings-side__item {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 9px;
-  height: 40px;
+  width: 100%;
+  height: 34px;
   padding: 0 10px;
-  border-radius: 4px;
+  border-radius: 0;
   color: var(--ink-soft);
   font-size: 12.5px;
   font-weight: 600;
   text-align: left;
-  transition: background var(--dur-2) ease, color var(--dur-2) ease;
+  transition: background var(--dur-1) ease, color var(--dur-1) ease;
+}
+
+.settings-side__item .icon {
+  color: #b3a189;
+  transition: color var(--dur-1) ease;
 }
 
 .settings-side__item:hover {
-  background: rgba(var(--accent-rgb), 0.06);
-  color: var(--walnut-deep);
-}
-
-.settings-side__item--active {
   background: rgba(var(--accent-rgb), 0.07);
   color: var(--walnut-deep);
 }
 
-.settings-side__item--active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 2px;
-  background: var(--moss);
+.settings-side__item:hover .icon {
+  color: var(--walnut);
 }
 
-.settings-side__item--active .icon {
+.settings-side__item--active,
+.settings-side__item--active:hover {
+  background: var(--moss-soft);
+  color: var(--moss);
+}
+
+.settings-side__item--active .icon,
+.settings-side__item--active:hover .icon {
   color: var(--moss);
 }
 
@@ -2395,34 +2362,55 @@ async function removeJava(path: string) {
   gap: 12px;
 }
 
+/* 与其它分段控件一致：浅凹槽 + 按下键面 */
 .memory__modes {
   display: flex;
-  gap: 3px;
+  gap: 2px;
   padding: 3px;
-  border-radius: 4px;
+  border-radius: 2px;
   border: 1px solid var(--line);
-  background: var(--panel-2);
+  background: var(--paper-2);
+  box-shadow: inset 0 1px 2px rgba(40, 28, 16, 0.08);
 }
 
 .memory__mode {
+  --face: var(--panel);
   height: 28px;
   padding: 0 13px;
-  border-radius: 3px;
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-color: transparent;
   color: var(--ink-soft);
   font-size: 12px;
   font-weight: 600;
   transition: background var(--dur-1) ease, color var(--dur-1) ease,
+    border-color var(--dur-1) ease, transform var(--dur-1) ease,
     box-shadow var(--dur-1) ease;
 }
 
-.memory__mode:hover {
+.memory__mode:not(.memory__mode--active):hover {
   color: var(--walnut-deep);
+  background: rgba(var(--accent-rgb), 0.07);
+  transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-left-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-right-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-bottom-color: color-mix(in srgb, var(--face) 72%, #000);
 }
 
+.memory__mode:active,
 .memory__mode--active {
-  background: var(--panel);
+  background: var(--face);
   color: var(--walnut-deep);
-  box-shadow: var(--shadow-1);
+  font-weight: 700;
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-left-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.16);
 }
 
 .memory__alloc {
@@ -2438,17 +2426,19 @@ async function removeJava(path: string) {
 
 .memory__bar {
   height: 8px;
-  border-radius: 3px;
+  border-radius: 2px;
   border: 1px solid var(--line);
   background: var(--paper-2);
+  box-shadow: inset 0 1px 2px rgba(40, 28, 16, 0.14);
   overflow: hidden;
 }
 
 .memory__bar-fill {
   display: block;
   height: 100%;
-  border-radius: 3px;
-  background: linear-gradient(90deg, var(--moss), var(--moss-bright));
+  border-radius: 1px;
+  background: var(--moss);
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.18);
   transition: width var(--dur-3) var(--ease-out-expo);
 }
 
@@ -2471,7 +2461,7 @@ async function removeJava(path: string) {
   width: 100%;
   padding: 12px 14px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 2px;
   background: var(--panel-2);
 }
 
@@ -2513,7 +2503,7 @@ async function removeJava(path: string) {
   width: 100%;
   padding: 6px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 2px;
   background: var(--panel);
 }
 
@@ -2523,7 +2513,7 @@ async function removeJava(path: string) {
   gap: 6px;
   padding: 0 2px;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: 0;
   background: transparent;
   transition: background var(--dur-2) ease, border-color var(--dur-2) ease;
 }
@@ -2551,7 +2541,7 @@ async function removeJava(path: string) {
   gap: 9px;
   height: 42px;
   padding: 0 9px;
-  border-radius: 3px;
+  border-radius: 0;
   text-align: left;
   color: var(--ink-soft);
 }
@@ -2590,9 +2580,16 @@ async function removeJava(path: string) {
   gap: 8px;
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  /* 路径是一段只读信息，做成凹进面板的槽 */
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--line-strong) 45%, var(--ink));
+  border-left-color: color-mix(in srgb, var(--line-strong) 45%, var(--ink));
+  border-right-color: color-mix(in srgb, var(--line-strong) 58%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--line-strong) 58%, #fff);
+  border-radius: 2px;
   background: var(--panel-2);
+  box-shadow: inset 0 1px 3px rgba(40, 28, 16, 0.14);
 }
 
 .path-card__text {
@@ -2626,35 +2623,53 @@ async function removeJava(path: string) {
 }
 
 .bg-tile {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 6px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
   background: var(--panel-2);
   transition: border-color var(--dur-2) ease, box-shadow var(--dur-2) ease,
     transform var(--dur-2) var(--ease-out-expo);
 }
 
-.bg-tile:hover {
-  border-color: var(--walnut-light);
+.bg-tile:not(.bg-tile--active):hover {
   transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--frame) 78%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 78%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 86%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 86%, #000);
 }
 
-.bg-tile--active {
-  border-color: var(--moss);
-  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.08);
+.bg-tile--active,
+.bg-tile--active:hover {
+  background: var(--moss-soft);
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--moss) 46%, #000);
+  border-left-color: color-mix(in srgb, var(--moss) 46%, #000);
+  border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.12);
 }
 
 .bg-tile__thumb {
   display: block;
   width: 100%;
   height: 56px;
-  border-radius: 4px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 0;
+  border: 1px solid var(--line-strong);
   background-size: cover;
   background-position: center;
+  /* 缩略图像一小块屏幕：下缘压暗，做出实体感 */
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.18);
 }
 
 .bg-tile__label {
@@ -2665,14 +2680,19 @@ async function removeJava(path: string) {
   text-align: left;
 }
 
+/* 运行时列表是一只实体托盘，和卡片、按键共用外框 */
 .java-list {
   display: flex;
   flex-direction: column;
   gap: 2px;
   margin: 14px 0;
   padding: 6px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  border: 2px solid var(--frame);
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-radius: 2px;
   background: var(--panel);
 }
 
@@ -2681,7 +2701,7 @@ async function removeJava(path: string) {
   align-items: center;
   gap: 13px;
   padding: 10px 12px;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px solid transparent;
   background: transparent;
   text-align: left;
@@ -2732,7 +2752,7 @@ async function removeJava(path: string) {
 
 .java-empty {
   padding: 18px;
-  border-radius: 4px;
+  border-radius: 0;
   background: var(--panel-2);
   border: 1px dashed var(--line-strong);
   color: var(--muted);
@@ -2771,35 +2791,51 @@ async function removeJava(path: string) {
   width: 100%;
 }
 
+/* 主题卡和按键同源：2px 浮雕外框，选中时像被按进面板 */
 .theme-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 6px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
   background: var(--panel-2);
   transition: border-color var(--dur-2) ease, box-shadow var(--dur-2) ease,
     transform var(--dur-2) var(--ease-out-expo);
 }
 
-.theme-card:hover {
-  border-color: var(--walnut-light);
+.theme-card:not(.theme-card--active):hover {
   transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--frame) 78%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 78%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 86%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 86%, #000);
 }
 
-.theme-card--active {
-  border-color: var(--moss);
-  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.08);
+.theme-card--active,
+.theme-card--active:hover {
+  background: var(--moss-soft);
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--moss) 46%, #000);
+  border-left-color: color-mix(in srgb, var(--moss) 46%, #000);
+  border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.12);
 }
 
 .theme-card__preview {
   position: relative;
   height: 54px;
-  border-radius: 4px;
+  border-radius: 0;
   overflow: hidden;
   background: var(--pv-bg);
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--line-strong);
 }
 
 .theme-card__side {
@@ -2818,7 +2854,7 @@ async function removeJava(path: string) {
   top: 11px;
   width: 28%;
   height: 5px;
-  border-radius: 2px;
+  border-radius: 0;
   background: var(--pv-main);
 }
 
@@ -2828,8 +2864,20 @@ async function removeJava(path: string) {
   right: 12%;
   top: 35px;
   height: 3px;
-  border-radius: 2px;
+  border-radius: 0;
   background: color-mix(in srgb, var(--pv-main) 30%, transparent);
+}
+
+/* 预览右下角压两枚像素块，用主题的强调色，卡片一眼能区分 */
+.theme-card__preview::after {
+  content: "";
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 8px;
+  height: 8px;
+  background: var(--pv-accent);
+  box-shadow: -8px 0 0 color-mix(in srgb, var(--pv-accent) 42%, transparent);
 }
 
 .theme-card__line--long {
@@ -2854,27 +2902,58 @@ async function removeJava(path: string) {
 }
 
 .option-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 6px;
   width: 112px;
   padding: 6px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
   background: var(--panel-2);
   transition: border-color var(--dur-2) ease, box-shadow var(--dur-2) ease,
     transform var(--dur-2) var(--ease-out-expo);
 }
 
-.option-card:hover {
-  border-color: var(--walnut-light);
+.option-card:not(.option-card--active):hover {
   transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--frame) 78%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 78%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 86%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 86%, #000);
 }
 
-.option-card--active {
-  border-color: var(--moss);
+.option-card--active,
+.option-card--active:hover {
   background: var(--moss-soft);
-  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.08);
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--moss) 46%, #000);
+  border-left-color: color-mix(in srgb, var(--moss) 46%, #000);
+  border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.12);
+}
+
+/* 选中的方块卡右上角盖一枚像素阶梯角标，比打勾更像像素画 */
+.theme-card--active::after,
+.option-card--active::after,
+.bg-tile--active::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 5px;
+  height: 5px;
+  background: var(--moss);
+  box-shadow:
+    -5px 5px 0 var(--moss),
+    -10px 10px 0 var(--moss);
+  pointer-events: none;
 }
 
 .option-card__name {
@@ -2888,7 +2967,7 @@ async function removeJava(path: string) {
   position: relative;
   display: block;
   height: 46px;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px solid rgba(0, 0, 0, 0.08);
   overflow: hidden;
 }
@@ -2912,7 +2991,7 @@ async function removeJava(path: string) {
   position: absolute;
   inset: 8px 10px auto 10px;
   height: 24px;
-  border-radius: 3px;
+  border-radius: 0;
   background: var(--panel);
   border: 1px solid var(--line);
 }
@@ -2927,7 +3006,7 @@ async function removeJava(path: string) {
   position: absolute;
   inset: 8px 10px auto 10px;
   height: 24px;
-  border-radius: 3px;
+  border-radius: 0;
   background: rgba(255, 255, 255, 0.5);
   border: 1px solid rgba(255, 255, 255, 0.55);
   backdrop-filter: blur(4px);
@@ -2964,30 +3043,6 @@ async function removeJava(path: string) {
   margin-top: 9px;
 }
 
-.option-card__preview--radius {
-  background: var(--panel);
-}
-
-.option-card__preview--radius::after {
-  content: "";
-  position: absolute;
-  inset: 8px 16px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-}
-
-.radius--sharp::after {
-  border-radius: 2px;
-}
-
-.radius--default::after {
-  border-radius: 7px;
-}
-
-.radius--round::after {
-  border-radius: 14px;
-}
-
 /* 背景预览 */
 .bg-preview {
   position: relative;
@@ -2998,8 +3053,8 @@ async function removeJava(path: string) {
   max-width: 560px;
   height: 156px;
   padding: 10px;
-  border-radius: 8px;
-  border: 1px solid var(--line);
+  border-radius: 2px;
+  border: 1px solid var(--line-strong);
   background-color: var(--panel-2);
   background-position: center;
   background-repeat: no-repeat;
@@ -3063,30 +3118,46 @@ async function removeJava(path: string) {
   gap: 7px;
   height: 34px;
   padding: 0 10px;
-  border-radius: 4px;
-  border: 1px solid var(--line);
+  border-radius: 0;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 62%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 62%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 72%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 72%, #000);
   background: var(--panel-2);
   color: var(--ink-soft);
   font-size: 12px;
   font-weight: 600;
-  transition: border-color var(--dur-2) ease, transform var(--dur-2) var(--ease-out-expo);
+  transition: border-color var(--dur-2) ease, transform var(--dur-2) var(--ease-out-expo),
+    box-shadow var(--dur-2) ease;
 }
 
 .bg-chip:hover {
-  border-color: var(--walnut-light);
   transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--frame) 74%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 74%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 82%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 82%, #000);
 }
 
-.bg-chip--active {
-  border-color: var(--moss);
+/* 选中：按进面板的苔藓凹槽，和主题卡、选项卡同一套 */
+.bg-chip--active,
+.bg-chip--active:hover {
+  background: var(--moss-soft);
+  border-top-color: color-mix(in srgb, var(--moss) 52%, #000);
+  border-left-color: color-mix(in srgb, var(--moss) 52%, #000);
+  border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
   color: var(--moss);
-  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.08);
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.12);
 }
 
 .bg-chip__swatch {
   width: 22px;
   height: 16px;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px solid rgba(0, 0, 0, 0.14);
   background-size: cover;
 }
@@ -3097,10 +3168,6 @@ async function removeJava(path: string) {
 
 .bg-chip__swatch--dune {
   background-image: linear-gradient(180deg, #f7dfc0 0 40%, #d9a97f 41% 60%, #a8623f 61%);
-}
-
-.bg-chip__swatch--night {
-  background-image: linear-gradient(180deg, #141d2e 0 46%, #1e2c42 47% 72%, #16202e 73%);
 }
 
 .bg-chip__swatch--sakura {
@@ -3150,18 +3217,6 @@ async function removeJava(path: string) {
     linear-gradient(180deg, #0a0814 0 46%, #120f26 47% 72%, #0a0816 73%);
 }
 
-.bg-chip__swatch--wheat {
-  background-image: radial-gradient(circle at 26% 18%, #fff4c8 0 9%, transparent 20%),
-    radial-gradient(ellipse at 20% 108%, #b98f34 0 58%, transparent 59%),
-    linear-gradient(180deg, #f8ecc4 0 46%, #ecd89b 47% 72%, #cda851 73%);
-}
-
-.bg-chip__swatch--snow {
-  background-image: radial-gradient(circle at 74% 16%, #ffffff 0 8%, transparent 18%),
-    radial-gradient(ellipse at 14% 108%, #e8f1f8 0 58%, transparent 59%),
-    linear-gradient(180deg, #dfeefa 0 46%, #cbe1f1 47% 72%, #accbe4 73%);
-}
-
 .bg-chip__swatch--none {
   background-image: linear-gradient(135deg, var(--panel) 0 50%, var(--panel-2) 50%);
 }
@@ -3205,9 +3260,10 @@ async function removeJava(path: string) {
   align-items: center;
   gap: 8px;
   padding: 6px 9px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
   background: var(--panel-2);
+  box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.06);
   font-size: 12px;
 }
 
@@ -3260,8 +3316,8 @@ async function removeJava(path: string) {
   grid-template-rows: auto auto;
   gap: 8px 12px;
   padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
   background: rgba(var(--glass-rgb), 0.82);
 }
 
@@ -3270,7 +3326,7 @@ async function removeJava(path: string) {
   height: 30px;
   padding: 0;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 0;
   background: transparent;
   cursor: pointer;
 }
@@ -3289,7 +3345,7 @@ async function removeJava(path: string) {
   width: 96px;
   height: 76px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: 2px;
   background-color: var(--panel-2);
   background-position: center;
   background-size: cover;
@@ -3328,3 +3384,4 @@ async function removeJava(path: string) {
   }
 }
 </style>
+

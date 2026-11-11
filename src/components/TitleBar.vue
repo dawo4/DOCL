@@ -87,7 +87,7 @@ function close() {
   gap: 8px;
   padding-left: 16px;
   background: var(--bar-a);
-  border-bottom: 1px solid var(--line-strong);
+  border-bottom: 2px solid var(--frame);
   position: relative;
   z-index: 20;
 }
@@ -108,7 +108,7 @@ function close() {
   height: 30px;
   display: grid;
   place-items: center;
-  border-radius: 7px;
+  border-radius: 2px;
   background: linear-gradient(160deg, var(--moss) 0 46%, var(--walnut) 46% 100%);
   border: 1px solid var(--walnut-deep);
   box-shadow:
@@ -151,42 +151,47 @@ function close() {
 
 .topnav {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   height: 100%;
-  gap: 0;
+  gap: 4px;
 }
 
 .topnav__item {
   position: relative;
   display: flex;
   align-items: center;
-  height: 100%;
-  padding: 0 15px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 2px;
+  border: 1px solid transparent;
   color: var(--muted);
   font-size: 13px;
   font-weight: 500;
-  transition: color var(--dur-2) ease, background var(--dur-2) ease;
+  transition: color 150ms ease, background 150ms ease,
+    border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
 }
 
 .topnav__item:hover {
   color: var(--ink);
   background: rgba(var(--accent-rgb), 0.06);
+  transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--panel-2) 52%, #fff);
+  border-left-color: color-mix(in srgb, var(--panel-2) 52%, #fff);
+  border-right-color: color-mix(in srgb, var(--panel-2) 42%, #000);
+  border-bottom-color: color-mix(in srgb, var(--panel-2) 42%, #000);
 }
 
-.topnav__item--active {
+/* 选中态是一个压进面板的方块，和按钮、分段切换统一 */
+.topnav__item--active,
+.topnav__item--active:hover {
   color: var(--walnut-deep);
   font-weight: 700;
-}
-
-/* 选中态只用一条底线，不用胶囊背景和阴影 */
-.topnav__item--active::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 2px;
-  background: var(--moss);
+  background: var(--panel);
+  border-top-color: color-mix(in srgb, var(--moss) 42%, #000);
+  border-left-color: color-mix(in srgb, var(--moss) 42%, #000);
+  border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.12);
 }
 
 .topbar__drag {
@@ -219,7 +224,7 @@ function close() {
 }
 
 .window-btn {
-  /* 按钮占位保持全宽，按压/悬停的圆形印子由 ::before 画在中心 */
+  /* 点击区保持全宽，实体键面由 ::before 画在中心，和图标按钮同一种浮雕 */
   position: relative;
   isolation: isolate;
   width: 46px;
@@ -231,15 +236,20 @@ function close() {
 }
 
 .window-btn::before {
+  --face: var(--panel-2);
   content: "";
   position: absolute;
   inset: 0;
   margin: auto;
   width: 28px;
   height: 28px;
-  border-radius: 50%;
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-color: transparent;
   background: transparent;
-  transition: background var(--dur-1) ease;
+  transition: background var(--dur-1) ease, border-color var(--dur-1) ease,
+    transform var(--dur-1) ease, box-shadow var(--dur-1) ease;
   z-index: -1;
 }
 
@@ -248,11 +258,23 @@ function close() {
 }
 
 .window-btn:hover::before {
-  background: rgba(var(--accent-rgb), 0.09);
+  background: var(--face);
+  border-top-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-left-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-right-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-bottom-color: color-mix(in srgb, var(--face) 72%, #000);
+  transform: translateY(-1px);
 }
 
 .window-btn:active::before {
-  background: rgba(var(--accent-rgb), 0.16);
+  background: var(--face);
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-left-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.2);
 }
 
 .window-btn--close:hover {
@@ -260,11 +282,24 @@ function close() {
 }
 
 .window-btn--close:hover::before {
-  background: #b4523a;
+  --face: #b4523a;
+  background: var(--face);
+  border-top-color: color-mix(in srgb, var(--face) 62%, #fff);
+  border-left-color: color-mix(in srgb, var(--face) 62%, #fff);
+  border-right-color: color-mix(in srgb, var(--face) 66%, #000);
+  border-bottom-color: color-mix(in srgb, var(--face) 66%, #000);
 }
 
 .window-btn--close:active::before {
+  --face: #b4523a;
   background: #96432f;
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--face) 66%, #000);
+  border-left-color: color-mix(in srgb, var(--face) 66%, #000);
+  border-right-color: color-mix(in srgb, var(--face) 62%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--face) 62%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.24);
 }
 
 @media (max-width: 1040px) {

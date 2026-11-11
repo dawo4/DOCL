@@ -427,34 +427,56 @@ onMounted(() => {
   border-color: rgba(217, 160, 91, 0.35);
 }
 
+/* 分段控件：外层是浅凹槽，选中项像按键一样被压进去 */
 .news__tabs {
   display: flex;
   gap: 2px;
   padding: 3px;
-  border-radius: 4px;
+  border-radius: 2px;
   border: 1px solid var(--line);
-  background: var(--panel-2);
+  background: var(--paper-2);
+  box-shadow: inset 0 1px 2px rgba(40, 28, 16, 0.08);
   margin-left: auto;
 }
 
 .news__tab {
+  --face: var(--panel);
   height: 27px;
   padding: 0 12px;
-  border-radius: 3px;
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-color: transparent;
   color: var(--ink-soft);
   font-size: 12px;
   font-weight: 600;
-  transition: background var(--dur-1) ease, color var(--dur-1) ease;
+  transition: background var(--dur-1) ease, color var(--dur-1) ease,
+    border-color var(--dur-1) ease, transform var(--dur-1) ease,
+    box-shadow var(--dur-1) ease;
 }
 
-.news__tab:hover {
+.news__tab:not(.news__tab--active):hover {
   color: var(--walnut-deep);
+  background: rgba(var(--accent-rgb), 0.07);
+  transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-left-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-right-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-bottom-color: color-mix(in srgb, var(--face) 72%, #000);
 }
 
+.news__tab:active,
 .news__tab--active {
-  background: var(--panel);
+  background: var(--face);
   color: var(--walnut-deep);
-  box-shadow: var(--shadow-1);
+  font-weight: 700;
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-left-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.16);
 }
 
 .news__actions {
@@ -517,14 +539,15 @@ onMounted(() => {
   gap: 10px;
   height: 38px;
   padding: 0 8px;
-  border-radius: 4px;
+  border-radius: 0;
   text-align: left;
   color: var(--ink);
-  transition: background var(--dur-1) ease;
+  transition: background var(--dur-1) ease, box-shadow var(--dur-1) ease;
 }
 
 .news-row:hover {
-  background: rgba(var(--accent-rgb), 0.05);
+  background: var(--hover);
+  box-shadow: inset 3px 0 0 var(--moss);
 }
 
 .news-row__date {
@@ -582,10 +605,11 @@ onMounted(() => {
 .news-row__thumb {
   width: 40px;
   height: 40px;
-  border-radius: 4px;
+  border-radius: 0;
   overflow: hidden;
   flex-shrink: 0;
   background: var(--paper-2);
+  border: 1px solid var(--line);
 }
 
 .news-row__thumb img {
@@ -627,8 +651,13 @@ onMounted(() => {
   flex-direction: column;
   gap: 6px;
   padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  border-style: solid;
+  border-width: 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-radius: 0;
   background: var(--panel-2);
   text-align: left;
   overflow: hidden;
@@ -637,8 +666,11 @@ onMounted(() => {
 }
 
 .news-card:hover {
-  border-color: var(--line-strong);
   transform: translateY(-2px);
+  border-top-color: color-mix(in srgb, var(--frame) 78%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 78%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 86%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 86%, #000);
   box-shadow: var(--shadow-1);
 }
 
@@ -646,9 +678,10 @@ onMounted(() => {
   display: block;
   width: 100%;
   aspect-ratio: 16 / 9;
-  border-radius: 3px;
+  border-radius: 0;
   overflow: hidden;
   background: var(--paper-2);
+  border: 1px solid var(--line);
 }
 
 .news-card__media img {

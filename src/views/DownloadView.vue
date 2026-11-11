@@ -467,51 +467,56 @@ function launchLoader(id: string | null) {
   align-items: start;
 }
 
+/* 侧栏和联机页一致：整列当托盘，行距收紧、纯色块高亮，不做按键浮雕 */
 .dl-side {
-  padding: 10px 8px;
+  padding: 10px;
   display: flex;
   flex-direction: column;
   gap: 2px;
   position: sticky;
   top: 0;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel) 46%, #fff);
 }
 
 .dl-side__item {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 9px;
-  height: 40px;
+  width: 100%;
+  height: 34px;
   padding: 0 10px;
-  border-radius: 4px;
+  border-radius: 0;
   color: var(--ink-soft);
   font-size: 13px;
   font-weight: 600;
   text-align: left;
-  transition: background var(--dur-2) ease, color var(--dur-2) ease;
+  transition: background var(--dur-1) ease, color var(--dur-1) ease,
+    box-shadow var(--dur-1) ease;
+}
+
+.dl-side__item .icon {
+  color: #b3a189;
+  transition: color var(--dur-1) ease;
 }
 
 .dl-side__item:hover {
-  background: rgba(var(--accent-rgb), 0.06);
+  background: var(--hover);
   color: var(--walnut-deep);
 }
 
-.dl-side__item--active {
-  background: rgba(var(--accent-rgb), 0.07);
-  color: var(--walnut-deep);
+.dl-side__item:hover .icon {
+  color: var(--walnut);
 }
 
-.dl-side__item--active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 2px;
-  background: var(--moss);
+.dl-side__item--active,
+.dl-side__item--active:hover {
+  background: var(--moss-soft);
+  color: var(--moss);
+  box-shadow: inset 3px 0 0 var(--moss);
 }
 
-.dl-side__item--active .icon {
+.dl-side__item--active .icon,
+.dl-side__item--active:hover .icon {
   color: var(--moss);
 }
 
@@ -578,17 +583,34 @@ function launchLoader(id: string | null) {
   align-items: center;
   gap: 12px;
   padding: 11px 13px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 0;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 60%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 60%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 70%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 70%, #000);
   background: var(--panel);
-  transition: border-color var(--dur-2) ease, transform var(--dur-2) var(--ease-out-expo);
+  transition: border-color var(--dur-2) ease, transform var(--dur-2) var(--ease-out-expo),
+    box-shadow var(--dur-2) ease;
   cursor: pointer;
 }
 
-.loader-row--open {
-  border-color: rgba(var(--accent-rgb), 0.32);
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
+.loader-row:hover {
+  transform: translateY(-1px);
+}
+
+/* 展开时按进槽里，和下面的版本列表连成一块 */
+.loader-row--open,
+.loader-row--open:hover {
+  background: var(--moss-soft);
+  border-top-color: color-mix(in srgb, var(--moss) 52%, #000);
+  border-left-color: color-mix(in srgb, var(--moss) 52%, #000);
+  border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  border-bottom-width: 1px;
+  border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  transform: none;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.1);
 }
 
 .loader-chevron--open {
@@ -597,9 +619,9 @@ function launchLoader(id: string | null) {
 
 .loader-versions {
   margin-top: -3px;
-  border: 1px solid rgba(var(--accent-rgb), 0.26);
+  border: 1px solid var(--line-strong);
   border-top: 1px dashed var(--line);
-  border-radius: 0 0 10px 10px;
+  border-radius: 0;
   background: rgba(var(--glass-rgb), 0.32);
   padding: 8px;
   max-height: 260px;
@@ -635,12 +657,13 @@ function launchLoader(id: string | null) {
   align-items: center;
   gap: 8px;
   padding: 6px 9px;
-  border-radius: 3px;
-  transition: background var(--dur-1) ease;
+  border-radius: 0;
+  transition: background var(--dur-1) ease, box-shadow var(--dur-1) ease;
 }
 
 .loader-version:hover {
-  background: rgba(var(--accent-rgb), 0.06);
+  background: var(--hover);
+  box-shadow: inset 3px 0 0 var(--moss);
 }
 
 .loader-version__name {
@@ -756,28 +779,55 @@ function launchLoader(id: string | null) {
   padding: 3px;
   background: var(--paper-2);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 2px;
 }
 
+/* 分段按键：未选中是平面，悬停浮起带浮雕边，选中则压进面板 */
 .tab {
+  --face: var(--panel-2);
   height: 29px;
   padding: 0 16px;
-  border-radius: 3px;
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-color: transparent;
   color: var(--ink-soft);
   font-size: 12.5px;
   font-weight: 700;
-  transition: background var(--dur-2) ease, color var(--dur-2) ease,
-    box-shadow var(--dur-2) ease;
+  transition: background 150ms ease, color 150ms ease,
+    border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
 }
 
-.tab:hover {
+.tab:not(.tab--active):hover {
   color: var(--walnut-deep);
+  background: var(--hover);
+  transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-left-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-right-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-bottom-color: color-mix(in srgb, var(--face) 42%, #000);
+}
+
+.tab:active {
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-left-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
 }
 
 .tab--active {
-  background: var(--panel);
+  background: var(--panel-2);
   color: var(--walnut-deep);
-  box-shadow: var(--shadow-1);
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-left-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
 }
 
 .toolbar__search {
@@ -798,7 +848,7 @@ function launchLoader(id: string | null) {
   justify-content: space-between;
   gap: 16px;
   padding: 11px 14px 11px 18px;
-  border-radius: 4px;
+  border-radius: 0;
   text-align: left;
   color: var(--ink);
   transition: background var(--dur-2) ease;
@@ -816,7 +866,7 @@ function launchLoader(id: string | null) {
   top: 50%;
   width: 5px;
   height: 5px;
-  border-radius: 50%;
+  border-radius: 0;
   background: var(--line-strong);
   transform: translateY(-50%);
   transition: background var(--dur-2) ease, transform var(--dur-2) var(--ease-out-expo);
@@ -824,7 +874,7 @@ function launchLoader(id: string | null) {
 
 .version-row:hover .version-row__mark {
   background: var(--moss);
-  transform: translateY(-50%) scale(1.5);
+  transform: translateY(-50%) scale(1.4);
 }
 
 .version-row__main {

@@ -397,7 +397,6 @@ onMounted(async () => {
           v-for="cape in capes"
           :key="cape.id"
           class="cape"
-          :class="{ 'cape--active': cape.active }"
         >
           <div class="cape__preview">
             <div
@@ -726,10 +725,6 @@ onMounted(async () => {
   background: rgba(var(--glass-rgb), 0.86);
 }
 
-.cape--active {
-  box-shadow: inset 2px 0 0 var(--moss);
-}
-
 .cape__preview {
   display: grid;
   place-items: center;
@@ -806,26 +801,49 @@ onMounted(async () => {
   display: flex;
   gap: 2px;
   padding: 3px;
-  border-radius: 4px;
+  border-radius: 2px;
   border: 1px solid var(--line);
-  background: var(--panel-2);
+  background: var(--paper-2);
   align-self: flex-start;
 }
 
+/* 分段按键：未选中是平面，悬停浮起带浮雕边，选中压进凹槽 */
 .seg__btn {
+  --face: var(--panel-2);
   height: 28px;
   padding: 0 14px;
-  border-radius: 3px;
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-color: transparent;
   font-size: 12px;
   font-weight: 600;
   color: var(--ink-soft);
-  transition: background var(--dur-1) ease, color var(--dur-1) ease;
+  transition: background 150ms ease, color 150ms ease,
+    border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
 }
 
-.seg__btn--active {
-  background: var(--panel);
+.seg__btn:not(.seg__btn--active):hover {
   color: var(--walnut-deep);
-  box-shadow: var(--shadow-1);
+  background: var(--hover);
+  transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-left-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-right-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-bottom-color: color-mix(in srgb, var(--face) 42%, #000);
+}
+
+.seg__btn:active,
+.seg__btn--active {
+  background: var(--panel-2);
+  color: var(--walnut-deep);
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-left-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
 }
 
 .file-row {

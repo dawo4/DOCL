@@ -137,10 +137,15 @@ onBeforeUnmount(() => {
 .select__value {
   width: 100%;
   height: 38px;
-  border-radius: 4px;
+  border-radius: 2px;
   border: 1px solid var(--line-strong);
+  border-top-color: color-mix(in srgb, var(--line-strong) 45%, var(--ink));
+  border-left-color: color-mix(in srgb, var(--line-strong) 45%, var(--ink));
+  border-bottom-color: color-mix(in srgb, var(--line-strong) 58%, #fff);
+  border-right-color: color-mix(in srgb, var(--line-strong) 58%, #fff);
   background: var(--panel);
   padding: 0 34px 0 13px;
+  box-shadow: inset 0 1px 3px rgba(40, 28, 16, 0.14);
   text-align: left;
   position: relative;
   color: var(--ink);
@@ -148,10 +153,18 @@ onBeforeUnmount(() => {
   transition: border-color var(--dur-2) ease, box-shadow var(--dur-2) ease;
 }
 
-.select__value:hover,
+.select__value:hover {
+  border-top-color: color-mix(in srgb, var(--line-strong) 30%, var(--ink));
+  border-left-color: color-mix(in srgb, var(--line-strong) 30%, var(--ink));
+}
+
 .select--open .select__value {
-  border-color: var(--walnut-light);
-  box-shadow: 0 0 0 3px rgba(111, 66, 36, 0.08);
+  border-top-color: color-mix(in srgb, var(--moss) 62%, #000);
+  border-left-color: color-mix(in srgb, var(--moss) 62%, #000);
+  border-right-color: color-mix(in srgb, var(--moss) 40%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--moss) 40%, #fff);
+  box-shadow: inset 0 1px 3px rgba(40, 28, 16, 0.16),
+    0 0 0 2px rgba(94, 123, 73, 0.18);
 }
 
 .select__text {
@@ -183,10 +196,15 @@ onBeforeUnmount(() => {
   width: max-content;
   max-width: min(320px, calc(100vw - 16px));
   background: var(--panel);
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  /* 浮层和卡片同一种 2px 浮雕框，弹出时像一块实体板 */
+  border: 2px solid var(--frame);
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-radius: 2px;
   padding: 5px;
-  box-shadow: var(--shadow-3);
+  box-shadow: 0 14px 30px rgba(50, 34, 18, 0.24);
   max-height: 260px;
   overflow-y: auto;
 }
@@ -222,6 +240,7 @@ onBeforeUnmount(() => {
   background: var(--moss-soft);
   color: var(--moss);
   font-weight: 700;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
 .select__option--active .select__dot {

@@ -197,8 +197,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   height: min(620px, 80vh);
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  border-style: solid;
+  border-width: 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 68%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 68%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 76%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 76%, #000);
+  border-radius: 0;
   background: var(--panel);
   box-shadow: var(--shadow-3);
   overflow: hidden;
@@ -233,16 +238,37 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .log-tool {
   height: 27px;
   padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: 0;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 60%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 60%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 70%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 70%, #000);
+  background: var(--panel);
   color: var(--ink-soft);
   font-size: 11.5px;
-  transition: border-color var(--dur-1) ease, color var(--dur-1) ease;
+  transition: border-color var(--dur-1) ease, color var(--dur-1) ease,
+    transform var(--dur-1) ease;
 }
 
 .log-tool:hover {
-  border-color: var(--line-strong);
   color: var(--walnut-deep);
+  transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--frame) 72%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 72%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 80%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 80%, #000);
+}
+
+.log-tool:active {
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--frame) 80%, #000);
+  border-left-color: color-mix(in srgb, var(--frame) 80%, #000);
+  border-right-color: color-mix(in srgb, var(--frame) 72%, #fff);
+  border-bottom-width: 1px;
+  border-bottom-color: color-mix(in srgb, var(--frame) 72%, #fff);
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.16);
 }
 
 .log-icon {
@@ -250,13 +276,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   place-items: center;
   width: 28px;
   height: 28px;
-  border-radius: 3px;
+  border-radius: 0;
   color: var(--muted);
   transition: background var(--dur-1) ease, color var(--dur-1) ease;
 }
 
 .log-icon:hover {
-  background: rgba(var(--accent-rgb), 0.08);
+  background: var(--hover);
   color: var(--walnut-deep);
 }
 
@@ -326,14 +352,23 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   min-width: 120px;
   height: 28px;
   padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: 0;
+  border-style: solid;
+  border-width: 1px;
+  border-top-color: color-mix(in srgb, var(--line-strong) 66%, #000);
+  border-left-color: color-mix(in srgb, var(--line-strong) 66%, #000);
+  border-right-color: color-mix(in srgb, var(--line-strong) 38%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--line-strong) 38%, #fff);
   background: var(--panel-2);
+  box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.1);
   color: var(--muted);
 }
 
 .log-search:focus-within {
-  border-color: var(--line-strong);
+  border-top-color: color-mix(in srgb, var(--moss) 52%, #000);
+  border-left-color: color-mix(in srgb, var(--moss) 52%, #000);
+  border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
 }
 
 .log-search input {
@@ -356,29 +391,48 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   gap: 6px;
   height: 28px;
   padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: 0;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 58%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 58%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 68%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 68%, #000);
+  background: var(--panel);
   color: var(--muted);
   font-size: 11px;
   font-weight: 600;
-  transition: border-color var(--dur-1) ease, color var(--dur-1) ease;
+  transition: border-color var(--dur-1) ease, color var(--dur-1) ease,
+    transform var(--dur-1) ease, box-shadow var(--dur-1) ease;
 }
 
 .log-follow:hover {
-  border-color: var(--line-strong);
   color: var(--ink);
+  transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--frame) 70%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 70%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 78%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 78%, #000);
 }
 
 .log-follow__dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 0;
   background: var(--line-strong);
 }
 
-.log-follow--on {
-  border-color: rgba(var(--accent-rgb), 0.4);
+/* 开启时按进槽里：苔藓底 + 内阴影，和分段切换的选中态一致 */
+.log-follow--on,
+.log-follow--on:hover {
+  background: var(--moss-soft);
+  border-top-color: color-mix(in srgb, var(--moss) 52%, #000);
+  border-left-color: color-mix(in srgb, var(--moss) 52%, #000);
+  border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
   color: var(--moss);
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.12);
 }
 
 .log-follow--on .log-follow__dot {
@@ -394,15 +448,6 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   font-size: 11.8px;
   line-height: 1.8;
   color: var(--ink-soft);
-  scrollbar-color: rgba(var(--accent-rgb), 0.2) transparent;
-}
-
-.log-view::-webkit-scrollbar-thumb {
-  background: rgba(var(--accent-rgb), 0.18);
-}
-
-.log-view:hover::-webkit-scrollbar-thumb {
-  background: rgba(var(--accent-rgb), 0.3);
 }
 
 .log-line {

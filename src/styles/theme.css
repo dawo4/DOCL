@@ -1,4 +1,4 @@
-/* DOCL 设计系统：纸张、胡桃木、苔藓绿 */
+﻿﻿/* DOCL 设计系统：纸张、胡桃木、苔藓绿 */
 :root {
   --paper: #f4ebdd;
   --paper-2: #ece0cb;
@@ -24,9 +24,12 @@
   --font-display: Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
   --font-mono: "Cascadia Mono", "Consolas", "Courier New", monospace;
 
-  --radius-sm: 4px;
-  --radius: 6px;
-  --radius-lg: 10px;
+  --radius-sm: 2px;
+  --radius: 2px;
+  --radius-lg: 4px;
+  /* 大容器的外框色：浅色主题偏深灰、深色主题偏浅灰，和官方启动器的卡片描边一致 */
+  --frame: color-mix(in srgb, var(--line-strong) 46%, var(--ink) 54%);
+  --frame-soft: color-mix(in srgb, var(--frame) 62%, transparent);
   --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.6) inset, 0 1px 2px rgba(80, 58, 32, 0.045);
   --shadow-2: 0 1px 0 rgba(255, 255, 255, 0.7) inset, 0 10px 22px rgba(80, 58, 32, 0.075);
   --shadow-3: 0 1px 0 rgba(255, 255, 255, 0.75) inset, 0 16px 34px rgba(70, 48, 26, 0.1);
@@ -143,40 +146,60 @@ a {
 :focus-visible {
   outline: 2px solid rgba(94, 123, 73, 0.55);
   outline-offset: 2px;
-  border-radius: 6px;
+  border-radius: 2px;
 }
 
-/* 滚动条：平时隐身，悬停显示 */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
+/* 滚动条配色：跟随主题墨色派生，滑块面 / 亮边 / 暗边 */
+:root {
+  --scroll-face: color-mix(in srgb, var(--ink) 16%, var(--paper-2));
+  --scroll-hi: color-mix(in srgb, var(--scroll-face) 45%, #fff);
+  --scroll-lo: color-mix(in srgb, var(--scroll-face) 60%, #000);
 }
 
-*:hover {
-  scrollbar-color: rgba(122, 112, 100, 0.12) transparent;
-}
-
+/* 滚动条：细一点的方槽 + 方形滑块，不做圆角 */
 ::-webkit-scrollbar {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
+}
+
+/* 两端的小箭头按钮直接收掉 */
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 ::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+::-webkit-scrollbar-corner {
   background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 99px;
-  transition: background 0.2s ease;
-}
-
-*:hover::-webkit-scrollbar-thumb {
-  background: rgba(122, 112, 100, 0.1);
+  border-radius: 0;
+  border-style: solid;
+  border-width: 1px;
+  border-top-color: var(--scroll-hi);
+  border-left-color: var(--scroll-hi);
+  border-right-color: var(--scroll-lo);
+  border-bottom-color: var(--scroll-lo);
+  background-color: var(--scroll-face);
+  background-clip: padding-box;
+  transition: background-color 150ms ease;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(122, 112, 100, 0.22);
+  background-color: color-mix(in srgb, var(--scroll-face) 74%, var(--ink));
+}
+
+::-webkit-scrollbar-thumb:active {
+  border-top-color: var(--scroll-lo);
+  border-left-color: var(--scroll-lo);
+  border-right-color: var(--scroll-hi);
+  border-bottom-color: var(--scroll-hi);
+  background-color: color-mix(in srgb, var(--scroll-face) 60%, var(--ink));
 }
 
 /* 布局 */
@@ -325,6 +348,7 @@ a {
   flex-shrink: 0;
 }
 
+/* 标题做「压印」：上缘受光、下缘留影，和浮雕按键同一套光照方向 */
 .page-title {
   font-family: var(--font-ui);
   font-size: 27px;
@@ -332,6 +356,8 @@ a {
   letter-spacing: -0.02em;
   color: var(--walnut-deep);
   line-height: 1.2;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 -1px 0 rgba(40, 28, 16, 0.08);
 }
 
 .page-sub {
@@ -349,11 +375,29 @@ a {
   color: var(--walnut-deep);
 }
 
+/* 小节标题前加一块像素方点，和卡片的方块语言保持一致 */
 .section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 14.5px;
   font-weight: 800;
   color: var(--walnut-deep);
   letter-spacing: 0.01em;
+}
+
+.section-title::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  background: var(--moss);
+  /* 四个方向各压 1px：左上受光、右下留影，读起来就是一个像素块 */
+  box-shadow:
+    -1px 0 0 color-mix(in srgb, var(--moss) 52%, #fff),
+    0 -1px 0 color-mix(in srgb, var(--moss) 52%, #fff),
+    1px 0 0 color-mix(in srgb, var(--moss) 58%, #000),
+    0 1px 0 color-mix(in srgb, var(--moss) 58%, #000);
 }
 
 .muted {
@@ -399,33 +443,44 @@ a {
   gap: 16px;
 }
 
+/* 分隔线做成刻槽：暗线在上、受光边在下 */
 .divider {
   height: 1px;
-  background: var(--line);
+  background: var(--line-strong);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
   margin: 4px 0;
 }
 
-/* 卡片 */
+/* 卡片：2px 实框 + 直角；左上亮、右下暗，大框和按键用同一套浮雕逻辑 */
 .card {
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-1);
+  border: 2px solid var(--frame);
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-radius: 2px;
   position: relative;
+  /* 框内再压一道受光细边，像实体板的倒角 */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel) 46%, #fff);
 }
 
-.card-pad {
-  padding: 20px 22px;
-}
-
+/* 大块容器统一走直角描边，不用柔和投影区分层级 */
 .card--hover {
   transition: transform var(--dur-3) var(--ease-out-expo),
-    box-shadow var(--dur-3) var(--ease-out-expo), border-color var(--dur-2) ease;
+    border-color var(--dur-2) ease;
 }
 
 .card--hover:hover {
   transform: translate3d(0, -2px, 0);
-  border-color: var(--line-strong);
+  border-top-color: color-mix(in srgb, var(--frame) 74%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 74%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 82%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 82%, #000);
+}
+
+.card-pad {
+  padding: 20px 22px;
 }
 
 /* 标签 */
@@ -442,7 +497,12 @@ a {
   flex-shrink: 0;
   background: var(--panel-2);
   color: var(--walnut);
-  border: 1px solid var(--line);
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--line) 55%, #fff);
+  border-left-color: color-mix(in srgb, var(--line) 55%, #fff);
+  border-right-color: color-mix(in srgb, var(--line) 82%, #000);
+  border-bottom-color: color-mix(in srgb, var(--line) 82%, #000);
 }
 
 .tag--grass {
@@ -542,13 +602,18 @@ a {
   background: color-mix(in srgb, var(--ink) 94%, transparent);
   color: var(--paper);
   padding: 10px 18px;
-  border-radius: 9px;
+  border-radius: 4px;
   font-size: 13px;
   box-shadow: 0 14px 32px rgba(0, 0, 0, 0.22);
   z-index: 90;
   animation: toast-in 260ms var(--ease-out-expo) both;
   max-width: 70vw;
-  border: 1px solid color-mix(in srgb, var(--paper) 14%, transparent);
+  border-style: solid;
+  border-width: 1px 1px 3px;
+  border-top-color: color-mix(in srgb, var(--ink) 78%, #fff);
+  border-left-color: color-mix(in srgb, var(--ink) 78%, #fff);
+  border-right-color: color-mix(in srgb, var(--ink) 88%, #000);
+  border-bottom-color: #1d1610;
 }
 
 .toast--err {
@@ -676,43 +741,6 @@ a {
   --btn-c: #3d4d65;
   --btn-border: #33425a;
   --btn-fg: #f7f9fc;
-}
-
-/* 主题：夜墨 */
-:root[data-theme="nocturne"] {
-  --paper: #1d1a16;
-  --paper-2: #25211c;
-  --panel: #2a2620;
-  --panel-2: #322d26;
-  --walnut: #c08a55;
-  --walnut-deep: #f0e2c8;
-  --walnut-light: #d9a05b;
-  --moss: #88a867;
-  --moss-bright: #a7c688;
-  --moss-soft: #2f3a2a;
-  --amber: #d9a05b;
-  --ink: #f0e6d4;
-  --ink-soft: #c8bba7;
-  --muted: #9a8b77;
-  --line: #3b342c;
-  --line-strong: #50463a;
-  --danger: #c96f57;
-  --danger-soft: #3b2620;
-  --ambient-a: 217, 160, 91;
-  --ambient-b: 136, 168, 103;
-  --accent-rgb: 192, 138, 85;
-  --bar-a: #2a2620;
-  --bar-b: #24211c;
-  --hero-a: #2c2721;
-  --hero-b: #28231d;
-  --hero-c: #231f19;
-  --hover: #332e27;
-  --glass-rgb: 42, 38, 32;
-  --btn-a: #b07a45;
-  --btn-b: #966035;
-  --btn-c: #7d4e29;
-  --btn-border: #5c3a1f;
-  --btn-fg: #fff8ea;
 }
 
 /* 主题：樱花 */
@@ -980,82 +1008,45 @@ a {
   --btn-fg: #04141a;
 }
 
-/* 主题：麦田（暖黄稻草 + 橄榄绿） */
-:root[data-theme="wheat"] {
-  --paper: #f8f1dd;
-  --paper-2: #efe4c6;
-  --panel: #fffcf2;
-  --panel-2: #f6efd9;
-  --walnut: #7a5a26;
-  --walnut-deep: #57400f;
-  --walnut-light: #c2a463;
-  --moss: #7f8f4a;
-  --moss-bright: #9fae63;
-  --moss-soft: #ecefd8;
-  --amber: #d0a12c;
-  --ink: #2d2618;
-  --ink-soft: #5c5340;
-  --muted: #92876b;
-  --line: #e0d5b6;
-  --line-strong: #cdbf98;
-  --danger: #a8452c;
-  --danger-soft: #f5e3d8;
-  --ambient-a: 208, 161, 44;
-  --ambient-b: 127, 143, 74;
-  --accent-rgb: 122, 90, 38;
-  --bar-a: #f5ecd4;
-  --bar-b: #ede1c1;
-  --hero-a: #fffcf2;
-  --hero-b: #f8f0d8;
-  --hero-c: #efe4c0;
-  --hover: #f6efd9;
-  --glass-rgb: 255, 252, 242;
-  --btn-a: #8f6c2d;
-  --btn-b: #7a5a26;
-  --btn-c: #5e4416;
-  --btn-border: #4a350f;
-  --btn-fg: #fffcf2;
-}
-
-/* 主题：雪原（冷白冰蓝） */
-:root[data-theme="snow"] {
-  --paper: #f1f5f8;
-  --paper-2: #e3ebf2;
-  --panel: #fbfdff;
-  --panel-2: #f0f5fa;
-  --walnut: #3b5f7f;
-  --walnut-deep: #24405a;
-  --walnut-light: #8fb1cc;
-  --moss: #5f8f95;
-  --moss-bright: #7fb3b8;
-  --moss-soft: #e4eff0;
-  --amber: #4f86b3;
-  --ink: #1f2d3a;
-  --ink-soft: #546776;
-  --muted: #8395a6;
-  --line: #d5e0e9;
-  --line-strong: #bfcfdd;
-  --danger: #b04a3c;
-  --danger-soft: #f5e5e1;
-  --ambient-a: 79, 134, 179;
-  --ambient-b: 127, 179, 184;
-  --accent-rgb: 59, 95, 127;
-  --bar-a: #eaf1f7;
-  --bar-b: #e0eaf2;
-  --hero-a: #fbfdff;
-  --hero-b: #eff5fa;
-  --hero-c: #e1ebf3;
-  --hover: #eff5fa;
-  --glass-rgb: 251, 253, 255;
-  --btn-a: #4a7393;
-  --btn-b: #3b5f7f;
-  --btn-c: #2b4863;
-  --btn-border: #24405a;
-  --btn-fg: #f7fbfe;
+/* 主题：官方（Mojang 启动器的炭灰 + 草绿） */
+:root[data-theme="launcher"] {
+  --paper: #1d1d1d;
+  --paper-2: #242424;
+  --panel: #2b2b2b;
+  --panel-2: #333333;
+  --walnut: #7ec46a;
+  --walnut-deep: #eef2ec;
+  --walnut-light: #9ad989;
+  --moss: #4f9c34;
+  --moss-bright: #6cc349;
+  --moss-soft: #23301f;
+  --amber: #e0b64a;
+  --ink: #f0f0f0;
+  --ink-soft: #c9c9c9;
+  --muted: #9a9a9a;
+  --line: #383838;
+  --line-strong: #4b4b4b;
+  --danger: #d9534f;
+  --danger-soft: #3a2323;
+  --ambient-a: 108, 195, 73;
+  --ambient-b: 60, 133, 39;
+  --accent-rgb: 108, 195, 73;
+  --bar-a: #2b2b2b;
+  --bar-b: #232323;
+  --hero-a: #2e2e2e;
+  --hero-b: #282828;
+  --hero-c: #222222;
+  --hover: #383838;
+  --glass-rgb: 43, 43, 43;
+  --btn-a: #52a437;
+  --btn-b: #3c8527;
+  --btn-c: #2f6a1e;
+  --btn-border: #265215;
+  --btn-fg: #ffffff;
 }
 
 /* 深色主题使用深色原生控件 */
-:root[data-theme="nocturne"],
+:root[data-theme="launcher"],
 :root[data-theme="graphite"],
 :root[data-theme="forge"],
 :root[data-theme="neon"] {
@@ -1114,22 +1105,6 @@ a {
     radial-gradient(ellipse 90% 55% at 12% 108%, #c28157 0 58%, transparent 59%),
     radial-gradient(ellipse 105% 62% at 92% 116%, #a8623f 0 60%, transparent 61%),
     linear-gradient(180deg, #f7dfc0 0%, #ecc9a7 48%, #d9a97f 100%);
-}
-
-.wallpaper--night .wallpaper__builtin {
-  background-image: radial-gradient(
-      circle at 74% 16%,
-      rgba(247, 236, 208, 0.92) 0 3.4%,
-      rgba(247, 236, 208, 0.18) 3.5% 7%,
-      transparent 8%
-    ),
-    radial-gradient(1.4px 1.4px at 12% 22%, rgba(255, 255, 255, 0.85) 50%, transparent 51%),
-    radial-gradient(1.2px 1.2px at 28% 34%, rgba(255, 255, 255, 0.7) 50%, transparent 51%),
-    radial-gradient(1.6px 1.6px at 44% 16%, rgba(255, 255, 255, 0.9) 50%, transparent 51%),
-    radial-gradient(1.2px 1.2px at 62% 30%, rgba(255, 255, 255, 0.65) 50%, transparent 51%),
-    radial-gradient(1.4px 1.4px at 84% 42%, rgba(255, 255, 255, 0.75) 50%, transparent 51%),
-    radial-gradient(1.1px 1.1px at 18% 48%, rgba(255, 255, 255, 0.6) 50%, transparent 51%),
-    linear-gradient(180deg, #141d2e 0%, #1e2c42 52%, #16202e 100%);
 }
 
 .wallpaper--sakura .wallpaper__builtin {
@@ -1267,47 +1242,10 @@ a {
     linear-gradient(180deg, #0a0814 0%, #120f26 52%, #0a0816 100%);
 }
 
-.wallpaper--wheat .wallpaper__builtin {
-  background-image: radial-gradient(
-      circle at 26% 18%,
-      rgba(255, 244, 200, 0.92) 0 3.4%,
-      rgba(255, 244, 200, 0.3) 3.5% 8%,
-      transparent 9%
-    ),
-    radial-gradient(ellipse 90% 40% at 20% 108%, #b98f34 0 58%, transparent 59%),
-    radial-gradient(ellipse 105% 44% at 88% 112%, #a67c25 0 60%, transparent 61%),
-    linear-gradient(180deg, #f8ecc4 0%, #ecd89b 46%, #cda851 100%);
-}
-
-.wallpaper--snow .wallpaper__builtin {
-  background-image: radial-gradient(
-      circle at 74% 14%,
-      rgba(255, 255, 255, 0.95) 0 3%,
-      rgba(255, 255, 255, 0.35) 3.1% 8%,
-      transparent 9%
-    ),
-    radial-gradient(ellipse 80% 40% at 10% 108%, #e8f1f8 0 58%, transparent 59%),
-    radial-gradient(ellipse 95% 45% at 92% 116%, #d7e6f2 0 60%, transparent 61%),
-    linear-gradient(180deg, #dfeefa 0%, #cbe1f1 46%, #accbe4 100%);
-}
-
 .wallpaper__dim {
   position: absolute;
   inset: 0;
   background: rgba(14, 12, 10, var(--bg-dim, 0));
-}
-
-/* 界面圆角 */
-.app[data-radius="sharp"] {
-  --radius-sm: 4px;
-  --radius: 7px;
-  --radius-lg: 11px;
-}
-
-.app[data-radius="round"] {
-  --radius-sm: 12px;
-  --radius: 18px;
-  --radius-lg: 26px;
 }
 
 /* 界面字体（标题与正文一起切换） */

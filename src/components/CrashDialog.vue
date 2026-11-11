@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import {
   api,
@@ -342,7 +342,7 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px solid var(--line-strong);
   background: var(--danger-soft);
   color: var(--danger);
@@ -354,7 +354,7 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
-  border-radius: 6px;
+  border-radius: 0;
   border: 1px solid var(--line-strong);
   background: var(--danger-soft);
 }
@@ -369,7 +369,7 @@ onMounted(() => {
   place-items: center;
   width: 36px;
   height: 36px;
-  border-radius: 4px;
+  border-radius: 0;
   background: rgba(255, 255, 255, 0.55);
   color: var(--danger);
   flex-shrink: 0;
@@ -397,7 +397,7 @@ onMounted(() => {
 .crash-note {
   margin: 14px 0 0;
   padding: 12px 14px;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px dashed var(--line-strong);
   background: var(--panel-2);
   color: var(--muted);
@@ -415,7 +415,7 @@ onMounted(() => {
 .crash-frame {
   margin: 10px 0 0;
   padding: 8px 10px;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px solid var(--line);
   background: var(--panel-2);
   font-size: 11.5px;
@@ -426,7 +426,7 @@ onMounted(() => {
 .crash-suspects {
   margin-top: 14px;
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: 0;
   border: 1px solid #d3dfc8;
   background: var(--moss-soft);
   display: flex;
@@ -456,7 +456,7 @@ onMounted(() => {
   justify-content: space-between;
   gap: 10px;
   padding: 8px 10px;
-  border-radius: 4px;
+  border-radius: 0;
   background: rgba(255, 255, 255, 0.6);
 }
 
@@ -496,7 +496,7 @@ onMounted(() => {
 
 .crash-match {
   padding: 12px 14px;
-  border-radius: 6px;
+  border-radius: 0;
   border: 1px solid var(--line);
   background: var(--panel);
 }
@@ -539,7 +539,7 @@ onMounted(() => {
 .crash-evidence {
   margin-top: 9px;
   padding: 8px 10px;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px dashed var(--line-strong);
   background: var(--paper-2);
   font-size: 10.5px;
@@ -590,7 +590,7 @@ onMounted(() => {
   padding: 10px 12px;
   max-height: 240px;
   overflow: auto;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px solid var(--line);
   background: var(--paper-2);
   font-size: 10.5px;
@@ -601,3 +601,4 @@ onMounted(() => {
   user-select: text;
 }
 </style>
+

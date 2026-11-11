@@ -189,7 +189,6 @@ export interface Config {
   profile_card_image: string | null;
   /// 版本页卡片文字颜色，空表示跟随主题
   profile_text_color: string | null;
-  ui_radius: string;
   ui_font: string;
   ui_density: string;
   window_vibrancy: boolean;

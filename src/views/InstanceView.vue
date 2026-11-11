@@ -2404,7 +2404,7 @@ function launch() {
 .ins-tile {
   width: 46px;
   height: 46px;
-  border-radius: 6px;
+  border-radius: 2px;
   display: grid;
   place-items: center;
   background: linear-gradient(
@@ -2451,41 +2451,58 @@ function launch() {
   align-items: start;
 }
 
+/* 侧栏和联机页一致：行距收紧、纯色块高亮，不做按键浮雕 */
 .ins-side {
-  padding: 12px 10px;
+  padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   position: sticky;
   top: 0;
+  /* 整个侧栏当一只托盘：2px 外框 + 内衬一圈受光细边 */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel) 46%, #fff);
 }
 
 .ins-side__item {
   display: flex;
   align-items: center;
   gap: 9px;
-  height: 38px;
+  width: 100%;
+  height: 34px;
   padding: 0 11px;
-  border-radius: 4px;
+  border-radius: 0;
   color: var(--ink-soft);
   font-size: 13px;
   font-weight: 600;
   text-align: left;
-  transition: background var(--dur-2) ease, color var(--dur-2) ease;
+  transition: background var(--dur-1) ease, color var(--dur-1) ease,
+    box-shadow var(--dur-1) ease;
+}
+
+.ins-side__item .icon {
+  color: #b3a189;
+  transition: color var(--dur-1) ease;
 }
 
 .ins-side__item:hover {
-  background: rgba(var(--accent-rgb), 0.06);
+  background: rgba(var(--accent-rgb), 0.07);
   color: var(--walnut-deep);
 }
 
-.ins-side__item--active {
-  background: var(--panel);
-  color: var(--walnut-deep);
-  box-shadow: var(--shadow-1);
+.ins-side__item:hover .icon {
+  color: var(--walnut);
 }
 
-.ins-side__item--active .icon {
+.ins-side__item--active,
+.ins-side__item--active:hover {
+  background: var(--moss-soft);
+  color: var(--moss);
+  /* 选中项左侧压一条 3px 实心竖条，像像素画里的选中标记 */
+  box-shadow: inset 3px 0 0 var(--moss);
+}
+
+.ins-side__item--active .icon,
+.ins-side__item--active:hover .icon {
   color: var(--moss);
 }
 
@@ -2631,9 +2648,16 @@ function launch() {
 .ins-textarea {
   width: 100%;
   padding: 10px 13px;
-  border-radius: 4px;
-  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  border-style: solid;
+  border-width: 1px;
+  /* 凹槽：上左压暗、下右受光，配内阴影 */
+  border-top-color: color-mix(in srgb, var(--line-strong) 64%, #000);
+  border-left-color: color-mix(in srgb, var(--line-strong) 64%, #000);
+  border-right-color: color-mix(in srgb, var(--line-strong) 38%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--line-strong) 38%, #fff);
   background: var(--panel);
+  box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.1);
   color: var(--ink);
   font-size: 13px;
   line-height: 1.5;
@@ -2659,28 +2683,44 @@ function launch() {
   gap: 7px;
   height: 36px;
   padding: 0 10px 0 6px;
-  border-radius: 4px;
-  border: 1px solid var(--line);
+  border-radius: 0;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 62%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 62%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 72%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 72%, #000);
   background: var(--panel);
   color: var(--ink-soft);
   font-size: 12px;
-  transition: border-color var(--dur-2) ease, color var(--dur-2) ease;
+  transition: border-color var(--dur-2) ease, color var(--dur-2) ease,
+    transform var(--dur-2) var(--ease-out-expo);
 }
 
 .icon-chip:hover {
-  border-color: var(--walnut-light);
+  transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--frame) 74%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 74%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 82%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 82%, #000);
 }
 
-.icon-chip--active {
-  border-color: var(--moss);
+.icon-chip--active,
+.icon-chip--active:hover {
+  background: var(--moss-soft);
+  border-top-color: color-mix(in srgb, var(--moss) 52%, #000);
+  border-left-color: color-mix(in srgb, var(--moss) 52%, #000);
+  border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
   color: var(--walnut-deep);
-  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.08);
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.12);
 }
 
 .icon-chip__tile {
   width: 24px;
   height: 24px;
-  border-radius: 6px;
+  border-radius: 0;
   display: grid;
   place-items: center;
   background: linear-gradient(
@@ -2695,7 +2735,7 @@ function launch() {
 .icon-chip__img {
   width: 100%;
   height: 100%;
-  border-radius: 5px;
+  border-radius: 0;
   object-fit: cover;
 }
 
@@ -2744,13 +2784,18 @@ function launch() {
   flex-direction: column;
   gap: 1px;
   padding: 8px 10px;
-  border-radius: 4px;
+  border-radius: 0;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  /* 指标块做成浅凹槽，和输入框同一套语义 */
+  box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.07);
   text-align: left;
-  transition: background var(--dur-2) ease;
+  transition: background var(--dur-2) ease, border-color var(--dur-2) ease;
 }
 
 .count:hover {
-  background: rgba(var(--accent-rgb), 0.06);
+  border-color: var(--line-strong);
+  background: var(--hover);
 }
 
 .count__num {
@@ -3040,12 +3085,13 @@ function launch() {
   align-items: center;
   gap: 10px;
   padding: 8px 9px;
-  border-radius: 4px;
-  transition: background var(--dur-1) ease;
+  border-radius: 0;
+  transition: background var(--dur-1) ease, box-shadow var(--dur-1) ease;
 }
 
 .file-row:hover {
-  background: rgba(var(--accent-rgb), 0.05);
+  background: var(--hover);
+  box-shadow: inset 3px 0 0 var(--moss);
 }
 
 .file-row__icon {
@@ -3099,8 +3145,13 @@ function launch() {
 .shot-card {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--line);
-  border-radius: 5px;
+  border-style: solid;
+  border-width: 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-radius: 0;
   overflow: hidden;
   background: var(--panel-2);
   transition: border-color var(--dur-2) ease, transform var(--dur-2) var(--ease-out-expo),
@@ -3108,8 +3159,11 @@ function launch() {
 }
 
 .shot-card:hover {
-  border-color: var(--line-strong);
   transform: translateY(-2px);
+  border-top-color: color-mix(in srgb, var(--frame) 78%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 78%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 86%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 86%, #000);
   box-shadow: var(--shadow-1);
 }
 
@@ -3224,8 +3278,13 @@ function launch() {
   max-height: calc(100vh - 72px);
   overflow-y: auto;
   padding: 20px 22px;
-  border-radius: 6px;
-  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  border-style: solid;
+  border-width: 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 68%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 68%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 76%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 76%, #000);
   background: rgba(var(--glass-rgb), 0.97);
   box-shadow: var(--shadow-2);
   display: flex;
@@ -3325,27 +3384,43 @@ function launch() {
   align-items: center;
   gap: 8px;
   padding: 8px 9px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 60%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 60%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 70%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 70%, #000);
+  border-radius: 0;
   background: var(--panel);
   text-align: left;
   color: var(--ink-soft);
-  transition: border-color var(--dur-2) ease;
+  transition: border-color var(--dur-2) ease, transform var(--dur-2) var(--ease-out-expo),
+    box-shadow var(--dur-2) ease;
 }
 
 .export-group:hover {
-  border-color: var(--walnut-light);
+  transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--frame) 72%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 72%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 80%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 80%, #000);
 }
 
 .export-group--on {
-  border-color: var(--moss);
+  background: var(--moss-soft);
+  border-top-color: color-mix(in srgb, var(--moss) 52%, #000);
+  border-left-color: color-mix(in srgb, var(--moss) 52%, #000);
+  border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
   color: var(--walnut-deep);
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.12);
 }
 
 .export-group__box {
   width: 15px;
   height: 15px;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px solid var(--line-strong);
   display: grid;
   place-items: center;
@@ -3450,8 +3525,12 @@ function launch() {
   flex-direction: column;
   gap: 10px;
   padding: 12px 14px;
-  border-radius: 6px;
-  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  border: 2px solid var(--frame);
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
   background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.06), transparent);
 }
 
@@ -3584,9 +3663,10 @@ function launch() {
   justify-content: space-between;
   gap: 12px;
   padding: 9px 11px;
+  border-radius: 0;
   border: 1px solid var(--line);
-  border-radius: 5px;
   background: var(--panel-2);
+  box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.06);
 }
 
 .opts-preset__info {

@@ -328,13 +328,15 @@ async function importServerPacks() {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px solid var(--line);
   background: var(--panel-2);
+  /* 列表行做成浅凹槽 */
+  box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.06);
 }
 
 .drop-item--pack {
-  border-color: var(--moss);
+  border-color: color-mix(in srgb, var(--moss) 42%, var(--line-strong));
   background: var(--moss-soft);
 }
 
@@ -343,8 +345,13 @@ async function importServerPacks() {
   place-items: center;
   width: 30px;
   height: 30px;
-  border-radius: 4px;
-  border: 1px solid var(--line);
+  border-radius: 0;
+  border-style: solid;
+  border-width: 1px;
+  border-top-color: color-mix(in srgb, var(--line-strong) 62%, #000);
+  border-left-color: color-mix(in srgb, var(--line-strong) 62%, #000);
+  border-right-color: color-mix(in srgb, var(--line-strong) 38%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--line-strong) 38%, #fff);
   background: var(--panel);
   color: var(--moss);
   flex-shrink: 0;

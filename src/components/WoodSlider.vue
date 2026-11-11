@@ -31,7 +31,7 @@ function onInput(event: Event) {
     :step="step"
     :value="modelValue"
     :style="{
-      background: `linear-gradient(90deg, var(--moss) 0 ${percent}%, rgba(122, 112, 100, 0.14) ${percent}% 100%)`,
+      background: `linear-gradient(90deg, var(--moss) 0 ${percent}%, var(--paper-2) ${percent}% 100%)`,
     }"
     @input="onInput"
   />
@@ -42,35 +42,42 @@ function onInput(event: Event) {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 6px;
-  border-radius: 99px;
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid var(--line);
+  box-shadow: inset 0 1px 2px rgba(40, 28, 16, 0.14);
   outline: none;
   cursor: pointer;
 }
 
+/* 滑块做成带底部厚度的小按键，和按钮、开关保持一致 */
 .slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: linear-gradient(180deg, #fffdf6, #f5e9d4);
-  border: 3px solid var(--walnut);
-  box-shadow: 0 2px 6px rgba(70, 40, 18, 0.3);
-  transition: transform var(--dur-1) var(--ease-out-expo),
-    box-shadow var(--dur-2) ease;
+  width: 14px;
+  height: 22px;
+  border-radius: 2px;
+  background: var(--panel);
+  border-style: solid;
+  border-width: 1px 1px 5px;
+  border-color: color-mix(in srgb, var(--line-strong) 84%, var(--ink) 16%);
+  border-bottom-color: color-mix(in srgb, var(--panel) 70%, #000);
+  box-shadow: none;
+  transition: transform var(--dur-1) var(--ease-out-expo);
 }
 
 .slider::-webkit-slider-thumb:hover {
-  transform: scale(1.16);
-  box-shadow: 0 3px 10px rgba(70, 40, 18, 0.34);
+  transform: translateY(-1px);
 }
 
 .slider::-moz-range-thumb {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fffdf6;
-  border: 3px solid var(--walnut);
+  width: 14px;
+  height: 22px;
+  border-radius: 2px;
+  background: var(--panel);
+  border-style: solid;
+  border-width: 1px 1px 5px;
+  border-color: color-mix(in srgb, var(--line-strong) 84%, var(--ink) 16%);
+  border-bottom-color: color-mix(in srgb, var(--panel) 70%, #000);
 }
 </style>

@@ -909,28 +909,54 @@ const partOptions = [
   margin-right: 2px;
 }
 
+/* 工具按钮沿用同一套浮雕：悬停浮起，选中压进面板 */
 .tool {
+  --face: var(--panel-2);
   height: 28px;
   min-width: 34px;
   padding: 0 9px;
-  border-radius: 3px;
-  border: 1px solid var(--line);
-  background: var(--panel-2);
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-color: transparent;
+  background: transparent;
   color: var(--ink-soft);
   font-size: 11.5px;
   font-weight: 600;
-  transition: all var(--dur-1) ease;
+  transition: background 150ms ease, color 150ms ease,
+    border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
 }
 
-.tool:hover {
-  border-color: var(--walnut-light);
+.tool:not(.tool--active):hover {
   color: var(--walnut-deep);
+  background: var(--hover);
+  transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-left-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-right-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-bottom-color: color-mix(in srgb, var(--face) 42%, #000);
+}
+
+.tool:active {
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-left-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
 }
 
 .tool--active {
-  border-color: var(--moss);
   background: var(--moss-soft);
   color: var(--moss);
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--moss) 42%, #000);
+  border-left-color: color-mix(in srgb, var(--moss) 42%, #000);
+  border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.14);
 }
 
 .tool--size {
@@ -953,11 +979,16 @@ const partOptions = [
 .sv-area {
   position: relative;
   height: 132px;
-  border-radius: 4px;
-  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  border-style: solid;
+  border-width: 1px;
+  border-top-color: color-mix(in srgb, var(--line-strong) 66%, #000);
+  border-left-color: color-mix(in srgb, var(--line-strong) 66%, #000);
+  border-right-color: color-mix(in srgb, var(--line-strong) 38%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--line-strong) 38%, #fff);
   cursor: crosshair;
   touch-action: none;
-  box-shadow: 0 1px 4px rgba(80, 58, 34, 0.16) inset;
+  box-shadow: inset 0 1px 3px rgba(80, 58, 34, 0.2);
 }
 
 .sv-knob {
@@ -965,7 +996,7 @@ const partOptions = [
   width: 14px;
   height: 14px;
   margin: -7px 0 0 -7px;
-  border-radius: 50%;
+  border-radius: 0;
   border: 2px solid #fffdf6;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
   pointer-events: none;
@@ -974,8 +1005,13 @@ const partOptions = [
 .hue-bar {
   position: relative;
   height: 14px;
-  border-radius: 3px;
-  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  border-style: solid;
+  border-width: 1px;
+  border-top-color: color-mix(in srgb, var(--line-strong) 66%, #000);
+  border-left-color: color-mix(in srgb, var(--line-strong) 66%, #000);
+  border-right-color: color-mix(in srgb, var(--line-strong) 38%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--line-strong) 38%, #fff);
   cursor: pointer;
   touch-action: none;
   background: linear-gradient(
@@ -996,7 +1032,7 @@ const partOptions = [
   width: 16px;
   height: 16px;
   margin: -8px 0 0 -8px;
-  border-radius: 50%;
+  border-radius: 0;
   border: 2px solid #fffdf6;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
   pointer-events: none;
@@ -1027,20 +1063,22 @@ const partOptions = [
   align-items: center;
   gap: 3px;
   padding: 4px 5px;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px solid transparent;
-  transition: border-color var(--dur-1) ease, background var(--dur-1) ease;
+  transition: border-color var(--dur-1) ease, background var(--dur-1) ease,
+    transform var(--dur-1) ease;
 }
 
 .preset:hover {
   border-color: var(--line-strong);
   background: var(--panel-2);
+  transform: translateY(-1px);
 }
 
 .preset-face {
   width: 34px;
   height: 34px;
-  border-radius: 6px;
+  border-radius: 0;
   border: 1px solid rgba(0, 0, 0, 0.12);
   background-size: 272px 272px;
   background-position: -34px -34px;
@@ -1089,9 +1127,10 @@ const partOptions = [
 .color-current {
   width: 30px;
   height: 30px;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px solid var(--line-strong);
-  box-shadow: 0 1px 3px rgba(80, 58, 34, 0.2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 1px 3px rgba(80, 58, 34, 0.2);
   flex-shrink: 0;
 }
 
@@ -1106,7 +1145,7 @@ const partOptions = [
 .swatch {
   width: 22px;
   height: 22px;
-  border-radius: 5px;
+  border-radius: 0;
   border: 1px solid rgba(0, 0, 0, 0.12);
   transition: transform var(--dur-1) ease;
 }
@@ -1115,6 +1154,7 @@ const partOptions = [
   transform: scale(1.12);
 }
 
+/* 选中色块：外面压一圈苔藓实线框，方块感更强 */
 .swatch--active {
   box-shadow: 0 0 0 2px var(--moss);
 }
@@ -1122,9 +1162,15 @@ const partOptions = [
 .hex-input {
   width: 92px;
   height: 30px;
-  border-radius: 3px;
-  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  border-style: solid;
+  border-width: 1px;
+  border-top-color: color-mix(in srgb, var(--line-strong) 66%, #000);
+  border-left-color: color-mix(in srgb, var(--line-strong) 66%, #000);
+  border-right-color: color-mix(in srgb, var(--line-strong) 38%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--line-strong) 38%, #fff);
   background: var(--panel);
+  box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.08);
   padding: 0 8px;
   color: var(--ink);
   font-size: 12px;
@@ -1133,7 +1179,7 @@ const partOptions = [
 .canvas-scroll {
   overflow: auto;
   max-height: 560px;
-  border-radius: 6px;
+  border-radius: 2px;
   border: 1px solid var(--line);
   background: var(--paper-2);
   padding: 14px;

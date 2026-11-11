@@ -506,10 +506,10 @@ onBeforeUnmount(() => {
 <style scoped>
 .skin-model {
   width: 100%;
-  border-radius: 14px;
+  border-radius: 2px;
   background: radial-gradient(circle at 50% 32%, rgba(var(--ambient-a), 0.18), transparent 66%),
     linear-gradient(180deg, var(--panel-2), var(--panel));
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   overflow: hidden;
   cursor: grab;
   position: relative;

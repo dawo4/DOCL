@@ -1,6 +1,6 @@
 {
-  "version": "1.6.7",
-  "url": "https://github.com/dawo4/DOCL/releases/download/v1.6.7/DOCL_1.6.7_x64-setup.exe",
-  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.6.7/DOCL_1.6.7_portable.zip",
-  "notes": "崩溃诊断与一键修复大更新。新增启动前自检：版本清单、客户端 jar、启动库、重复 Mod、磁盘空间、路径长度、内存分配与 32 位 Java 都会提前检查；崩溃分析接入远端规则库（24 条规则，支持 match: any/all）、分级短路、退出码闸门、debug.log 与堆栈关键字反查。一键修复可按命中的规则补前置、切换 64 位 Java、重置画质、补全资源、备份后清 config、重装加载器，并支持一键回滚到修复前。修复 NeoForge 26.x 启动报「Minecraft-Dists / patched Minecraft jar missing」：不再把版本 jar 放进启动 classpath，交给 FML 生产模式按 libraries 自行定位补丁客户端与 NeoForge 本体。修复选中 NeoForge 实例后光影包、资源包搜索为空（加载器筛选现在只用于 Mod 与整合包）。光影包详情页会自动检测并推荐缺失的光影加载器：Iris / Oculus 可一键安装，原版实例显示 Fabric 安装提示。陶瓦联机组件下载改为多源 + SHA1 校验并显示下载进度。新增 4 套主题（墨染、霓虹、麦田、雪原）与 8 张内置底图。"
+  "version": "1.6.8",
+  "url": "https://github.com/dawo4/DOCL/releases/download/v1.6.8/DOCL_1.6.8_x64-setup.exe",
+  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.6.8/DOCL_1.6.8_portable.zip",
+  "notes": "整套界面换成方块浮雕风格：卡片、按钮、分段切换、输入框统一按「凸起 / 凹槽」两套语义重做，标题、分组标记、选中态都改为像素方块；滚动条换成可跟随主题的方形滑块；下载页、联机页、实例页、日志面板、皮肤编辑器等剩余界面全部对齐。新增「官方」主题（Mojang 启动器的炭灰 + 草绿），下线夜墨、麦田、雪原三套主题与夜航星空、麦浪、雪原三张底图。版本库卡片上方加入会缓慢旋转的玩家头颅。修复国内网络下自动更新偶发失败：更新清单改为 jsDelivr 与 GitHub raw 互备，安装包在官方地址之外追加多个 GitHub 加速镜像，下载支持断点续传，并对异常小的文件做完整性校验，失败时提示可手动下载的地址。"
 }

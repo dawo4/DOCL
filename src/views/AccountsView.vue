@@ -497,7 +497,7 @@ onMounted(() => {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
   min-height: calc(100vh - 168px);
-  border-radius: 3px;
+  border-radius: 0;
   overflow: hidden;
 }
 
@@ -622,19 +622,37 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   width: 100%;
+  --face: var(--panel-2);
   padding: 13px 14px;
   margin-bottom: 8px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: rgba(var(--glass-rgb), 0.4);
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-left-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-right-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-bottom-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-radius: 2px;
+  background: var(--face);
   color: var(--ink);
   text-align: left;
-  transition: border-color var(--dur-1) ease, background var(--dur-1) ease;
+  transition: border-color var(--dur-1) ease, background var(--dur-1) ease,
+    transform var(--dur-1) ease, box-shadow var(--dur-1) ease;
 }
 
 .add-type:hover {
-  border-color: var(--moss);
-  background: rgba(var(--accent-rgb), 0.07);
+  --face: var(--hover);
+  background: var(--face);
+  transform: translateY(-1px);
+}
+
+.add-type:active {
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-left-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
 }
 
 .add-type > svg {
@@ -709,24 +727,40 @@ onMounted(() => {
 }
 
 .third-preset {
+  --face: var(--panel-2);
   padding: 5px 12px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: var(--panel-2);
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-left-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-right-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-bottom-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-radius: 2px;
+  background: var(--face);
   color: var(--walnut);
   font-size: 12px;
   font-weight: 700;
-  transition: border-color var(--dur-1) ease, background var(--dur-1) ease;
+  transition: border-color var(--dur-1) ease, background var(--dur-1) ease,
+    transform var(--dur-1) ease, box-shadow var(--dur-1) ease;
 }
 
 .third-preset:hover {
-  border-color: var(--moss);
+  --face: var(--hover);
+  background: var(--face);
+  transform: translateY(-1px);
 }
 
-.third-preset--active {
-  border-color: var(--moss);
+.third-preset--active,
+.third-preset--active:hover {
   background: var(--moss-soft);
   color: var(--moss);
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--moss) 42%, #000);
+  border-left-color: color-mix(in srgb, var(--moss) 42%, #000);
+  border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.14);
 }
 
 .third-server {
@@ -894,7 +928,7 @@ onMounted(() => {
   height: 54px;
   display: grid;
   place-items: center;
-  border-radius: 4px;
+  border-radius: 0;
   background: var(--panel-2);
   border: 1px dashed var(--line-strong);
   font-size: 26px;

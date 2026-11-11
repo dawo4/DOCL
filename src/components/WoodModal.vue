@@ -51,8 +51,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .modal {
   position: relative;
   background: var(--panel);
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
+  border: 2px solid var(--frame);
+  /* 和卡片一致：左上亮、右下暗的浮雕边框 */
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-radius: 2px;
   box-shadow: 0 30px 70px rgba(50, 34, 18, 0.32);
   max-width: 88vw;
   max-height: 84vh;
@@ -86,16 +91,35 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .modal__close {
   width: 30px;
   height: 30px;
-  border-radius: 4px;
+  border-radius: 2px;
   display: grid;
   place-items: center;
   color: var(--ink-soft);
-  transition: background var(--dur-1) ease, transform var(--dur-1) ease;
+  border: 1px solid transparent;
+  transition: background var(--dur-1) ease, border-color var(--dur-1) ease,
+    transform var(--dur-1) ease;
 }
 
 .modal__close:hover {
+  color: var(--ink);
   background: var(--panel-2);
-  transform: rotate(90deg);
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 60%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 60%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 70%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 70%, #000);
+  transform: translateY(-1px);
+}
+
+.modal__close:active {
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--frame) 70%, #000);
+  border-left-color: color-mix(in srgb, var(--frame) 70%, #000);
+  border-right-color: color-mix(in srgb, var(--frame) 60%, #fff);
+  border-bottom-width: 1px;
+  border-bottom-color: color-mix(in srgb, var(--frame) 60%, #fff);
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.16);
 }
 
 .modal__body {

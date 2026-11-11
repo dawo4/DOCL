@@ -70,7 +70,7 @@ function seedDemoLog() {
 const devLooks = [
   { theme: "paper", bg: "forest" },
   { theme: "terracotta", bg: "dune" },
-  { theme: "nocturne", bg: "night" },
+  { theme: "launcher", bg: "grid" },
   { theme: "sakura", bg: "sakura" },
   { theme: "ocean", bg: "ocean" },
   { theme: "forge", bg: "aurora" },
@@ -303,7 +303,6 @@ const currentView = computed(() => views[store.page as Page]);
   <div
     class="app glass"
     :class="{ 'no-anim': store.config && !store.config.animations }"
-    :data-radius="store.config?.ui_radius ?? 'default'"
     :data-density="store.config?.ui_density ?? 'normal'"
     :data-font="store.config?.ui_font ?? 'default'"
     :style="appStyle"
@@ -483,7 +482,7 @@ const currentView = computed(() => views[store.page as Page]);
   gap: 8px;
   padding: 9px 11px;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: 2px;
   background: var(--panel-2);
 }
 
@@ -539,7 +538,7 @@ const currentView = computed(() => views[store.page as Page]);
   align-items: center;
   gap: 8px;
   padding: 30px 46px;
-  border-radius: 18px;
+  border-radius: 2px;
   border: 2px dashed var(--moss);
   background: var(--panel);
   box-shadow: 0 24px 60px rgba(50, 34, 18, 0.28);

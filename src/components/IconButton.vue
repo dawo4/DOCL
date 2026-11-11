@@ -87,23 +87,44 @@ onBeforeUnmount(() => {
 }
 
 .icon-btn {
+  --depth: 2px;
+  --face: var(--panel-2);
+  /* 浮雕边色：左上取亮、右下取暗，按下时翻转 */
+  --bevel-hi: color-mix(in srgb, var(--face) 52%, #fff);
+  /* 浅色正面只压暗一点，底边才不会黑得突兀 */
+  --bevel-lo: color-mix(in srgb, var(--face) 72%, #000);
   display: grid;
   place-items: center;
-  border-radius: 4px;
-  border: 1px solid transparent;
+  box-sizing: border-box;
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px 1px var(--depth);
+  border-color: transparent;
   color: var(--ink-soft);
   background: transparent;
-  transition: background var(--dur-2) ease, color var(--dur-2) ease,
-    border-color var(--dur-2) ease;
+  transition: background 150ms ease, color 150ms ease,
+    border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
 }
 
 .icon-btn:hover:not(:disabled) {
   background: rgba(var(--accent-rgb), 0.07);
   color: var(--walnut-deep);
+  transform: translateY(-1px);
+  border-top-color: var(--bevel-hi);
+  border-left-color: var(--bevel-hi);
+  border-right-color: var(--bevel-lo);
+  border-bottom-color: var(--bevel-lo);
 }
 
 .icon-btn:active:not(:disabled) {
+  transform: translateY(calc(var(--depth) - 1px));
   background: rgba(var(--accent-rgb), 0.12);
+  border-top-color: var(--bevel-lo);
+  border-left-color: var(--bevel-lo);
+  border-right-color: var(--bevel-hi);
+  border-bottom-color: var(--bevel-hi);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.24);
 }
 
 .icon-btn:disabled {
@@ -111,24 +132,33 @@ onBeforeUnmount(() => {
   cursor: not-allowed;
 }
 
+/* 有底色的变体常驻浮雕边 */
 .icon-btn--soft {
-  border-color: var(--line);
-  background: var(--panel-2);
+  background: var(--face);
+  border-top-color: var(--bevel-hi);
+  border-left-color: var(--bevel-hi);
+  border-right-color: var(--bevel-lo);
+  border-bottom-color: var(--bevel-lo);
 }
 
 .icon-btn--soft:hover:not(:disabled) {
-  border-color: var(--line-strong);
-  background: var(--hover);
+  --face: var(--hover);
+  background: var(--face);
 }
 
 .icon-btn--danger {
+  --face: var(--danger-soft);
   color: var(--danger);
-  background: rgba(190, 92, 70, 0.1);
-  border-color: rgba(190, 92, 70, 0.22);
+  background: var(--face);
+  border-top-color: color-mix(in srgb, var(--danger) 24%, #fff);
+  border-left-color: color-mix(in srgb, var(--danger) 24%, #fff);
+  border-right-color: color-mix(in srgb, var(--danger) 62%, #000);
+  border-bottom-color: color-mix(in srgb, var(--danger) 62%, #000);
 }
 
 .icon-btn--danger:hover:not(:disabled) {
-  background: rgba(190, 92, 70, 0.16);
+  --face: color-mix(in srgb, var(--danger-soft) 78%, var(--danger));
+  background: var(--face);
   color: var(--danger);
 }
 
@@ -142,41 +172,46 @@ onBeforeUnmount(() => {
 .icon-btn--danger-quiet:hover:not(:disabled) {
   color: var(--danger);
   background: rgba(190, 92, 70, 0.12);
-  border-color: transparent;
+  border-top-color: color-mix(in srgb, var(--danger) 24%, #fff);
+  border-left-color: color-mix(in srgb, var(--danger) 24%, #fff);
+  border-right-color: color-mix(in srgb, var(--danger) 62%, #000);
+  border-bottom-color: color-mix(in srgb, var(--danger) 62%, #000);
 }
 
 .icon-btn--primary {
-  color: var(--walnut-deep);
-  background: linear-gradient(
-    180deg,
-    rgba(var(--accent-rgb), 0.14),
-    rgba(var(--accent-rgb), 0.26)
-  );
-  border-color: rgba(var(--accent-rgb), 0.3);
-  box-shadow: 0 1px 0 rgba(var(--glass-rgb), 0.65) inset,
-    0 8px 18px rgba(70, 40, 18, 0.08);
+  --face: var(--btn-b);
+  /* 深色主键保留明显的深色底边 */
+  --bevel-lo: color-mix(in srgb, var(--btn-b) 42%, #000);
+  color: var(--btn-fg);
+  background: var(--face);
+  border-top-color: var(--bevel-hi);
+  border-left-color: var(--bevel-hi);
+  border-right-color: var(--bevel-lo);
+  border-bottom-color: var(--bevel-lo);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
 }
 
 .icon-btn--primary:hover:not(:disabled) {
-  background: linear-gradient(
-    180deg,
-    rgba(var(--accent-rgb), 0.2),
-    rgba(var(--accent-rgb), 0.34)
-  );
-  color: var(--walnut-deep);
+  --face: var(--btn-a);
+  color: var(--btn-fg);
+  background: var(--face);
 }
 
 .icon-btn--active {
+  --face: var(--moss-soft);
   color: var(--moss);
-  background: var(--moss-soft);
-  border-color: var(--moss);
+  background: var(--face);
+  border-top-color: color-mix(in srgb, var(--moss) 36%, #fff);
+  border-left-color: color-mix(in srgb, var(--moss) 36%, #fff);
+  border-right-color: color-mix(in srgb, var(--moss) 72%, #000);
+  border-bottom-color: color-mix(in srgb, var(--moss) 72%, #000);
 }
 
 .icon-tip {
   position: fixed;
   z-index: 120;
   padding: 5px 9px;
-  border-radius: 6px;
+  border-radius: 2px;
   background: #3c2b1c;
   color: #fbf4e6;
   font-size: 11.5px;

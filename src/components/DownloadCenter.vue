@@ -344,9 +344,14 @@ onBeforeUnmount(() => {
 .dl-panel {
   width: min(680px, 92vw);
   background: var(--panel);
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  box-shadow: 0 30px 70px rgba(40, 28, 16, 0.32);
+  border: 2px solid var(--frame);
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel) 46%, #fff),
+    0 30px 70px rgba(40, 28, 16, 0.32);
   padding: 20px 22px 16px;
   display: flex;
   flex-direction: column;
@@ -391,9 +396,16 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 12px;
   padding: 16px 16px 14px;
-  border-radius: 4px;
-  border: 1px solid var(--line);
+  /* 弹窗内的信息块做成凹槽，和弹窗外框的凸起形成对照 */
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--line-strong) 45%, var(--ink));
+  border-left-color: color-mix(in srgb, var(--line-strong) 45%, var(--ink));
+  border-right-color: color-mix(in srgb, var(--line-strong) 58%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--line-strong) 58%, #fff);
   background: var(--panel-2);
+  box-shadow: inset 0 1px 3px rgba(40, 28, 16, 0.1);
 }
 
 .dl-metric {
@@ -441,9 +453,15 @@ onBeforeUnmount(() => {
   gap: 10px;
   min-width: 0;
   padding: 14px 16px;
-  border-radius: 4px;
-  border: 1px solid var(--line);
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--line-strong) 45%, var(--ink));
+  border-left-color: color-mix(in srgb, var(--line-strong) 45%, var(--ink));
+  border-right-color: color-mix(in srgb, var(--line-strong) 58%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--line-strong) 58%, #fff);
   background: var(--panel-2);
+  box-shadow: inset 0 1px 3px rgba(40, 28, 16, 0.1);
 }
 
 .dl-task__head {
@@ -594,8 +612,10 @@ onBeforeUnmount(() => {
 
 .dl-error {
   padding: 9px 11px;
-  border-radius: 4px;
+  border-radius: 0;
+  border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--line-strong));
   background: var(--danger-soft);
+  box-shadow: inset 0 1px 2px rgba(90, 40, 30, 0.12);
   color: var(--danger);
   font-size: 12px;
 }
@@ -826,7 +846,7 @@ onBeforeUnmount(() => {
 .dl-tip {
   width: 260px;
   padding: 12px 13px;
-  border-radius: 8px;
+  border-radius: 0;
   background: color-mix(in srgb, var(--ink) 94%, transparent);
   color: var(--paper);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.24);
@@ -846,7 +866,7 @@ onBeforeUnmount(() => {
 
 .dl-tip__bar {
   height: 5px;
-  border-radius: 3px;
+  border-radius: 0;
   background: color-mix(in srgb, var(--paper) 18%, transparent);
   overflow: hidden;
 }
@@ -854,7 +874,7 @@ onBeforeUnmount(() => {
 .dl-tip__bar span {
   display: block;
   height: 100%;
-  border-radius: 3px;
+  border-radius: 0;
   background: linear-gradient(90deg, var(--moss-bright), var(--amber));
   transition: width 240ms var(--ease-out-quart);
 }
@@ -874,15 +894,27 @@ onBeforeUnmount(() => {
 
 .dl-tip__open {
   height: 28px;
-  border-radius: 4px;
+  border-radius: 0;
   background: color-mix(in srgb, var(--paper) 12%, transparent);
   color: var(--paper);
   font-size: 11.5px;
-  border: 1px solid color-mix(in srgb, var(--paper) 16%, transparent);
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--paper) 22%, transparent);
+  border-left-color: color-mix(in srgb, var(--paper) 22%, transparent);
+  border-right-color: color-mix(in srgb, #000 26%, transparent);
+  border-bottom-color: color-mix(in srgb, #000 34%, transparent);
+  transition: background var(--dur-1) ease, transform var(--dur-1) ease;
 }
 
 .dl-tip__open:hover {
   background: color-mix(in srgb, var(--paper) 20%, transparent);
+  transform: translateY(-1px);
+}
+
+.dl-tip__open:active {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.35);
 }
 
 @keyframes dl-fade-in {

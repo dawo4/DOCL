@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿﻿﻿﻿<script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import defaultProfileCard from "../assets/profile-card.jpg";
@@ -7,6 +7,7 @@ import { api, openFolder, type PlayStats } from "../api";
 import AppIcon from "../components/AppIcon.vue";
 import IconButton from "../components/IconButton.vue";
 import InstanceGlyph from "../components/InstanceGlyph.vue";
+import SkinHead from "../components/SkinHead.vue";
 import WoodButton from "../components/WoodButton.vue";
 import {
   launchVersion,
@@ -15,6 +16,7 @@ import {
   refreshDirCounts,
   sameDir,
   selectVersion,
+  selectedAccount,
   selectedVersion,
   setInstanceIcon,
   setInstanceIconImage,
@@ -38,6 +40,12 @@ const customIcons = reactive<Record<string, string>>({});
 const visibleVersions = computed(() =>
   store.installed.filter((item) => !item.dependency)
 );
+
+/// 卡片上方那颗头颅的皮肤与种子，跟启动台用同一套
+const skinSource = computed(
+  () => store.accountSkin?.data_url || store.defaultSkin
+);
+const skinSeed = computed(() => selectedAccount.value?.uuid ?? "steve");
 
 function requestDelete(id: string) {
   if (confirmId.value === id) {
@@ -565,6 +573,10 @@ async function chooseImage(id: string) {
       </article>
 
       <aside class="shelf-side">
+        <div class="shelf-head" aria-hidden="true">
+          <SkinHead :skin="skinSource" :seed="skinSeed" :height="120" />
+        </div>
+
         <article
           class="stat-card stat-card--top"
           :style="{ '--card-bg': `url(${cardBg})` }"
@@ -744,8 +756,12 @@ async function chooseImage(id: string) {
   z-index: 21;
   width: 320px;
   padding: 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  border: 2px solid var(--frame);
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-radius: 2px;
   background: var(--panel);
   box-shadow: 0 14px 34px rgba(52, 38, 24, 0.22);
 }
@@ -878,8 +894,8 @@ async function chooseImage(id: string) {
   min-height: 300px;
   padding: 24px 26px 20px;
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  border: 2px solid var(--frame);
+  border-radius: 2px;
   background-color: rgba(var(--glass-rgb), 0.92);
   background-image: var(--hero-bg);
   background-position: center;
@@ -1148,6 +1164,16 @@ async function chooseImage(id: string) {
   min-width: 0;
 }
 
+/* 「最常玩版本」上方留白里放一颗会转的玩家头颅，和启动台同一个组件 */
+.shelf-head {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  overflow: hidden;
+}
+
 .stat-card {
   position: relative;
   display: flex;
@@ -1156,8 +1182,8 @@ async function chooseImage(id: string) {
   min-width: 0;
   overflow: hidden;
   padding: 13px 15px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  border: 2px solid var(--frame);
+  border-radius: 2px;
   background-color: rgba(var(--glass-rgb), 0.86);
   box-shadow: var(--shadow-1);
 }
@@ -1234,7 +1260,7 @@ async function chooseImage(id: string) {
   height: 38px;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 2px;
   background: rgba(var(--accent-rgb), 0.08);
 }
 
@@ -1272,17 +1298,18 @@ async function chooseImage(id: string) {
 .version-row__share-track {
   flex: 1;
   max-width: 240px;
-  height: 3px;
+  height: 4px;
   overflow: hidden;
-  border-radius: 99px;
-  background: rgba(var(--accent-rgb), 0.1);
+  border-radius: 1px;
+  background: rgba(var(--accent-rgb), 0.12);
 }
 
 .version-row__share-track span {
   display: block;
   height: 100%;
-  border-radius: 99px;
-  background: linear-gradient(90deg, var(--moss-bright), var(--moss));
+  border-radius: 1px;
+  background: var(--moss);
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.2);
   transition: width var(--dur-4) var(--ease-out-expo);
 }
 
@@ -1321,8 +1348,13 @@ async function chooseImage(id: string) {
   flex-direction: column;
   gap: 2px;
   padding: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  /* 版本列表是一只实体托盘，行本身保持无框、靠悬停着色 */
+  border: 2px solid var(--frame);
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-radius: 2px;
   /* 整块浅色面板兜底，毛玻璃/无底图下行内容也能看清 */
   background: rgba(var(--glass-rgb), 0.88);
 }
@@ -1381,7 +1413,7 @@ async function chooseImage(id: string) {
   height: 40px;
   padding: 0;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 2px;
   background: rgba(var(--accent-rgb), 0.05);
   cursor: pointer;
   overflow: hidden;
@@ -1515,8 +1547,12 @@ async function chooseImage(id: string) {
   z-index: 21;
   width: 268px;
   padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  border: 2px solid var(--frame);
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-radius: 2px;
   background: var(--panel);
   box-shadow: 0 14px 34px rgba(52, 38, 24, 0.22);
 }
@@ -1569,7 +1605,7 @@ async function chooseImage(id: string) {
   justify-content: center;
   width: 30px;
   height: 30px;
-  border-radius: 4px;
+  border-radius: 0;
   background: color-mix(in srgb, var(--tile) 18%, rgba(255, 255, 255, 0.6));
 }
 
@@ -1610,6 +1646,11 @@ async function chooseImage(id: string) {
 
   .shelf-hero {
     min-height: 0;
+  }
+
+  /* 竖排后没有那块留白了，头颅一起收起 */
+  .shelf-head {
+    display: none;
   }
 
   .stat-card--top {

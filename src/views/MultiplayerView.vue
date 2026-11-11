@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿﻿<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
@@ -1496,7 +1496,9 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 14px 10px;
+  padding: 10px;
+  /* 和实例页一致：整列当一只托盘，外框 2px，里面衬一圈受光细边 */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel) 46%, #fff);
 }
 
 .mp-side__group {
@@ -1521,12 +1523,13 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 34px;
   padding: 0 10px;
-  border-radius: 4px;
+  border-radius: 0;
   color: var(--ink-soft);
   font-size: 12.5px;
   font-weight: 600;
   text-align: left;
-  transition: background var(--dur-1) ease, color var(--dur-1) ease;
+  transition: background var(--dur-1) ease, color var(--dur-1) ease,
+    box-shadow var(--dur-1) ease;
 }
 
 .mp-nav > svg {
@@ -1544,7 +1547,7 @@ onBeforeUnmount(() => {
 }
 
 .mp-nav:hover {
-  background: rgba(var(--accent-rgb), 0.07);
+  background: var(--hover);
   color: var(--walnut-deep);
 }
 
@@ -1556,6 +1559,8 @@ onBeforeUnmount(() => {
 .mp-nav--active:hover {
   background: var(--moss-soft);
   color: var(--moss);
+  /* 选中项左侧压一条 3px 实心竖条，和实例页一致 */
+  box-shadow: inset 3px 0 0 var(--moss);
 }
 
 .mp-nav--active > svg,
@@ -1567,7 +1572,7 @@ onBeforeUnmount(() => {
   flex: none;
   min-width: 18px;
   padding: 1px 5px;
-  border-radius: 3px;
+  border-radius: 0;
   background: var(--panel);
   border: 1px solid var(--line);
   color: var(--muted);
@@ -1576,8 +1581,8 @@ onBeforeUnmount(() => {
 }
 
 .mp-nav--active .mp-nav__count {
-  background: rgba(255, 255, 255, 0.6);
-  border-color: transparent;
+  background: color-mix(in srgb, var(--moss) 18%, var(--panel));
+  border-color: color-mix(in srgb, var(--moss) 40%, transparent);
   color: var(--moss);
 }
 
@@ -1638,9 +1643,11 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 9px 12px;
-  border-radius: 4px;
-  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--line-strong));
   background: var(--danger-soft);
+  /* 告警条做成浅凹槽：内容嵌在面板里，而不是浮在上面 */
+  box-shadow: inset 0 1px 2px rgba(90, 40, 30, 0.12);
   color: var(--danger);
   font-size: 12px;
 }
@@ -1656,7 +1663,7 @@ onBeforeUnmount(() => {
 
 .mp-empty--card {
   padding: 16px 16px;
-  border-radius: 6px;
+  border-radius: 2px;
   border: 1px dashed var(--line-strong);
   background: var(--panel-2);
 }
@@ -1666,7 +1673,7 @@ onBeforeUnmount(() => {
   place-items: center;
   width: 38px;
   height: 38px;
-  border-radius: 4px;
+  border-radius: 0;
   background: var(--moss-soft);
   color: var(--moss);
   flex-shrink: 0;
@@ -1692,7 +1699,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 12px;
   padding: 0 16px 16px;
-  border-radius: 3px;
+  border-radius: 0;
   overflow: hidden;
 }
 
@@ -1751,8 +1758,9 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   padding: 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   background: rgba(var(--glass-rgb), 0.28);
+  box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.08);
   color: var(--ink-soft);
   font-size: 12px;
 }
@@ -1762,8 +1770,9 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border: 1px solid rgba(190, 92, 70, 0.28);
+  border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--line-strong));
   background: var(--danger-soft);
+  box-shadow: inset 0 1px 2px rgba(90, 40, 30, 0.12);
   color: var(--danger);
   font-size: 11.5px;
 }
@@ -1909,8 +1918,9 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 10px;
   padding: 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   background: rgba(var(--glass-rgb), 0.28);
+  box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.07);
 }
 
 .tc-room__label {
@@ -2006,9 +2016,20 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   padding: 9px 12px;
-  border-radius: 4px;
-  border: 1px solid var(--line);
+  border-radius: 0;
+  border-style: solid;
+  border-width: 2px;
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
   background: var(--panel);
+  transition: transform var(--dur-2) var(--ease-out-expo), box-shadow var(--dur-2) ease;
+}
+
+.mp-room:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-1);
 }
 
 .mp-room__icon {
@@ -2016,7 +2037,7 @@ onBeforeUnmount(() => {
   place-items: center;
   width: 34px;
   height: 34px;
-  border-radius: 4px;
+  border-radius: 0;
   background: var(--moss-soft);
   color: var(--moss);
   flex-shrink: 0;
@@ -2113,7 +2134,7 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 8px;
   padding: 8px 10px;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px dashed var(--line-strong);
   background: var(--panel-2);
 }
@@ -2123,7 +2144,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 1px;
   padding: 4px 8px;
-  border-radius: 3px;
+  border-radius: 0;
   text-align: left;
   transition: background var(--dur-1) ease;
 }
@@ -2146,7 +2167,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px dashed var(--line-strong);
   background: var(--panel-2);
   color: var(--ink-soft);
@@ -2157,9 +2178,15 @@ onBeforeUnmount(() => {
 .mp-console {
   height: 220px;
   overflow-y: auto;
-  border-radius: 4px;
-  border: 1px solid var(--line);
+  border-radius: 0;
+  border-style: solid;
+  border-width: 1px;
+  border-top-color: color-mix(in srgb, var(--line-strong) 64%, #000);
+  border-left-color: color-mix(in srgb, var(--line-strong) 64%, #000);
+  border-right-color: color-mix(in srgb, var(--line-strong) 38%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--line-strong) 38%, #fff);
   background: var(--paper-2);
+  box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.1);
   padding: 9px 12px;
   font-family: var(--font-mono);
   font-size: 11px;
@@ -2238,7 +2265,7 @@ onBeforeUnmount(() => {
   color: var(--walnut-deep);
   background: var(--panel-2);
   border: 1px dashed var(--line-strong);
-  border-radius: 4px;
+  border-radius: 0;
   padding: 7px 14px;
   transition: border-color var(--dur-1) ease, background var(--dur-1) ease;
 }
@@ -2260,7 +2287,7 @@ onBeforeUnmount(() => {
   gap: 5px;
   height: 25px;
   padding: 0 10px;
-  border-radius: 3px;
+  border-radius: 0;
   background: var(--moss-soft);
   color: var(--moss);
   font-size: 11.5px;
@@ -2344,3 +2371,4 @@ onBeforeUnmount(() => {
   }
 }
 </style>
+

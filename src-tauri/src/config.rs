@@ -66,7 +66,8 @@ pub struct Config {
     pub version_isolation: bool,
     pub selected_version: Option<String>,
     pub selected_account: Option<String>,
-    /// paper / celadon / terracotta / moon / nocturne / sakura / ocean / lavender / graphite
+    /// paper / celadon / terracotta / moon / sakura / ocean / lavender / graphite /
+    /// forge / ink / neon / launcher
     pub theme: String,
     pub background_image: Option<String>,
     /// 背景图文件夹：设置后每次启动从中随机选一张（与 background_image 互斥）

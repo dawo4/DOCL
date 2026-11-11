@@ -1823,31 +1823,58 @@ async function confirmImport() {
   height: 38px;
   padding: 3px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 2px;
   background: var(--paper-2);
 }
 
+/* 分段按键：未选中平面，悬停带浮雕边浮起，选中压进凹槽 */
 .cf-source-tab {
+  --face: var(--panel-2);
   flex: 1;
   height: 30px;
   padding: 0 8px;
-  border-radius: 3px;
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-color: transparent;
   font-size: 11.5px;
   font-weight: 700;
   color: var(--ink-soft);
   white-space: nowrap;
-  transition: background var(--dur-2) ease, color var(--dur-2) ease,
-    box-shadow var(--dur-2) ease;
+  transition: background 150ms ease, color 150ms ease,
+    border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
 }
 
-.cf-source-tab:hover {
+.cf-source-tab:not(.cf-source-tab--on):hover {
   color: var(--walnut-deep);
+  background: var(--hover);
+  transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-left-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-right-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-bottom-color: color-mix(in srgb, var(--face) 42%, #000);
+}
+
+.cf-source-tab:active {
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-left-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
 }
 
 .cf-source-tab--on {
-  background: var(--panel);
+  background: var(--panel-2);
   color: var(--walnut-deep);
-  box-shadow: var(--shadow-1);
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-left-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
 }
 
 /* 结果列表 */
@@ -1855,8 +1882,8 @@ async function confirmImport() {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  border: 2px solid var(--frame);
+  border-radius: 2px;
   background: var(--line);
   overflow: hidden;
 }
@@ -1883,7 +1910,7 @@ async function confirmImport() {
 .cf-row__logo {
   width: 48px;
   height: 48px;
-  border-radius: 5px;
+  border-radius: 2px;
   object-fit: cover;
   background: var(--paper-2);
 }
@@ -1962,7 +1989,7 @@ async function confirmImport() {
   font-size: 10px;
   line-height: 1;
   padding: 3px 5px;
-  border-radius: 4px;
+  border-radius: 0;
   color: var(--moss);
   background: var(--moss-soft);
   white-space: nowrap;
@@ -2047,7 +2074,7 @@ async function confirmImport() {
 .cf-detail__logo {
   width: 54px;
   height: 54px;
-  border-radius: 6px;
+  border-radius: 2px;
   object-fit: cover;
   flex-shrink: 0;
   background: var(--paper-2);
@@ -2087,20 +2114,39 @@ async function confirmImport() {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  --face: var(--panel-2);
   height: 30px;
   padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: rgba(var(--glass-rgb), 0.4);
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-left-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-right-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-bottom-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-radius: 2px;
+  background: var(--face);
   color: var(--ink-soft);
   font-size: 12px;
-  transition: border-color var(--dur-1) ease, color var(--dur-1) ease, background var(--dur-1) ease;
+  transition: border-color var(--dur-1) ease, color var(--dur-1) ease,
+    background var(--dur-1) ease, transform var(--dur-1) ease,
+    box-shadow var(--dur-1) ease;
 }
 
 .cf-link:hover {
-  border-color: var(--moss);
+  --face: var(--hover);
+  background: var(--face);
   color: var(--walnut-deep);
-  background: rgba(var(--accent-rgb), 0.07);
+  transform: translateY(-1px);
+}
+
+.cf-link:active {
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-left-color: color-mix(in srgb, var(--face) 72%, #000);
+  border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
 }
 
 .cf-version-tabs {
@@ -2109,9 +2155,11 @@ async function confirmImport() {
   align-items: center;
   gap: 4px;
   padding: 8px 10px;
+  /* 筛选条做成和分段控件一样的浅凹槽 */
   border: 1px solid var(--line);
-  border-radius: 4px;
-  background: rgba(var(--glass-rgb), 0.4);
+  border-radius: 2px;
+  background: var(--paper-2);
+  box-shadow: inset 0 1px 2px rgba(40, 28, 16, 0.08);
 }
 
 .cf-version-tabs--empty {
@@ -2124,10 +2172,11 @@ async function confirmImport() {
 .cf-version-tab {
   height: 26px;
   padding: 0 11px;
-  border-radius: 3px;
+  border-radius: 2px;
   color: var(--muted);
   font-size: 12px;
-  transition: background var(--dur-1) ease, color var(--dur-1) ease;
+  transition: background var(--dur-1) ease, color var(--dur-1) ease,
+    box-shadow var(--dur-1) ease;
 }
 
 .cf-version-tab:hover {
@@ -2135,10 +2184,14 @@ async function confirmImport() {
   background: rgba(var(--accent-rgb), 0.08);
 }
 
-.cf-version-tab--active {
-  color: #fff8ea;
-  background: var(--moss);
+/* 选中项压进凹槽，和分段按键、导航选中态保持同一种读法 */
+.cf-version-tab--active,
+.cf-version-tab--active:hover {
+  color: var(--moss);
+  background: var(--moss-soft);
   font-weight: 700;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1),
+    0 0 0 1px color-mix(in srgb, var(--moss) 26%, transparent);
 }
 
 .cf-files {
@@ -2177,12 +2230,13 @@ async function confirmImport() {
   align-items: center;
   gap: 10px;
   padding: 9px 11px;
-  border-radius: 4px;
-  transition: background var(--dur-1) ease;
+  border-radius: 0;
+  transition: background var(--dur-1) ease, box-shadow var(--dur-1) ease;
 }
 
 .cf-file:hover {
-  background: rgba(var(--accent-rgb), 0.06);
+  background: var(--hover);
+  box-shadow: inset 3px 0 0 var(--moss);
 }
 
 .cf-file__main {
@@ -2231,8 +2285,8 @@ async function confirmImport() {
   flex-shrink: 0;
   height: 21px;
   padding: 0 8px;
-  border-radius: 3px;
-  border: 1px solid var(--line);
+  border-radius: 0;
+  border: 1px solid var(--line-strong);
   background: var(--panel-2);
   color: var(--muted);
   font-size: 10.5px;
@@ -2255,9 +2309,16 @@ async function confirmImport() {
   gap: 6px;
   margin: 2px 0 4px;
   padding: 10px 12px;
-  border-radius: 4px;
-  border: 1px solid var(--line);
+  /* 依赖信息是附属内容，做成凹槽嵌在行内 */
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--line-strong) 45%, var(--ink));
+  border-left-color: color-mix(in srgb, var(--line-strong) 45%, var(--ink));
+  border-right-color: color-mix(in srgb, var(--line-strong) 58%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--line-strong) 58%, #fff);
   background: var(--panel-2);
+  box-shadow: inset 0 1px 3px rgba(40, 28, 16, 0.1);
 }
 
 .shader-loader {
@@ -2326,8 +2387,8 @@ async function confirmImport() {
 .cf-dep__logo {
   width: 30px;
   height: 30px;
-  border-radius: 3px;
-  border: 1px solid var(--line);
+  border-radius: 0;
+  border: 1px solid var(--line-strong);
   object-fit: cover;
   background: var(--panel);
   flex-shrink: 0;
@@ -2383,10 +2444,15 @@ async function confirmImport() {
   max-height: calc(100vh - 72px);
   overflow-y: auto;
   padding: 20px 22px;
-  border-radius: 6px;
-  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  border: 2px solid var(--frame);
+  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
+  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
   background: rgba(var(--glass-rgb), 0.97);
-  box-shadow: var(--shadow-2);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel) 46%, #fff),
+    var(--shadow-2);
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -2461,8 +2527,9 @@ async function confirmImport() {
 .pack-warnings {
   margin: 0;
   padding: 8px 12px 8px 26px;
-  border-radius: 4px;
+  border-radius: 0;
   background: rgba(var(--accent-rgb), 0.06);
+  box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.06);
   color: var(--ink-soft);
   font-size: 11.5px;
   line-height: 1.6;

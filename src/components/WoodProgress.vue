@@ -14,47 +14,27 @@ const width = computed(() => (props.indeterminate ? 38 : Math.min(100, Math.max(
       class="bar__fill"
       :class="{ 'bar__fill--indeterminate': indeterminate }"
       :style="{ width: `${width}%` }"
-    >
-      <span class="bar__shine" />
-    </div>
+    />
   </div>
 </template>
 
 <style scoped>
+/* 与按钮同一套「实体」语言：直角、描边、内凹槽，填充色块自带底部暗边 */
 .bar {
   width: 100%;
-  border-radius: 99px;
+  border-radius: 2px;
+  border: 1px solid var(--line);
   background: var(--paper-2);
   overflow: hidden;
-  box-shadow: 0 1px 2px rgba(80, 58, 34, 0.12) inset;
+  box-shadow: inset 0 1px 2px rgba(40, 28, 16, 0.14);
 }
 
 .bar__fill {
-  position: relative;
   height: 100%;
-  border-radius: 99px;
-  background: linear-gradient(90deg, var(--walnut), var(--moss) 65%, var(--moss-bright));
+  border-radius: 1px;
+  background: var(--moss);
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.18);
   transition: width 260ms var(--ease-out-quart);
-  overflow: hidden;
-}
-
-.bar__shine {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 253, 246, 0.42),
-    transparent
-  );
-  transform: translateX(-100%);
-  animation: shine 1.8s var(--ease-in-out) infinite;
-}
-
-@keyframes shine {
-  100% {
-    transform: translateX(100%);
-  }
 }
 
 .bar__fill--indeterminate {
