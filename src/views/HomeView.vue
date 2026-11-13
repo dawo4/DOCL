@@ -15,7 +15,7 @@ import {
   stopGame,
   store,
 } from "../store";
-import { iconColor, kindLabel } from "../utils";
+import { kindLabel } from "../utils";
 
 const version = selectedVersion;
 const account = selectedAccount;
@@ -44,8 +44,6 @@ const javaLabel = computed(() => {
   const java = store.javaList.find((j) => j.major === v.java_major);
   return java ? `Java ${java.major}` : `缺少 Java ${v.java_major}`;
 });
-
-const ambient = computed(() => iconColor(store.metas[version.value?.id ?? ""]?.icon));
 
 const allocatedGb = computed(() => {
   const mb = store.config?.memory_mb ?? 0;
@@ -88,9 +86,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
 </script>
 
 <template>
-  <div class="home" :style="{ '--ambient': ambient }">
-    <span class="home__aura" aria-hidden="true" />
-
+  <div class="home">
     <div class="home__inner">
       <div class="home__top">
         <div class="home__heading">
@@ -108,7 +104,6 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
       <div class="home__grid">
         <section class="cover" aria-label="当前版本">
           <div class="cover__art">
-            <span class="cover__glow" />
             <div class="cover__figure">
               <SkinHead
                 :skin="skinSource"
@@ -231,17 +226,6 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   overflow: hidden;
 }
 
-.home__aura {
-  position: absolute;
-  inset: -30% -10% auto -10%;
-  height: 560px;
-  pointer-events: none;
-  background:
-    radial-gradient(38% 46% at 20% 16%, color-mix(in srgb, var(--ambient) 22%, transparent), transparent 70%),
-    radial-gradient(42% 50% at 82% 4%, rgba(var(--ambient-a), 0.14), transparent 72%);
-  filter: blur(4px);
-}
-
 .home__inner {
   position: relative;
   z-index: 1;
@@ -333,9 +317,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
   border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
   border-radius: var(--radius);
-  background:
-    radial-gradient(120% 70% at 50% 0%, color-mix(in srgb, var(--ambient) 14%, transparent), transparent 66%),
-    linear-gradient(180deg, var(--panel-2), var(--panel));
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel) 46%, #fff);
   overflow: hidden;
 }
@@ -349,17 +331,6 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   min-height: 120px;
   border-radius: var(--radius-sm);
   overflow: hidden;
-  background: radial-gradient(60% 60% at 50% 42%, rgba(255, 255, 255, 0.05), transparent 70%);
-}
-
-.cover__glow {
-  position: absolute;
-  width: 210px;
-  height: 210px;
-  border-radius: 50%;
-  background: radial-gradient(circle, color-mix(in srgb, var(--ambient) 34%, transparent), transparent 66%);
-  filter: blur(20px);
-  opacity: 0.8;
 }
 
 .cover__figure {

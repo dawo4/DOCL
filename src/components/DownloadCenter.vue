@@ -75,16 +75,8 @@ const remainingFiles = computed(() => {
   return String(Math.max(0, p.files_total - p.files_done));
 });
 
-const ringStyle = computed(() => {
-  const tone = failed.value
-    ? "var(--danger)"
-    : partial.value
-      ? "var(--amber)"
-      : "var(--moss)";
-  return {
-    background: `conic-gradient(${tone} ${percent.value * 3.6}deg, rgba(var(--glass-rgb), 0.28) 0)`,
-  };
-});
+/// 进度改成方块内部自下而上的水位高度，颜色按状态由 CSS 变量接管
+const fillStyle = computed(() => ({ "--fill": `${percent.value}%` }));
 
 function closePanel() {
   store.downloadPanel = active.value || !!store.lastProgress ? "ball" : "hidden";
@@ -294,25 +286,28 @@ onBeforeUnmount(() => {
           'dl-ball--partial': partial,
           'dl-ball--busy': active && !failed,
         }"
-        :style="ringStyle"
+        :style="fillStyle"
         aria-label="下载进度"
         @mouseenter="showTip"
         @mouseleave="hideTip"
         @click="openPanel"
       >
         <span class="dl-ball__glow" />
-        <span class="dl-ball__inner">
+        <span class="dl-ball__face">
+          <span class="dl-ball__water" />
           <span class="dl-ball__sheen" />
-          <span class="dl-ball__icon">
-            <AppIcon
-              :name="failed || partial ? 'alert' : active ? 'download' : 'check'"
-              :size="13"
-            />
-          </span>
-          <span class="dl-ball__pct">
-            {{
-              failed ? "失败" : partial ? "部分" : finished ? "完成" : `${Math.round(percent)}%`
-            }}
+          <span class="dl-ball__content">
+            <span class="dl-ball__icon">
+              <AppIcon
+                :name="failed || partial ? 'alert' : active ? 'download' : 'check'"
+                :size="13"
+              />
+            </span>
+            <span class="dl-ball__pct">
+              {{
+                failed ? "失败" : partial ? "部分" : finished ? "完成" : `${Math.round(percent)}%`
+              }}
+            </span>
           </span>
         </span>
       </button>
@@ -641,29 +636,54 @@ onBeforeUnmount(() => {
 }
 
 .dl-ball {
+  /* 与项目实体按键同一套材质：偏白正面 + 左上亮边 / 右下暗边，底边留厚度 */
+  --face: var(--panel);
+  --bevel-hi: color-mix(in srgb, var(--face) 52%, #fff);
+  --bevel-lo: color-mix(in srgb, var(--face) 74%, #000);
+  /* 水位配色，默认苔绿；失败 / 部分完成在下面覆盖 */
+  --water-top: color-mix(in srgb, var(--moss) 46%, var(--moss-soft));
+  --water-bottom: color-mix(in srgb, var(--moss) 30%, var(--moss-soft));
+  --water-line: color-mix(in srgb, var(--moss-bright) 62%, #fff);
   position: relative;
-  width: 58px;
-  height: 58px;
-  border-radius: 50%;
-  padding: 4px;
-  box-shadow: 0 12px 28px rgba(40, 28, 16, 0.26), 0 2px 4px rgba(40, 28, 16, 0.12);
-  transition: transform var(--dur-2) var(--ease-out-expo), box-shadow var(--dur-2) ease;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px 1px 3px;
+  border-top-color: var(--bevel-hi);
+  border-left-color: var(--bevel-hi);
+  border-right-color: var(--bevel-lo);
+  border-bottom-color: var(--bevel-lo);
+  background: var(--face);
+  box-shadow: 0 12px 26px rgba(40, 28, 16, 0.24), 0 2px 4px rgba(40, 28, 16, 0.12);
+  transition: transform var(--dur-2) var(--ease-out-expo), box-shadow var(--dur-2) ease,
+    background 150ms ease;
 }
 
 .dl-ball:hover {
-  transform: translateY(-4px) scale(1.05);
-  box-shadow: 0 18px 34px rgba(40, 28, 16, 0.3);
+  transform: translateY(-3px);
+  box-shadow: 0 18px 32px rgba(40, 28, 16, 0.28);
+}
+
+.dl-ball:active {
+  transform: translateY(2px);
+  border-top-color: var(--bevel-lo);
+  border-left-color: var(--bevel-lo);
+  border-right-color: var(--bevel-hi);
+  border-bottom-color: var(--bevel-hi);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.24);
 }
 
 /* 外侧柔光：下载中缓慢呼吸，完成/失败时静止 */
 .dl-ball__glow {
   position: absolute;
-  inset: -9px;
+  inset: -7px;
   z-index: -1;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(var(--accent-rgb), 0.4), transparent 66%);
+  border-radius: 4px;
+  background: radial-gradient(closest-side, rgba(var(--accent-rgb), 0.4), transparent 74%);
   filter: blur(7px);
-  opacity: 0.32;
+  opacity: 0.3;
   pointer-events: none;
 }
 
@@ -671,33 +691,73 @@ onBeforeUnmount(() => {
   animation: dl-ball-breathe 2.6s ease-in-out infinite;
 }
 
-.dl-ball__inner {
-  position: relative;
+/* 内凹的方槽：进度水从槽底往上灌 */
+.dl-ball__face {
+  position: absolute;
+  inset: 2px;
+  overflow: hidden;
+  border-radius: 1px;
+  background: var(--panel-2);
+  box-shadow: inset 0 2px 4px rgba(70, 48, 26, 0.16),
+    inset 0 0 0 1px color-mix(in srgb, var(--line-strong) 55%, transparent);
+}
+
+.dl-ball__water {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--fill, 0%);
+  background: linear-gradient(180deg, var(--water-top), var(--water-bottom));
+  transition: height 360ms var(--ease-out-quart), background 240ms ease;
+}
+
+/* 水线：一道受光细边，像水面反光 */
+.dl-ball__water::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--water-line);
+}
+
+.dl-ball--busy .dl-ball__water::before {
+  animation: dl-ball-wave 2.2s ease-in-out infinite;
+}
+
+/* 表面扫过的高光，让方块看起来是玻璃材质 */
+.dl-ball__sheen {
+  position: absolute;
+  top: -45%;
+  left: -70%;
+  width: 48%;
+  height: 190%;
+  transform: rotate(20deg);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.42), transparent);
+  pointer-events: none;
+  animation: dl-ball-sheen 3.4s ease-in-out infinite;
+}
+
+/* 图标与百分比浮在水面之上 */
+.dl-ball__content {
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 1px;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  border-radius: 50%;
-  border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
-  background: radial-gradient(
-    circle at 32% 24%,
-    var(--panel) 0 44%,
-    color-mix(in srgb, var(--panel) 78%, var(--panel-2)) 100%
-  );
   color: var(--walnut-deep);
-  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.75),
-    inset 0 -3px 8px rgba(80, 58, 34, 0.1);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 
 .dl-ball__icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--moss);
+  color: inherit;
 }
 
 .dl-ball--busy .dl-ball__icon {
@@ -710,60 +770,52 @@ onBeforeUnmount(() => {
   line-height: 1.1;
 }
 
-/* 表面扫过的高光，让球体看起来是玻璃材质 */
-.dl-ball__sheen {
-  position: absolute;
-  top: -45%;
-  left: -70%;
-  width: 55%;
-  height: 190%;
-  transform: rotate(20deg);
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
-  pointer-events: none;
-  animation: dl-ball-sheen 3.4s ease-in-out infinite;
-}
-
 .dl-ball--done {
   animation: dl-ball-pop 520ms var(--ease-out-expo);
 }
 
-.dl-ball--done .dl-ball__inner {
+.dl-ball--done .dl-ball__content {
   color: var(--moss);
 }
 
-.dl-ball--done .dl-ball__icon,
-.dl-ball--failed .dl-ball__icon {
-  color: inherit;
-}
-
 .dl-ball--failed {
+  --water-top: color-mix(in srgb, var(--danger) 40%, var(--danger-soft));
+  --water-bottom: color-mix(in srgb, var(--danger) 26%, var(--danger-soft));
+  --water-line: color-mix(in srgb, var(--danger) 24%, #fff);
   animation: dl-ball-shake 460ms ease;
 }
 
-.dl-ball--failed .dl-ball__inner {
+.dl-ball--failed .dl-ball__content {
   color: var(--danger);
 }
 
-.dl-ball--partial .dl-ball__inner {
-  color: var(--amber);
+.dl-ball--partial {
+  --water-top: color-mix(in srgb, var(--amber) 44%, var(--panel-2));
+  --water-bottom: color-mix(in srgb, var(--amber) 28%, var(--panel-2));
+  --water-line: color-mix(in srgb, var(--amber) 34%, #fff);
 }
 
-.dl-ball--partial .dl-ball__icon {
-  color: inherit;
+.dl-ball--partial .dl-ball__content {
+  color: color-mix(in srgb, var(--amber) 62%, var(--walnut-deep));
 }
 
 .dl-ball__dismiss {
   width: 22px;
   height: 22px;
-  border-radius: 50%;
+  border-radius: 2px;
   background: var(--panel);
-  border: 1px solid var(--line);
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--panel) 52%, #fff);
+  border-left-color: color-mix(in srgb, var(--panel) 52%, #fff);
+  border-right-color: color-mix(in srgb, var(--panel) 74%, #000);
+  border-bottom-color: color-mix(in srgb, var(--panel) 74%, #000);
   color: var(--muted);
   font-size: 14px;
   line-height: 1;
   display: grid;
   place-items: center;
-  margin-right: 2px;
+  margin-right: 4px;
   box-shadow: 0 4px 10px rgba(40, 28, 16, 0.14);
   animation: dl-ball-pop 360ms var(--ease-out-expo);
 }
@@ -802,6 +854,19 @@ onBeforeUnmount(() => {
   55%,
   100% {
     left: 120%;
+  }
+}
+
+/* 水线轻微起伏，读作水面在晃 */
+@keyframes dl-ball-wave {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.85;
+  }
+  50% {
+    transform: translateY(-1px);
+    opacity: 1;
   }
 }
 

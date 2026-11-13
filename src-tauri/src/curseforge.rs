@@ -481,7 +481,7 @@ pub struct FileDownload {
 
 /// 解析 cursemaven 的 /test 调试输出：里面有服务端解析出来的直链与文件大小。
 /// 形如：
-/// ```
+/// ```text
 /// Found: https://edge.forgecdn.net/files/7125/700/indestructible-20.13.0.jar
 ///      Content-Length: 264932
 /// ```
@@ -701,9 +701,241 @@ pub async fn install_file(
     })
 }
 
+/// 地图项目（CurseForge Worlds）下载的是压缩包，解压到实例的 saves 目录。
+/// 返回最终存档文件夹路径。
+pub async fn install_world(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &Config,
+    instance_id: &str,
+    url: &str,
+    file_name: &str,
+    progress: Arc<ProgressState>,
+) -> Result<String> {
+    let saves = crate::instance::content_dir(cfg, instance_id, "saves")?;
+    let stem = world_file_stem(file_name);
+    let zip_path = saves.join(format!(".download-{stem}.zip"));
+    let task = FileTask {
+        url: url.to_string(),
+        dest: zip_path.clone(),
+        sha1: None,
+        size: 0,
+        label: file_name.to_string(),
+    };
+    download::run_tasks(app, client, vec![task], 1, cfg.use_mirror(), progress.clone()).await?;
+
+    progress.set_message("解压地图…");
+    download::emit_now(app, &progress);
+
+    // 先解到临时目录，确认哪一层才是存档根，再把整个文件夹搬进 saves
+    let staging = saves.join(format!(".download-{stem}"));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).ok();
+    }
+    let extracted = extract_world_archive(&zip_path, &staging);
+    std::fs::remove_file(&zip_path).ok();
+    extracted?;
+
+    let source = find_world_root(&staging)?;
+    // 存档根就是临时目录本身时，用压缩包文件名当存档名，别把临时目录名带出去
+    let base = if source == staging {
+        stem.clone()
+    } else {
+        source
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| stem.clone())
+    };
+    let name = unique_world_name(&saves, &clean_world_name(&base, &stem));
+    let dest = saves.join(&name);
+    std::fs::rename(&source, &dest)
+        .with_context(|| format!("无法把地图移动到 {}", dest.display()))?;
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).ok();
+    }
+    progress.set_message("地图安装完成");
+    Ok(dest.to_string_lossy().to_string())
+}
+
+fn world_file_stem(file_name: &str) -> String {
+    let stem = Path::new(file_name)
+        .file_stem()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let cleaned = clean_world_name(&stem, "新地图");
+    // 以点开头的隐藏文件名不适合当存档文件夹名
+    if cleaned.starts_with('.') {
+        "新地图".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Windows 文件名不能含 `<>:"/\|?*`，地图名里带这些字符时替换掉
+fn clean_world_name(name: &str, fallback: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|ch| match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            ch if ch.is_control() => '_',
+            ch => ch,
+        })
+        .collect();
+    let cleaned = cleaned
+        .trim()
+        .trim_end_matches(['.', ' '])
+        .to_string();
+    if cleaned.is_empty() {
+        fallback.to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn unique_world_name(saves: &Path, name: &str) -> String {
+    if !saves.join(name).exists() {
+        return name.to_string();
+    }
+    for index in 2..1000 {
+        let candidate = format!("{name} ({index})");
+        if !saves.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    format!("{name} ({})", std::process::id())
+}
+
+/// 存档根目录：优先根上的 level.dat，其次子目录，最后再深一层（World/World/level.dat）。
+fn find_world_root(staging: &Path) -> Result<std::path::PathBuf> {
+    if staging.join("level.dat").is_file() {
+        return Ok(staging.to_path_buf());
+    }
+    let mut dirs: Vec<std::path::PathBuf> = std::fs::read_dir(staging)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    dirs.sort();
+    for dir in &dirs {
+        if dir.join("level.dat").is_file() {
+            return Ok(dir.clone());
+        }
+    }
+    for dir in &dirs {
+        if let Ok(nested) = std::fs::read_dir(dir) {
+            let mut inner: Vec<std::path::PathBuf> = nested
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir() && path.join("level.dat").is_file())
+                .collect();
+            inner.sort();
+            if let Some(found) = inner.into_iter().next() {
+                return Ok(found);
+            }
+        }
+    }
+    Err(anyhow!("压缩包里没有找到存档（缺少 level.dat）"))
+}
+
+fn extract_world_archive(zip_path: &Path, dest: &Path) -> Result<()> {
+    let file = std::fs::File::open(zip_path)
+        .with_context(|| format!("无法打开地图压缩包：{}", zip_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file).context("地图压缩包损坏或格式不支持")?;
+    std::fs::create_dir_all(dest)?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        let Some(relative) = entry.enclosed_name() else {
+            continue;
+        };
+        // 跳过多余的 macOS 资源分叉目录
+        if relative.to_string_lossy().starts_with("__MACOSX") {
+            continue;
+        }
+        let target = dest.join(relative);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&target)?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut out = std::fs::File::create(&target)?;
+        std::io::copy(&mut entry, &mut out)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_cursemaven;
+    use super::{
+        clean_world_name, find_world_root, parse_cursemaven, unique_world_name, world_file_stem,
+    };
+    use std::path::Path;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("docl-test-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 压缩包外层套一个存档文件夹时，要认到 folder 这一层
+    #[test]
+    fn finds_world_dir_with_level_dat() {
+        let root = temp_dir("world-root");
+        let world = root.join("My World");
+        std::fs::create_dir_all(&world).unwrap();
+        std::fs::write(world.join("level.dat"), b"data").unwrap();
+        std::fs::write(root.join("readme.txt"), b"note").unwrap();
+        assert_eq!(find_world_root(&root).unwrap(), world);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 多套一层（World/World/level.dat）也要能找到
+    #[test]
+    fn finds_nested_world_dir() {
+        let root = temp_dir("world-nested");
+        let world = root.join("outer").join("inner");
+        std::fs::create_dir_all(&world).unwrap();
+        std::fs::write(world.join("level.dat"), b"data").unwrap();
+        assert_eq!(find_world_root(&root).unwrap(), world);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 根目录就是存档时返回临时目录本身
+    #[test]
+    fn finds_world_at_archive_root() {
+        let root = temp_dir("world-flat");
+        std::fs::write(root.join("level.dat"), b"data").unwrap();
+        assert_eq!(find_world_root(&root).unwrap(), root);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rejects_archive_without_level_dat() {
+        let root = temp_dir("world-empty");
+        std::fs::write(root.join("readme.txt"), b"note").unwrap();
+        assert!(find_world_root(&root).is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn sanitizes_world_folder_names() {
+        assert_eq!(clean_world_name("a:b/c*?", "fallback"), "a_b_c__");
+        assert_eq!(clean_world_name("  末尾点. . ", "fallback"), "末尾点");
+        assert_eq!(clean_world_name("   ", "fallback"), "fallback");
+        assert_eq!(world_file_stem("地图.zip"), "地图");
+        assert_eq!(world_file_stem(".zip"), "新地图");
+    }
+
+    #[test]
+    fn duplicate_world_names_get_suffix() {
+        let root = temp_dir("world-dup");
+        std::fs::create_dir_all(root.join("world")).unwrap();
+        std::fs::create_dir_all(root.join("world (2)")).unwrap();
+        assert_eq!(unique_world_name(Path::new(&root), "world"), "world (3)");
+        assert_eq!(unique_world_name(Path::new(&root), "fresh"), "fresh");
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     /// cursemaven 的调试输出里同时有直链和 Content-Length
     #[test]

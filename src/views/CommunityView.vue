@@ -20,6 +20,7 @@ import {
   importModpack,
   installCfFile,
   installShaderLoader,
+  installWorld,
   notify,
   openInstance,
   refreshVersions,
@@ -46,6 +47,7 @@ const CLASS_LABELS: Record<string, string> = {
   shaders: "光影包",
   modpacks: "整合包",
   datapacks: "数据包",
+  worlds: "地图",
 };
 
 const CLASS_IDS: Record<string, number> = {
@@ -54,6 +56,7 @@ const CLASS_IDS: Record<string, number> = {
   shaders: 6552,
   datapacks: 6945,
   modpacks: 4471,
+  worlds: 17,
 };
 
 const LOADER_LABELS: Record<string, string> = {
@@ -237,11 +240,16 @@ function zhCategory(name: string) {
   return CATEGORY_ZH[name.toLowerCase()] ?? name;
 }
 
-const sourceOptions = [
-  { value: "all", label: "全部来源" },
-  { value: "curseforge", label: "CurseForge" },
-  { value: "modrinth", label: "Modrinth" },
-];
+/// 地图只有 CurseForge 收录，Modrinth 没有对应类型
+const sourceOptions = computed(() =>
+  props.kind === "worlds"
+    ? [{ value: "curseforge", label: "CurseForge" }]
+    : [
+        { value: "all", label: "全部来源" },
+        { value: "curseforge", label: "CurseForge" },
+        { value: "modrinth", label: "Modrinth" },
+      ]
+);
 
 function emptyBuckets(): Record<SourceKey, Bucket> {
   return {
@@ -447,6 +455,8 @@ const hasMore = computed(() =>
 );
 
 onMounted(async () => {
+  // 地图只有 CurseForge 收录，直接锁定来源
+  if (props.kind === "worlds") source.value = "curseforge";
   const fromPreset =
     preset?.instanceId &&
     store.installed.some((v) => v.id === preset.instanceId)
@@ -489,6 +499,7 @@ watch(
   async () => {
     active.value = null;
     category.value = "";
+    if (props.kind === "worlds") source.value = "curseforge";
     void loadCategories();
     await search(true);
   }
@@ -668,7 +679,7 @@ async function loadTranslations(list: CfProject[]) {
 
 function resetSearch() {
   query.value = "";
-  source.value = "all";
+  source.value = props.kind === "worlds" ? "curseforge" : "all";
   versionMode.value = instanceId.value ? "instance" : "all";
   sortField.value = "2";
   category.value = "";
@@ -773,6 +784,15 @@ async function loadFiles(project: CfProject) {
 
 function install(project: CfProject, file: CfFileView) {
   if (!file.download_url || !instanceId.value) return;
+  if (props.kind === "worlds") {
+    installWorld(
+      instanceId.value,
+      file.download_url,
+      file.file_name,
+      `${project.name} ${file.name}`
+    );
+    return;
+  }
   installCfFile(
     instanceId.value,
     preset?.installKind ?? props.kind,
@@ -1185,7 +1205,7 @@ async function confirmImport() {
       </div>
 
       <div class="cf-fields">
-        <label class="cf-field cf-field--source">
+        <label v-if="sourceOptions.length > 1" class="cf-field cf-field--source">
           <span class="cf-field__label">来源</span>
           <div class="cf-source-tabs">
             <button

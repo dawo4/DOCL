@@ -15,6 +15,29 @@ pub struct ServerEntry {
     pub last_used: u64,
 }
 
+/// 用户创建的主题：只存关键色，其余颜色在应用时按它们派生
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CustomTheme {
+    pub id: String,
+    pub name: String,
+    /// 页面底色
+    pub paper: String,
+    /// 卡片底色
+    pub panel: String,
+    /// 主色（按钮、链接）
+    pub primary: String,
+    /// 强调色（选中态、进度条）
+    pub accent: String,
+    /// 标题文字
+    pub title: String,
+    /// 正文文字
+    pub text: String,
+    /// 次要文字
+    pub muted: String,
+    /// 边框线
+    pub line: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -88,6 +111,9 @@ pub struct Config {
     /// 版本页两张卡片的文字颜色，空表示跟随主题
     #[serde(default)]
     pub profile_text_color: Option<String>,
+    /// 自定义主题列表；theme 为 `custom:<id>` 时启用对应主题
+    #[serde(default)]
+    pub custom_themes: Vec<CustomTheme>,
     /// default / sharp / round
     pub ui_radius: String,
     /// default / yahei / songti / kaiti
@@ -155,6 +181,7 @@ impl Default for Config {
             profile_hero_image: None,
             profile_card_image: None,
             profile_text_color: None,
+            custom_themes: Vec::new(),
             ui_radius: "default".into(),
             ui_font: "default".into(),
             ui_density: "normal".into(),
@@ -300,5 +327,46 @@ impl Config {
         } else {
             self.game_root()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, CustomTheme};
+
+    fn theme() -> CustomTheme {
+        CustomTheme {
+            id: "theme-test".into(),
+            name: "夜航".into(),
+            paper: "#101820".into(),
+            panel: "#182430".into(),
+            primary: "#3e8c8c".into(),
+            accent: "#e0a458".into(),
+            title: "#eef3f7".into(),
+            text: "#cfd8e0".into(),
+            muted: "#8a99a8".into(),
+            line: "#2c3a46".into(),
+        }
+    }
+
+    /// 自定义主题要能完整存取，否则重启后主题会丢
+    #[test]
+    fn custom_themes_survive_roundtrip() {
+        let mut cfg = Config::default();
+        cfg.custom_themes.push(theme());
+        cfg.theme = "custom:theme-test".into();
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.custom_themes, vec![theme()]);
+        assert_eq!(back.theme, "custom:theme-test");
+    }
+
+    /// 旧配置文件没有 custom_themes 字段时按空列表加载，不能整个读失败
+    #[test]
+    fn old_config_without_custom_themes_still_loads() {
+        let mut value = serde_json::to_value(Config::default()).unwrap();
+        value.as_object_mut().unwrap().remove("custom_themes");
+        let cfg: Config = serde_json::from_value(value).unwrap();
+        assert!(cfg.custom_themes.is_empty());
     }
 }

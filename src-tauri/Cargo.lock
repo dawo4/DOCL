@@ -2273,7 +2273,7 @@ dependencies = [
 
 [[package]]
 name = "mc-launcher"
-version = "1.6.8"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

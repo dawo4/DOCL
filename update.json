@@ -1,6 +1,6 @@
 {
-  "version": "1.6.8",
-  "url": "https://github.com/dawo4/DOCL/releases/download/v1.6.8/DOCL_1.6.8_x64-setup.exe",
-  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.6.8/DOCL_1.6.8_portable.zip",
-  "notes": "整套界面换成方块浮雕风格：卡片、按钮、分段切换、输入框统一按「凸起 / 凹槽」两套语义重做，标题、分组标记、选中态都改为像素方块；滚动条换成可跟随主题的方形滑块；下载页、联机页、实例页、日志面板、皮肤编辑器等剩余界面全部对齐。新增「官方」主题（Mojang 启动器的炭灰 + 草绿），下线夜墨、麦田、雪原三套主题与夜航星空、麦浪、雪原三张底图。版本库卡片上方加入会缓慢旋转的玩家头颅。修复国内网络下自动更新偶发失败：更新清单改为 jsDelivr 与 GitHub raw 互备，安装包在官方地址之外追加多个 GitHub 加速镜像，下载支持断点续传，并对异常小的文件做完整性校验，失败时提示可手动下载的地址。"
+  "version": "1.7.0",
+  "url": "https://github.com/dawo4/DOCL/releases/download/v1.7.0/DOCL_1.7.0_x64-setup.exe",
+  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.7.0/DOCL_1.7.0_portable.zip",
+  "notes": "新增自定义主题系统：主题配色里可以新建主题，弹窗内命名并逐个调整页面底色、卡片底色、主色、强调色、标题/正文/次要文字与边框线，带实时预览，保存后立即应用，支持编辑和删除。下载页新增地图分类，可从 CurseForge 浏览并一键安装地图到所选实例的存档。皮肤功能重做：皮肤页改为左侧大预览 + 右侧本地皮肤库 / LittleSkin 衣柜 / 披风分类，接入 LittleSkin 授权与衣柜同步；3D 皮肤编辑器支持直接绘制、按部位和图层隔离、内外层同时显示、对称镜像、撤销重做、2D/3D 模式与行走动画。设置页新增内存优化。下载悬浮球改为方形水位进度。修复 Win10 开启毛玻璃时拖动窗口内容漂移、页面切换时卡片先清晰后变模糊，以及无底图时界面出现彩色光晕的问题。"
 }

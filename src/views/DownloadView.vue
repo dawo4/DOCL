@@ -26,13 +26,21 @@ import {
   type VersionFilter,
 } from "../utils";
 
-type Category = "vanilla" | "mods" | "modpacks" | "datapacks" | "resourcepacks" | "shaders";
+type Category =
+  | "vanilla"
+  | "mods"
+  | "modpacks"
+  | "datapacks"
+  | "worlds"
+  | "resourcepacks"
+  | "shaders";
 
 const categories: { value: Category; label: string; icon: string }[] = [
   { value: "vanilla", label: "原版游戏", icon: "cube" },
   { value: "mods", label: "Mod", icon: "grid" },
   { value: "modpacks", label: "整合包", icon: "package" },
   { value: "datapacks", label: "数据包", icon: "database" },
+  { value: "worlds", label: "地图", icon: "map" },
   { value: "resourcepacks", label: "资源包", icon: "image" },
   { value: "shaders", label: "光影包", icon: "sun" },
 ];

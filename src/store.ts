@@ -9,6 +9,7 @@ import {
   type AccountView,
   type AccountSkin,
   type Config,
+  type CustomTheme,
   type DeviceCode,
   type InstalledVersion,
   type InstanceMeta,
@@ -265,8 +266,147 @@ export async function saveConfig(patch: Partial<Config>) {
   }
 }
 
-export function applyTheme(theme?: string | null) {
-  document.documentElement.dataset.theme = theme || "paper";
+/// 自定义主题会写这些内联变量；切回内置主题时要全部清掉
+const CUSTOM_THEME_VARS = [
+  "--paper",
+  "--paper-2",
+  "--panel",
+  "--panel-2",
+  "--walnut",
+  "--walnut-deep",
+  "--walnut-light",
+  "--moss",
+  "--moss-bright",
+  "--moss-soft",
+  "--amber",
+  "--danger",
+  "--danger-soft",
+  "--ink",
+  "--ink-soft",
+  "--muted",
+  "--line",
+  "--line-strong",
+  "--hover",
+  "--glass-rgb",
+  "--bar-a",
+  "--bar-b",
+  "--hero-a",
+  "--hero-b",
+  "--hero-c",
+  "--btn-a",
+  "--btn-b",
+  "--btn-c",
+  "--btn-border",
+  "--btn-fg",
+  "--accent-rgb",
+  "--ambient-a",
+  "--ambient-b",
+];
+
+function isHexColor(value: string) {
+  return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value);
+}
+
+/// 解析 #rgb / #rrggbb，供派生 rgba 用
+function hexToRgb(value: string): [number, number, number] | null {
+  const clean = value.replace("#", "").trim();
+  const full =
+    clean.length === 3
+      ? clean
+          .split("")
+          .map((ch) => ch + ch)
+          .join("")
+      : clean;
+  if (full.length !== 6 || /[^0-9a-f]/i.test(full)) return null;
+  const num = Number.parseInt(full, 16);
+  return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
+}
+
+function clearCustomTheme() {
+  const root = document.documentElement;
+  for (const name of CUSTOM_THEME_VARS) root.style.removeProperty(name);
+  root.style.removeProperty("color-scheme");
+}
+
+/// 按一个自定义主题的关键色派生整套变量，写成内联样式盖住内置主题
+export function applyCustomTheme(theme: CustomTheme) {
+  const root = document.documentElement;
+  const pick = (value: string, fallback: string) =>
+    isHexColor(value) ? value : fallback;
+  const paper = pick(theme.paper, "#f4ebdd");
+  const panel = pick(theme.panel, "#fffdf6");
+  const primary = pick(theme.primary, "#6f4224");
+  const accent = pick(theme.accent, "#5e7b49");
+  const title = pick(theme.title, "#462812");
+  const text = pick(theme.text, "#2b2118");
+  const muted = pick(theme.muted, "#96836d");
+  const line = pick(theme.line, "#e4d5bb");
+
+  const set = (name: string, value: string) => root.style.setProperty(name, value);
+  set("--paper", paper);
+  set("--paper-2", `color-mix(in srgb, ${paper} 93%, ${text})`);
+  set("--panel", panel);
+  set("--panel-2", `color-mix(in srgb, ${panel} 92%, ${text})`);
+  set("--walnut", primary);
+  set("--walnut-deep", title);
+  set("--walnut-light", `color-mix(in srgb, ${primary} 55%, #fff)`);
+  set("--moss", accent);
+  set("--moss-bright", `color-mix(in srgb, ${accent} 62%, #fff)`);
+  set("--moss-soft", `color-mix(in srgb, ${accent} 16%, ${paper})`);
+  set("--amber", `color-mix(in srgb, ${accent} 30%, #d9a05b)`);
+  set("--danger", `color-mix(in srgb, #a34e36 78%, ${text})`);
+  set("--danger-soft", `color-mix(in srgb, #a34e36 18%, ${panel})`);
+  set("--ink", text);
+  set("--ink-soft", `color-mix(in srgb, ${text} 74%, ${paper})`);
+  set("--muted", muted);
+  set("--line", line);
+  set("--line-strong", `color-mix(in srgb, ${line} 58%, ${text})`);
+  set("--hover", `color-mix(in srgb, ${paper} 88%, ${accent})`);
+
+  const panelRgb = hexToRgb(panel) ?? [255, 253, 246];
+  const primaryRgb = hexToRgb(primary) ?? [111, 66, 36];
+  const accentRgb = hexToRgb(accent) ?? [94, 123, 73];
+  const amberRgb = hexToRgb("#d9a05b") ?? [217, 160, 91];
+  const paperRgb = hexToRgb(paper) ?? [244, 235, 221];
+  // 深色底的自定义主题让原生控件 / 滚动条也切到深色
+  const paperLum =
+    0.2126 * paperRgb[0] + 0.7152 * paperRgb[1] + 0.0722 * paperRgb[2];
+  root.style.colorScheme = paperLum < 120 ? "dark" : "light";
+  set("--glass-rgb", `${panelRgb[0]}, ${panelRgb[1]}, ${panelRgb[2]}`);
+  set("--accent-rgb", `${accentRgb[0]}, ${accentRgb[1]}, ${accentRgb[2]}`);
+  set("--ambient-a", `${amberRgb[0]}, ${amberRgb[1]}, ${amberRgb[2]}`);
+  set("--ambient-b", `${accentRgb[0]}, ${accentRgb[1]}, ${accentRgb[2]}`);
+
+  set("--bar-a", `color-mix(in srgb, ${panel} 96%, ${accent})`);
+  set("--bar-b", `color-mix(in srgb, ${panel} 90%, ${accent})`);
+  set("--hero-a", panel);
+  set("--hero-b", `color-mix(in srgb, ${panel} 93%, ${accent})`);
+  set("--hero-c", `color-mix(in srgb, ${panel} 86%, ${accent})`);
+
+  set("--btn-a", `color-mix(in srgb, ${primary} 78%, #fff)`);
+  set("--btn-b", primary);
+  set("--btn-c", `color-mix(in srgb, ${primary} 74%, #000)`);
+  set("--btn-border", `color-mix(in srgb, ${primary} 58%, #000)`);
+  // 浅色主色上按钮要用深色字
+  const light =
+    0.2126 * primaryRgb[0] + 0.7152 * primaryRgb[1] + 0.0722 * primaryRgb[2] > 150;
+  set("--btn-fg", light ? "#2b2118" : "#fff8ea");
+}
+
+export function applyTheme(theme?: string | null, customThemes?: CustomTheme[]) {
+  const root = document.documentElement;
+  const value = theme || "paper";
+  const list = customThemes ?? store.config?.custom_themes ?? [];
+  const id = value.startsWith("custom:") ? value.slice(7) : "";
+  const custom = id ? list.find((item) => item.id === id) : undefined;
+  if (custom) {
+    // 先用纸木主题兜底，自定义主题没覆盖到的变量也能拿到合理值
+    root.dataset.theme = "paper";
+    applyCustomTheme(custom);
+    return;
+  }
+  root.dataset.theme = id ? "paper" : value;
+  clearCustomTheme();
 }
 
 export async function loadBackground() {
@@ -452,6 +592,38 @@ export async function installCfFile(
   } catch (err) {
     store.lastJobError = String(err);
     notify(`下载失败：${String(err)}`, "err");
+  } finally {
+    store.installingId = null;
+    window.setTimeout(() => {
+      if (!store.progress?.active) store.progress = null;
+    }, 800);
+  }
+}
+
+export async function installWorld(
+  versionId: string,
+  url: string,
+  fileName: string,
+  title: string
+) {
+  if (store.installingId) {
+    notify("已有下载任务正在进行", "err");
+    return;
+  }
+  store.installingId = `${versionId} · ${fileName}`;
+  store.progress = null;
+  store.lastProgress = null;
+  store.lastJobError = null;
+  store.lastJobTitle = title;
+  store.downloadPanel = "open";
+  primeProgress("install", `准备下载 ${title}…`);
+  try {
+    const path = await api.cfInstallWorld(versionId, url, fileName);
+    const folder = path.split(/[\\/]/).pop() || "saves";
+    notify(`地图已安装到存档：${folder}`);
+  } catch (err) {
+    store.lastJobError = String(err);
+    notify(`地图安装失败：${String(err)}`, "err");
   } finally {
     store.installingId = null;
     window.setTimeout(() => {

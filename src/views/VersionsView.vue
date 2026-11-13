@@ -1,4 +1,4 @@
-﻿﻿﻿﻿<script setup lang="ts">
+﻿﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import defaultProfileCard from "../assets/profile-card.jpg";

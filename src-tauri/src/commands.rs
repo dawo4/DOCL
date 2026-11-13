@@ -16,6 +16,7 @@ use crate::instance::{
 use crate::java::{self, JavaInfo};
 use crate::lan;
 use crate::launch;
+use crate::littleskin;
 use crate::models::*;
 use crate::moddeps;
 use crate::modpack;
@@ -98,6 +99,17 @@ pub fn get_config(state: State<'_, AppState>) -> Config {
 #[tauri::command]
 pub fn system_memory() -> system::MemoryInfo {
     system::memory_info()
+}
+
+#[tauri::command]
+pub async fn optimize_memory() -> system::MemoryRelease {
+    // 遍历进程 + 等待系统回收会阻塞，放到阻塞线程池里跑，别卡住窗口
+    tokio::task::spawn_blocking(system::optimize_memory)
+        .await
+        .unwrap_or(system::MemoryRelease {
+            freed_mb: 0,
+            processes: 0,
+        })
 }
 
 #[tauri::command]
@@ -1482,6 +1494,45 @@ pub async fn cf_install_file(
 }
 
 #[tauri::command]
+pub async fn cf_install_world(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    version_id: String,
+    url: String,
+    file_name: String,
+) -> CmdResult<String> {
+    let cfg = state.config.lock().unwrap().clone();
+    {
+        let guard = state.progress.lock().unwrap();
+        if let Some(p) = guard.as_ref() {
+            if p.active.load(Ordering::Relaxed) {
+                return Err("已有下载任务正在进行".into());
+            }
+        }
+    }
+    let progress = ProgressState::new("install");
+    progress.set_message(format!("准备下载 {file_name}…"));
+    *state.progress.lock().unwrap() = Some(progress.clone());
+
+    let result = curseforge::install_world(
+        &app,
+        &state.client,
+        &cfg,
+        &version_id,
+        &url,
+        &file_name,
+        progress.clone(),
+    )
+    .await;
+
+    progress.active.store(false, Ordering::Relaxed);
+    download::emit_now(&app, &progress);
+    *state.progress.lock().unwrap() = None;
+
+    result.map_err(err)
+}
+
+#[tauri::command]
 pub fn default_skin() -> String {
     skins::default_skin()
 }
@@ -2352,4 +2403,57 @@ pub fn pick_background_random(dir: String) -> CmdResult<Option<String>> {
         .map(|d| d.subsec_nanos() as usize ^ d.as_secs() as usize)
         .unwrap_or(0);
     Ok(Some(images[nanos % images.len()].to_string_lossy().to_string()))
+}
+
+/* ---------- LittleSkin 同步 ---------- */
+
+#[tauri::command]
+pub fn littleskin_status() -> littleskin::StatusView {
+    littleskin::status()
+}
+
+#[tauri::command]
+pub fn littleskin_set_app(
+    client_id: String,
+    client_secret: String,
+) -> CmdResult<littleskin::StatusView> {
+    littleskin::set_app(client_id, client_secret).map_err(err)
+}
+
+#[tauri::command]
+pub async fn littleskin_authorize(
+    state: State<'_, AppState>,
+) -> CmdResult<littleskin::StatusView> {
+    littleskin::authorize(&state.client).await.map_err(err)
+}
+
+#[tauri::command]
+pub fn littleskin_logout() -> CmdResult<()> {
+    littleskin::logout().map_err(err)
+}
+
+#[tauri::command]
+pub async fn littleskin_closet(
+    state: State<'_, AppState>,
+    page: Option<u32>,
+) -> CmdResult<littleskin::ClosetPage> {
+    littleskin::closet(&state.client, page.unwrap_or(1))
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn littleskin_players(
+    state: State<'_, AppState>,
+) -> CmdResult<Vec<littleskin::PlayerView>> {
+    littleskin::players(&state.client).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn littleskin_apply(
+    state: State<'_, AppState>,
+    pid: i64,
+    tid: i64,
+) -> CmdResult<()> {
+    littleskin::apply(&state.client, pid, tid).await.map_err(err)
 }

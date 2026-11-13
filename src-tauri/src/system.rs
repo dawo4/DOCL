@@ -1,5 +1,13 @@
 use serde::Serialize;
+use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
+use windows_sys::Win32::System::ProcessStatus::EmptyWorkingSet;
 use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA,
+};
 
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct MemoryInfo {
@@ -50,6 +58,57 @@ pub fn recommended_memory_mb(total_mb: u64, available_mb: u64) -> u32 {
     // 512MB 对齐（向下取整）
     let aligned = (target / 512) * 512;
     aligned.max(1024) as u32
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct MemoryRelease {
+    /// 优化前后系统可用内存的差值（MB），可能为 0
+    pub freed_mb: u64,
+    /// 成功清理工作集的进程数
+    pub processes: u32,
+}
+
+/// 参考 PCL 百宝箱的内存优化：遍历所有能打开的进程，把闲置的工作集还给系统。
+/// 只清工作集、不结束进程，拿不到权限的进程直接跳过。
+pub fn optimize_memory() -> MemoryRelease {
+    let before = memory_info().available_mb;
+    let mut processes = 0u32;
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return MemoryRelease {
+                freed_mb: 0,
+                processes: 0,
+            };
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut ok = Process32FirstW(snapshot, &mut entry);
+        while ok != 0 {
+            let handle = OpenProcess(
+                PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA,
+                0,
+                entry.th32ProcessID,
+            );
+            if !handle.is_null() {
+                if EmptyWorkingSet(handle) != 0 {
+                    processes += 1;
+                }
+                CloseHandle(handle);
+            }
+            ok = Process32NextW(snapshot, &mut entry);
+        }
+        CloseHandle(snapshot);
+    }
+
+    // 页面回收由系统异步完成，稍等一下再读可用内存
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let after = memory_info().available_mb;
+    MemoryRelease {
+        freed_mb: after.saturating_sub(before),
+        processes,
+    }
 }
 
 #[cfg(test)]

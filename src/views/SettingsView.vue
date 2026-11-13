@@ -1,4 +1,4 @@
-﻿﻿<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -11,6 +11,7 @@ import {
   pickSettingsFile,
   saveSettingsDialog,
   type Config,
+  type CustomTheme,
   type GameDirEntry,
   type SourceProbe,
   type UpdateInfo,
@@ -19,7 +20,9 @@ import {
 import defaultProfileCard from "../assets/profile-card.jpg";
 import defaultProfileHero from "../assets/profile-hero.jpg";
 import AppIcon from "../components/AppIcon.vue";
+import ColorField from "../components/ColorField.vue";
 import IconButton from "../components/IconButton.vue";
+import ThemeEditor from "../components/ThemeEditor.vue";
 import WoodButton from "../components/WoodButton.vue";
 import WoodInput from "../components/WoodInput.vue";
 import WoodSelect from "../components/WoodSelect.vue";
@@ -81,6 +84,7 @@ const form = reactive<Config>({
   profile_hero_image: null,
   profile_card_image: null,
   profile_text_color: null,
+  custom_themes: [],
   ui_font: "default",
   ui_density: "normal",
   window_vibrancy: false,
@@ -119,6 +123,7 @@ const autoSaveKeys: (keyof Config)[] = [
   "profile_hero_image",
   "profile_card_image",
   "profile_text_color",
+  "custom_themes",
   "ui_font",
   "ui_density",
   "animations",
@@ -160,6 +165,27 @@ async function refreshMemory() {
     store.systemMemory = await api.systemMemory();
   } catch {
     // 读取失败保留上一次数值，不打扰用户
+  }
+}
+
+const optimizeBusy = ref(false);
+
+/// 参考 PCL 百宝箱的内存优化：让各进程把闲置的工作集归还系统
+async function optimizeMemory() {
+  if (optimizeBusy.value) return;
+  optimizeBusy.value = true;
+  try {
+    const result = await api.optimizeMemory();
+    await refreshMemory();
+    notify(
+      result.freed_mb > 0
+        ? `已优化 ${result.processes} 个进程，释放约 ${result.freed_mb} MB 内存`
+        : `已优化 ${result.processes} 个进程`
+    );
+  } catch (err) {
+    notify(`内存优化失败：${err}`, "err");
+  } finally {
+    optimizeBusy.value = false;
   }
 }
 
@@ -257,6 +283,79 @@ const themes = [
   { value: "launcher", label: "官方", colors: ["#1d1d1d", "#6cc349", "#3c8527"] },
 ];
 
+const themeDialogOpen = ref(false);
+const themeDraft = ref<CustomTheme | null>(null);
+const themeEditing = ref(false);
+
+function cssVarHex(name: string, fallback: string) {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(raw) ? raw : fallback;
+}
+
+/// 新建时以当前主题的关键色为种子；编辑时复制原主题
+function openThemeEditor(existing?: CustomTheme) {
+  if (existing) {
+    themeDraft.value = { ...existing };
+    themeEditing.value = true;
+    themeDialogOpen.value = true;
+    return;
+  }
+  const activeId = form.theme.startsWith("custom:") ? form.theme.slice(7) : "";
+  const active = activeId
+    ? form.custom_themes.find((item) => item.id === activeId)
+    : undefined;
+  const seed = active
+    ? { ...active }
+    : {
+        paper: cssVarHex("--paper", "#f4ebdd"),
+        panel: cssVarHex("--panel", "#fffdf6"),
+        primary: cssVarHex("--walnut", "#6f4224"),
+        accent: cssVarHex("--moss", "#5e7b49"),
+        title: cssVarHex("--walnut-deep", "#462812"),
+        text: cssVarHex("--ink", "#2b2118"),
+        muted: cssVarHex("--muted", "#96836d"),
+        line: cssVarHex("--line", "#e4d5bb"),
+      };
+  themeDraft.value = {
+    ...seed,
+    id: `theme-${Date.now().toString(36)}`,
+    name: active
+      ? `${active.name} 副本`
+      : `自定义主题 ${form.custom_themes.length + 1}`,
+  };
+  themeEditing.value = false;
+  themeDialogOpen.value = true;
+}
+
+function saveTheme(theme: CustomTheme) {
+  const next = { ...theme, name: theme.name.trim() || "未命名主题" };
+  const list = form.custom_themes.slice();
+  const index = list.findIndex((item) => item.id === next.id);
+  if (index >= 0) list[index] = next;
+  else list.push(next);
+  form.custom_themes = list;
+  form.theme = `custom:${next.id}`;
+  // 编辑当前主题时 form.theme 没变，watcher 不会触发，手动应用一次
+  applyTheme(form.theme, form.custom_themes);
+  themeDialogOpen.value = false;
+  themeDraft.value = null;
+  notify(index >= 0 ? `已更新主题「${next.name}」` : `已添加主题「${next.name}」`);
+}
+
+async function removeTheme(theme: CustomTheme) {
+  const ok = await confirm(`删除主题「${theme.name}」？`, {
+    title: "删除自定义主题",
+    kind: "warning",
+  });
+  if (!ok) return;
+  form.custom_themes = form.custom_themes.filter((item) => item.id !== theme.id);
+  if (form.theme === `custom:${theme.id}`) {
+    form.theme = "paper";
+    applyTheme("paper", form.custom_themes);
+  }
+  notify(`已删除主题「${theme.name}」`);
+}
+
 const builtinBackgrounds = [
   { value: "forest", label: "林间晨雾" },
   { value: "dune", label: "赤陶沙丘" },
@@ -352,7 +451,7 @@ watch(
 watch(
   () => form.theme,
   (theme) => {
-    if (theme) applyTheme(theme);
+    if (theme) applyTheme(theme, form.custom_themes);
   }
 );
 
@@ -487,16 +586,6 @@ function resetProfileCardImage(kind: "hero" | "card") {
     profileCardPreview.value = defaultProfileCard;
     notify("已恢复最常玩版本内置底图");
   }
-}
-
-/// 版本页卡片文字颜色，空表示跟随主题
-function setProfileTextColor(event: Event) {
-  form.profile_text_color = (event.target as HTMLInputElement).value;
-}
-
-function resetProfileTextColor() {
-  form.profile_text_color = null;
-  notify("卡片字体颜色已恢复默认");
 }
 
 /// 背景适应方式选项（cover 为默认铺满裁剪）
@@ -1367,6 +1456,54 @@ async function removeJava(path: string) {
               </span>
               <span class="theme-card__name">{{ theme.label }}</span>
             </button>
+
+            <div
+              v-for="theme in form.custom_themes"
+              :key="theme.id"
+              class="theme-card-wrap"
+            >
+              <button
+                class="theme-card"
+                :class="{ 'theme-card--active': form.theme === `custom:${theme.id}` }"
+                @click="form.theme = `custom:${theme.id}`"
+              >
+                <span
+                  class="theme-card__preview"
+                  :style="{
+                    '--pv-bg': theme.paper,
+                    '--pv-main': theme.primary,
+                    '--pv-accent': theme.accent,
+                  }"
+                >
+                  <i class="theme-card__side" />
+                  <i class="theme-card__bar" />
+                  <i class="theme-card__line theme-card__line--long" />
+                  <i class="theme-card__line" />
+                </span>
+                <span class="theme-card__name" :title="theme.name">{{ theme.name }}</span>
+              </button>
+              <button
+                class="theme-card__act"
+                title="编辑主题"
+                @click.stop="openThemeEditor(theme)"
+              >
+                <AppIcon name="settings" :size="11" />
+              </button>
+              <button
+                class="theme-card__act theme-card__act--del"
+                title="删除主题"
+                @click.stop="removeTheme(theme)"
+              >
+                <AppIcon name="trash" :size="11" />
+              </button>
+            </div>
+
+            <button class="theme-card theme-card--add" @click="openThemeEditor()">
+              <span class="theme-card__add">
+                <AppIcon name="plus" :size="16" />
+              </span>
+              <span class="theme-card__name">添加主题</span>
+            </button>
           </div>
         </div>
       </div>
@@ -1506,31 +1643,18 @@ async function removeJava(path: string) {
         </div>
       </div>
 
-      <div class="setting">
+      <div class="setting setting--stack">
         <div class="setting__label">
           <strong>卡片字体颜色</strong>
           <span>底图与文字对比度不够时调整，留空使用默认浅色</span>
         </div>
         <div class="setting__control">
-          <div class="row">
-            <input
-              class="color-well"
-              type="color"
-              :value="form.profile_text_color || '#fff4e2'"
-              @input="setProfileTextColor"
-            />
-            <span class="mono small">
-              {{ form.profile_text_color || "默认浅色" }}
-            </span>
-            <WoodButton
-              variant="ghost"
-              size="sm"
-              :disabled="!form.profile_text_color"
-              @click="resetProfileTextColor"
-            >
-              恢复默认
-            </WoodButton>
-          </div>
+          <ColorField
+            v-model="form.profile_text_color"
+            label="卡片文字"
+            fallback="#fff4e2"
+            hint="只影响版本页的游玩档案与最常玩版本卡片"
+          />
         </div>
       </div>
 
@@ -1753,6 +1877,18 @@ async function removeJava(path: string) {
         </div>
         <div class="setting__control">
           <WoodSelect v-model="form.memory_mode" :options="memoryModes" />
+        </div>
+      </div>
+
+      <div class="setting">
+        <div class="setting__label">
+          <strong>内存优化</strong>
+          <span>让各程序把闲置内存还给系统，不会结束任何进程</span>
+        </div>
+        <div class="setting__control">
+          <WoodButton variant="soft" size="sm" :disabled="optimizeBusy" @click="optimizeMemory">
+            {{ optimizeBusy ? "优化中…" : "立即优化" }}
+          </WoodButton>
         </div>
       </div>
 
@@ -2064,6 +2200,14 @@ async function removeJava(path: string) {
     </section>
       </div>
     </div>
+
+    <ThemeEditor
+      v-if="themeDialogOpen && themeDraft"
+      :theme="themeDraft"
+      :editing="themeEditing"
+      @save="saveTheme"
+      @close="themeDialogOpen = false"
+    />
   </div>
 </template>
 
@@ -2305,8 +2449,7 @@ async function removeJava(path: string) {
 }
 
 .setting__label {
-  display: flex;
-  flex-direction: column;
+  display: flex;  flex-direction: column;
   gap: 3px;
   min-width: 0;
 }
@@ -2829,6 +2972,68 @@ async function removeJava(path: string) {
   box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.12);
 }
 
+/* 自定义主题卡：右上角挂编辑 / 删除小方块 */
+.theme-card-wrap {
+  position: relative;
+}
+
+.theme-card-wrap .theme-card {
+  width: 100%;
+  height: 100%;
+}
+
+.theme-card__act {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 2px;
+  border: 1px solid var(--line-strong);
+  background: rgba(var(--glass-rgb), 0.92);
+  color: var(--ink-soft);
+  opacity: 0;
+  transition: opacity var(--dur-1) ease, color var(--dur-1) ease,
+    border-color var(--dur-1) ease;
+}
+
+.theme-card__act--del {
+  right: 24px;
+}
+
+.theme-card-wrap:hover .theme-card__act {
+  opacity: 1;
+}
+
+.theme-card__act:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* 添加主题：虚线卡，和实心主题卡同一尺寸 */
+.theme-card--add {
+  justify-content: center;
+  border-style: dashed;
+  background: transparent;
+  color: var(--muted);
+}
+
+.theme-card--add:hover {
+  color: var(--moss);
+  border-color: var(--moss);
+}
+
+.theme-card__add {
+  display: grid;
+  place-items: center;
+  height: 54px;
+  border-radius: 0;
+  background: var(--panel-2);
+  color: inherit;
+}
+
 .theme-card__preview {
   position: relative;
   height: 54px;
@@ -2891,6 +3096,9 @@ async function removeJava(path: string) {
   font-size: 11.5px;
   font-weight: 700;
   text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 外观选项预览卡（窗口材质 / 密度 / 圆角） */
@@ -3319,25 +3527,6 @@ async function removeJava(path: string) {
   border: 1px solid var(--line-strong);
   border-radius: 2px;
   background: rgba(var(--glass-rgb), 0.82);
-}
-
-.color-well {
-  width: 34px;
-  height: 30px;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 0;
-  background: transparent;
-  cursor: pointer;
-}
-
-.color-well::-webkit-color-swatch-wrapper {
-  padding: 3px;
-}
-
-.color-well::-webkit-color-swatch {
-  border: none;
-  border-radius: 2px;
 }
 
 .profile-bg-card__preview {

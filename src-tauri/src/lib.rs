@@ -17,6 +17,7 @@ mod instance;
 mod java;
 mod lan;
 mod launch;
+mod littleskin;
 mod mirror;
 mod mcmod;
 mod modpack;
@@ -125,6 +126,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
             commands::system_memory,
+            commands::optimize_memory,
             commands::news_feed,
             commands::news_article,
             commands::save_config,
@@ -207,6 +209,7 @@ pub fn run() {
             commands::mcmod_names,
             commands::cf_file_link,
             commands::cf_install_file,
+            commands::cf_install_world,
             commands::default_skin,
             commands::default_skins,
             commands::get_accounts,
@@ -226,6 +229,13 @@ pub fn run() {
             commands::skin_library_rename,
             commands::skin_library_remove,
             commands::skin_library_apply,
+            commands::littleskin_status,
+            commands::littleskin_set_app,
+            commands::littleskin_authorize,
+            commands::littleskin_logout,
+            commands::littleskin_closet,
+            commands::littleskin_players,
+            commands::littleskin_apply,
             commands::account_capes,
             commands::cape_set_active,
             commands::ms_login_begin,

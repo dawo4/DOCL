@@ -324,12 +324,6 @@ const currentView = computed(() => views[store.page as Page]);
       <span class="wallpaper__dim" />
     </div>
 
-    <div class="ambient" aria-hidden="true">
-      <span class="ambient__orb ambient__orb--a" />
-      <span class="ambient__orb ambient__orb--b" />
-      <span class="ambient__grain" />
-    </div>
-
     <TitleBar />
 
     <main class="main" :class="{ 'main--flush': store.page === 'home' }">

@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { api, saveSkinDialog } from "../api";
+import diamondImg from "../assets/icons/diamond.png";
 import AppIcon from "../components/AppIcon.vue";
 import IconButton from "../components/IconButton.vue";
-import SkinModel from "../components/SkinModel.vue";
+import SkinPaintViewport from "../components/SkinPaintViewport.vue";
 import WoodButton from "../components/WoodButton.vue";
 import WoodInput from "../components/WoodInput.vue";
 import WoodModal from "../components/WoodModal.vue";
 import type { AccountView, DefaultSkin, SkinLibraryItem } from "../api";
 import { canvasFromSource, createDefaultSkin, seedFromString, skinCanvasFromSource, SKIN_SIZE } from "../skin";
+import { copyPartToPair, paintBlockTemplate } from "../skinEditor/paint";
+import type { PartFilter } from "../skinEditor/atlas";
 import { loadSelectedSkin, notify, refreshAccounts, store } from "../store";
 
 const props = defineProps<{ account: AccountView }>();
@@ -20,11 +23,25 @@ const guideCanvas = ref<HTMLCanvasElement | null>(null);
 const tool = ref<"brush" | "eraser" | "fill" | "picker">("brush");
 const color = ref("#5e7b49");
 const brushSize = ref(1);
-const model = ref("classic");
-const part = ref<"head" | "body" | "arms" | "legs">("head");
+const model = ref<"classic" | "slim">("classic");
+const part = ref<PartFilter>("all");
+const mode = ref<"3d" | "2d">("3d");
+const layer = ref<"base" | "overlay">("base");
+const symmetry = ref(false);
+const docVersion = ref(0);
 const showGuides = ref(true);
-const zoom = ref(1);
-const previewSkin = ref("");
+/// 2D 缩放：fit 表示按窗口自适应，其余为每贴图像素放大的倍率
+const zoom = ref<"fit" | 1 | 2 | 4>("fit");
+/// 自适应时算出的每像素尺寸（CSS 像素）
+const fitScale = ref(8);
+const canvasScroll = ref<HTMLElement | null>(null);
+let canvasObserver: ResizeObserver | null = null;
+/// 透视：其它部位/另一图层半透明；关闭时只显示正在编辑的部分
+const ghost = ref(true);
+/// 全显：所有部位与图层都不透明，用于完整预览
+const showAll = ref(false);
+/// 行走动画开关
+const walk = ref(false);
 const saving = ref(false);
 const uploadOpen = ref(false);
 const uploading = ref(false);
@@ -184,37 +201,70 @@ function onHueUp() {
 }
 
 /// 参考框包含两层：上半部分为贴图层，下半部分为第二层（帽子/外套/袖子/裤子）
-const guideRects = computed<Record<string, [number, number, number, number][]>>(() => ({
+const guideRects = computed<Record<PartFilter, [number, number, number, number][]>>(() => ({
+  all: [
+    [0, 0, 32, 16], // 头部基础层 + 帽子层
+    [32, 0, 32, 16],
+    [16, 16, 24, 16], // 身体基础层 + 外套层
+    [16, 32, 32, 16],
+    [40, 16, 16, 16], // 右臂 + 右袖
+    [40, 32, 16, 16],
+    [32, 48, 16, 16], // 左臂 + 左袖
+    [48, 48, 16, 16],
+    [0, 16, 16, 16], // 右腿 + 右裤
+    [0, 32, 16, 16],
+    [16, 48, 16, 16], // 左腿 + 左裤
+    [0, 48, 16, 16],
+  ],
   head: [
-    [0, 0, 32, 16], // 头部基础层
-    [32, 0, 32, 16], // 帽子层
+    [0, 0, 32, 16],
+    [32, 0, 32, 16],
   ],
   body: [
-    [16, 16, 24, 16], // 身体基础层
-    [16, 32, 32, 16], // 外套层
+    [16, 16, 24, 16],
+    [16, 32, 32, 16],
   ],
-  arms: [
-    [40, 16, 16, 16], // 右臂
-    [32, 48, 16, 16], // 左臂
-    [40, 32, 16, 16], // 右袖
-    [48, 48, 16, 16], // 左袖
+  armRight: [
+    [40, 16, 16, 16],
+    [40, 32, 16, 16],
   ],
-  legs: [
-    [0, 16, 16, 16], // 右腿
-    [16, 48, 16, 16], // 左腿
-    [0, 32, 16, 16], // 右裤
-    [0, 48, 16, 16], // 左裤
+  armLeft: [
+    [32, 48, 16, 16],
+    [48, 48, 16, 16],
+  ],
+  legRight: [
+    [0, 16, 16, 16],
+    [0, 32, 16, 16],
+  ],
+  legLeft: [
+    [16, 48, 16, 16],
+    [0, 48, 16, 16],
   ],
 }));
 
-const canvasWidth = computed(() => 64 * 8 * zoom.value);
+const limbParts: PartFilter[] = ["armLeft", "armRight", "legLeft", "legRight"];
+const canMirror = computed(() => limbParts.includes(part.value));
+
+/// 自适应时按可用空间取整到整像素，保证放大后依然清晰
+const canvasWidth = computed(
+  () => SKIN_SIZE * (zoom.value === "fit" ? fitScale.value : zoom.value * 8)
+);
 const isMicrosoft = computed(() => props.account.kind === "microsoft");
+
+function fitCanvas() {
+  const box = canvasScroll.value;
+  if (!box) return;
+  // 减去容器的内边距，再按 64 整除，得到每个贴图像素占几个屏幕像素
+  const width = box.clientWidth - 28;
+  const height = box.clientHeight - 28;
+  if (width <= 0 || height <= 0) return;
+  fitScale.value = Math.max(1, Math.min(16, Math.floor(Math.min(width, height) / SKIN_SIZE)));
+}
 
 let ctx: CanvasRenderingContext2D | null = null;
 let history: ImageData[] = [];
 let cursor = -1;
 let drawing = false;
-let previewTimer: number | undefined;
 
 function pushHistory() {
   if (!ctx) return;
@@ -232,7 +282,7 @@ function undo() {
   ctx.putImageData(history[cursor], 0, 0);
   canUndo.value = cursor > 0;
   canRedo.value = true;
-  schedulePreview();
+  bumpDoc();
 }
 
 function redo() {
@@ -241,15 +291,41 @@ function redo() {
   ctx.putImageData(history[cursor], 0, 0);
   canUndo.value = true;
   canRedo.value = cursor < history.length - 1;
-  schedulePreview();
+  bumpDoc();
 }
 
-function schedulePreview() {
-  if (previewTimer) window.clearTimeout(previewTimer);
-  previewTimer = window.setTimeout(() => {
-    const canvas = drawCanvas.value;
-    if (canvas) previewSkin.value = canvas.toDataURL("image/png");
-  }, 120);
+/// 2D 画布内容被外部改动（撤销、套用预设等）时，通知 3D 视口重新取图
+function bumpDoc() {
+  docVersion.value += 1;
+}
+
+function onViewportCommit() {
+  pushHistory();
+}
+
+function onViewportPick(value: string) {
+  color.value = value;
+}
+
+function mirrorToPair() {
+  const canvas = drawCanvas.value;
+  if (!canvas || !canMirror.value) return;
+  if (!copyPartToPair(canvas, part.value as Exclude<PartFilter, "all" | "head" | "body">, model.value === "slim")) {
+    return;
+  }
+  pushHistory();
+  bumpDoc();
+  notify("已把这一侧镜像到对侧");
+}
+
+/// 色块模板：清空皮肤，每个部位填不同颜色，方便从零开始画
+function applyBlockTemplate() {
+  const canvas = drawCanvas.value;
+  if (!canvas) return;
+  paintBlockTemplate(canvas, model.value === "slim");
+  pushHistory();
+  bumpDoc();
+  notify("已套用色块模板");
 }
 
 function drawGuides() {
@@ -347,7 +423,7 @@ function onPointerDown(event: PointerEvent) {
   if (tool.value === "fill" || tool.value === "picker") {
     paintAt(pos.x, pos.y);
     pushHistory();
-    schedulePreview();
+    bumpDoc();
     return;
   }
   drawing = true;
@@ -366,7 +442,7 @@ function onPointerUp() {
   if (!drawing) return;
   drawing = false;
   pushHistory();
-  schedulePreview();
+  bumpDoc();
 }
 
 async function loadSource() {
@@ -392,8 +468,9 @@ async function loadSource() {
   history = [];
   cursor = -1;
   pushHistory();
-  previewSkin.value = base.toDataURL("image/png");
-  model.value = store.accountSkin?.model ?? props.account.skin_model ?? "classic";
+  const accountModel = store.accountSkin?.model ?? props.account.skin_model;
+  model.value = accountModel === "slim" ? "slim" : "classic";
+  docVersion.value += 1;
   drawGuides();
 }
 
@@ -467,7 +544,7 @@ async function applyPreset(preset: DefaultSkin) {
     ctx.clearRect(0, 0, SKIN_SIZE, SKIN_SIZE);
     ctx.drawImage(base, 0, 0);
     pushHistory();
-    schedulePreview();
+    bumpDoc();
     model.value = preset.model === "slim" ? "slim" : "classic";
     notify(`已套用默认皮肤：${preset.name}`);
   } catch (err) {
@@ -490,7 +567,7 @@ async function applyLibrary(item: SkinLibraryItem) {
     ctx.clearRect(0, 0, SKIN_SIZE, SKIN_SIZE);
     ctx.drawImage(base, 0, 0);
     pushHistory();
-    schedulePreview();
+    bumpDoc();
     model.value = item.model === "slim" ? "slim" : "classic";
     notify(`已载入收藏皮肤：${item.name}`);
   } catch (err) {
@@ -528,7 +605,20 @@ onMounted(async () => {
     .catch(() => {});
   void loadLibrary();
   await nextTick();
+  canvasObserver = new ResizeObserver(fitCanvas);
+  if (canvasScroll.value) canvasObserver.observe(canvasScroll.value);
+  fitCanvas();
   await loadSource();
+});
+
+onBeforeUnmount(() => {
+  canvasObserver?.disconnect();
+  canvasObserver = null;
+});
+
+/// 切到 2D 时容器刚恢复显示，重新量一次
+watch(mode, () => {
+  if (mode.value === "2d") nextTick(fitCanvas);
 });
 
 const tools = [
@@ -539,10 +629,13 @@ const tools = [
 ] as const;
 
 const partOptions = [
+  { value: "all", label: "全身" },
   { value: "head", label: "头部" },
   { value: "body", label: "身体" },
-  { value: "arms", label: "手臂" },
-  { value: "legs", label: "腿部" },
+  { value: "armLeft", label: "左臂" },
+  { value: "armRight", label: "右臂" },
+  { value: "legLeft", label: "左腿" },
+  { value: "legRight", label: "右腿" },
 ] as const;
 </script>
 
@@ -559,8 +652,8 @@ const partOptions = [
         <span class="tag" :class="{ 'tag--grass': isMicrosoft }">
           {{ isMicrosoft ? "微软账号" : "离线账号" }}
         </span>
-        <WoodButton variant="soft" size="sm" @click="resetSkin">重置</WoodButton>
-        <WoodButton variant="ghost" size="sm" @click="exportPng">导出 PNG</WoodButton>
+        <WoodButton class="head-btn" size="sm" @click="resetSkin">重置</WoodButton>
+        <WoodButton class="head-btn" size="sm" @click="exportPng">导出 PNG</WoodButton>
         <WoodButton
           v-if="isMicrosoft"
           variant="danger"
@@ -577,21 +670,63 @@ const partOptions = [
     </header>
 
     <div class="editor-layout">
-      <section class="card editor-main">
-        <div class="editor-toolbar">
-          <div class="tool-group">
+      <aside class="card editor-col editor-left">
+        <section class="side-block">
+          <div class="side-title">模式与模型</div>
+          <div class="seg-row">
+            <button
+              class="tool tool--wide"
+              :class="{ 'tool--active': mode === '3d' }"
+              @click="mode = '3d'"
+            >
+              3D 绘制
+            </button>
+            <button
+              class="tool tool--wide"
+              :class="{ 'tool--active': mode === '2d' }"
+              @click="mode = '2d'"
+            >
+              2D 精修
+            </button>
+          </div>
+          <div class="seg-row">
+            <button
+              class="tool tool--wide"
+              :class="{ 'tool--active': model === 'classic' }"
+              @click="model = 'classic'"
+            >
+              经典
+            </button>
+            <button
+              class="tool tool--wide"
+              :class="{ 'tool--active': model === 'slim' }"
+              @click="model = 'slim'"
+            >
+              纤细
+            </button>
+          </div>
+        </section>
+
+        <section class="side-block">
+          <div class="side-head">
+            <div class="side-title">工具</div>
+            <div class="row-inline">
+              <IconButton icon="undo" label="撤销" :size="26" :disabled="!canUndo" @click="undo" />
+              <IconButton icon="redo" label="重做" :size="26" :disabled="!canRedo" @click="redo" />
+            </div>
+          </div>
+          <div class="tool-row">
             <button
               v-for="item in tools"
               :key="item.value"
-              class="tool"
+              class="tool tool--wide"
               :class="{ 'tool--active': tool === item.value }"
               @click="setTool(item.value)"
             >
               {{ item.label }}
             </button>
           </div>
-
-          <div class="tool-group">
+          <div class="row-inline">
             <span class="tool-label">笔刷</span>
             <button
               v-for="size in [1, 2, 4]"
@@ -603,38 +738,80 @@ const partOptions = [
               {{ size }}
             </button>
           </div>
+        </section>
 
-          <div class="tool-group">
-            <IconButton
-              icon="undo"
-              label="撤销"
-              :size="30"
-              :disabled="!canUndo"
-              @click="undo"
-            />
-            <IconButton
-              icon="redo"
-              label="重做"
-              :size="30"
-              :disabled="!canRedo"
-              @click="redo"
-            />
-          </div>
-
-          <div class="tool-group">
-            <span class="tool-label">部位</span>
+        <section class="side-block">
+          <div class="side-title">部位</div>
+          <div class="part-grid">
             <button
               v-for="item in partOptions"
               :key="item.value"
-              class="tool"
+              class="tool tool--wide"
               :class="{ 'tool--active': part === item.value }"
               @click="selectPart(item.value)"
             >
               {{ item.label }}
             </button>
           </div>
+        </section>
 
-          <div class="tool-group">
+        <section v-if="mode === '3d'" class="side-block">
+          <div class="side-title">图层与选项</div>
+          <div class="seg-row">
+            <button
+              class="tool tool--wide"
+              :class="{ 'tool--active': layer === 'base' }"
+              @click="layer = 'base'"
+            >
+              基础
+            </button>
+            <button
+              class="tool tool--wide"
+              :class="{ 'tool--active': layer === 'overlay' }"
+              @click="layer = 'overlay'"
+            >
+              外层
+            </button>
+          </div>
+          <div class="opt-grid">
+            <button
+              class="switch"
+              :class="{ 'switch--on': symmetry }"
+              title="绘制时自动左右镜像"
+              @click="symmetry = !symmetry"
+            >
+              <span class="switch__dot" />对称
+            </button>
+            <button
+              class="switch"
+              :disabled="!canMirror"
+              :title="canMirror ? '把当前这一侧的绘制内容复制到对侧' : '先选中一条手臂或腿'"
+              @click="mirrorToPair"
+            >
+              <span class="switch__dot" />镜像
+            </button>
+            <button
+              class="switch"
+              :class="{ 'switch--on': ghost }"
+              title="其它部位和另一图层半透明显示；关闭时只显示正在编辑的部位与图层"
+              @click="ghost = !ghost"
+            >
+              <span class="switch__dot" />透视
+            </button>
+            <button
+              class="switch"
+              :class="{ 'switch--on': walk }"
+              title="让模型走起来，方便看整体效果"
+              @click="walk = !walk"
+            >
+              <span class="switch__dot" />行走
+            </button>
+          </div>
+        </section>
+
+        <section v-if="mode === '2d'" class="side-block">
+          <div class="side-head">
+            <div class="side-title">画布</div>
             <button
               class="tool"
               :class="{ 'tool--active': showGuides }"
@@ -642,83 +819,101 @@ const partOptions = [
             >
               网格
             </button>
+          </div>
+          <div class="tool-row">
+            <button
+              class="tool"
+              :class="{ 'tool--active': zoom === 'fit' }"
+              title="按窗口大小自适应"
+              @click="zoom = 'fit'"
+            >
+              适应
+            </button>
             <button
               v-for="value in [1, 2, 4]"
               :key="value"
-              class="tool tool--size"
+              class="tool"
               :class="{ 'tool--active': zoom === value }"
               @click="zoom = value"
             >
               {{ value }}×
             </button>
           </div>
+        </section>
+      </aside>
+
+      <section class="card editor-main">
+        <div v-if="mode === '3d'" class="stage-wrap">
+          <SkinPaintViewport
+            :source="drawCanvas"
+            :version="docVersion"
+            :model="model"
+            :tool="tool"
+            :color="color"
+            :brush-size="brushSize"
+            :symmetry="symmetry"
+            :part="part"
+            :layer="layer"
+            :ghost="ghost"
+            :show-all="showAll"
+            :walk="walk"
+            :height="null"
+            @commit="onViewportCommit"
+            @pick="onViewportPick"
+          />
+          <button
+            class="tool preview-toggle"
+            :class="{ 'tool--active': showAll }"
+            title="所有部位和内外层都不透明显示，用来完整预览皮肤"
+            @click="showAll = !showAll"
+          >
+            <img class="preview-toggle__icon" :src="diamondImg" alt="" />
+            预览
+          </button>
         </div>
 
-        <div v-if="presets.length" class="preset-row">
-          <span class="tool-label">默认皮肤</span>
-          <div class="preset-list">
-            <button
-              v-for="preset in presets"
-              :key="preset.id"
-              class="preset"
-              :title="`套用 ${preset.name}`"
-              @click="applyPreset(preset)"
-            >
-              <span
-                class="preset-face"
-                :style="{ backgroundImage: `url(${preset.data_url})` }"
-              />
-              <span class="preset-name">{{ preset.name }}</span>
-            </button>
+        <div ref="canvasScroll" v-show="mode === '2d'" class="canvas-scroll">
+          <div class="canvas-stack" :style="{ width: `${canvasWidth}px`, height: `${canvasWidth}px` }">
+            <canvas
+              ref="drawCanvas"
+              width="64"
+              height="64"
+              class="skin-canvas"
+              @pointerdown="onPointerDown"
+              @pointermove="onPointerMove"
+              @pointerup="onPointerUp"
+              @pointerleave="onPointerUp"
+            />
+            <canvas
+              ref="guideCanvas"
+              width="64"
+              height="64"
+              class="guide-canvas"
+            />
           </div>
         </div>
+      </section>
 
-        <div class="preset-row">
-          <span class="tool-label">收藏库</span>
-          <div class="preset-list">
-            <button
-              v-for="item in library"
-              :key="item.id"
-              class="preset"
-              :title="`载入 ${item.name}`"
-              @click="applyLibrary(item)"
-            >
-              <span
-                class="preset-face"
-                :style="{ backgroundImage: `url(${item.data_url})` }"
-              />
-              <span class="preset-name">{{ item.name }}</span>
-            </button>
-            <button class="preset preset--add" title="把当前皮肤存入收藏库" @click="openSaveLibrary">
-              <span class="preset-face preset-face--add">
-                <AppIcon name="plus" :size="14" />
-              </span>
-              <span class="preset-name">存入</span>
-            </button>
-          </div>
-          <span v-if="!library.length" class="muted small preset-hint">
-            收藏库还是空的，可在皮肤库导入或抓取
-          </span>
-        </div>
-
-        <div class="color-panel">
+      <aside class="card editor-col editor-right">
+        <section class="side-block">
+          <div class="side-title">颜色</div>
           <div class="color-head">
             <div class="color-current" :style="{ background: color }" />
-            <div class="palette">
-              <button
-                v-for="item in palette"
-                :key="item"
-                class="swatch"
-                :class="{ 'swatch--active': color.toLowerCase() === item }"
-                :style="{ background: item }"
-                @click="color = item"
-              />
-            </div>
             <input
               v-model="color"
               class="hex-input mono"
               maxlength="7"
               spellcheck="false"
+            />
+          </div>
+          <div class="palette">
+            <button
+              v-for="item in palette"
+              :key="item"
+              class="swatch"
+              :class="{ 'swatch--active': color.toLowerCase() === item }"
+              :style="{ background: item }"
+              @click="color = item"
             />
           </div>
 
@@ -755,61 +950,63 @@ const partOptions = [
               :style="{ left: `${(hue / 360) * 100}%`, background: `hsl(${hue}, 100%, 50%)` }"
             />
           </div>
-        </div>
+        </section>
 
-        <div class="canvas-scroll">
-          <div class="canvas-stack" :style="{ width: `${canvasWidth}px`, height: `${canvasWidth}px` }">
-            <canvas
-              ref="drawCanvas"
-              width="64"
-              height="64"
-              class="skin-canvas"
-              @pointerdown="onPointerDown"
-              @pointermove="onPointerMove"
-              @pointerup="onPointerUp"
-              @pointerleave="onPointerUp"
-            />
-            <canvas
-              ref="guideCanvas"
-              width="64"
-              height="64"
-              class="guide-canvas"
-            />
-          </div>
-        </div>
-      </section>
+        <section class="side-block">
+          <div class="side-title">模板</div>
+          <button class="template" title="清空皮肤，每个部位填成不同颜色" @click="applyBlockTemplate">
+            <span class="template-face" />
+            <span class="template-text">
+              <span class="template-name">色块模板</span>
+              <span class="template-hint">各部位不同颜色，从零开始画</span>
+            </span>
+          </button>
+        </section>
 
-      <aside class="editor-side">
-        <section class="card card-pad preview-card">
-          <div class="row-between">
-            <div>
-              <div class="section-title">实时 3D</div>
-            </div>
-            <div class="model-toggle">
-              <button
-                class="tool"
-                :class="{ 'tool--active': model === 'classic' }"
-                @click="model = 'classic'"
-              >
-                经典
-              </button>
-              <button
-                class="tool"
-                :class="{ 'tool--active': model === 'slim' }"
-                @click="model = 'slim'"
-              >
-                纤细
-              </button>
-            </div>
+        <section v-if="presets.length" class="side-block">
+          <div class="side-title">默认皮肤</div>
+          <div class="preset-grid">
+            <button
+              v-for="preset in presets"
+              :key="preset.id"
+              class="preset"
+              :title="`套用 ${preset.name}`"
+              @click="applyPreset(preset)"
+            >
+              <span
+                class="preset-face"
+                :style="{ backgroundImage: `url(${preset.data_url})` }"
+              />
+              <span class="preset-name">{{ preset.name }}</span>
+            </button>
           </div>
-          <SkinModel
-            :skin="previewSkin"
-            :seed="account.uuid"
-            :model="model"
-            :height="360"
-          />
-          <p class="muted small">
-            拖拽模型可以旋转。离线账号的皮肤只用于启动器预览与导出，不会改变游戏内显示。
+        </section>
+
+        <section class="side-block">
+          <div class="side-title">收藏库</div>
+          <div class="preset-grid">
+            <button
+              v-for="item in library"
+              :key="item.id"
+              class="preset"
+              :title="`载入 ${item.name}`"
+              @click="applyLibrary(item)"
+            >
+              <span
+                class="preset-face"
+                :style="{ backgroundImage: `url(${item.data_url})` }"
+              />
+              <span class="preset-name">{{ item.name }}</span>
+            </button>
+            <button class="preset preset--add" title="把当前皮肤存入收藏库" @click="openSaveLibrary">
+              <span class="preset-face preset-face--add">
+                <AppIcon name="plus" :size="14" />
+              </span>
+              <span class="preset-name">存入</span>
+            </button>
+          </div>
+          <p v-if="!library.length" class="muted small preset-hint">
+            收藏库还是空的，可在皮肤库导入或抓取
           </p>
         </section>
       </aside>
@@ -874,31 +1071,199 @@ const partOptions = [
   flex-wrap: wrap;
 }
 
-.editor-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 380px;
-  gap: 16px;
-  align-items: start;
+/* 头部次级按钮统一成偏白底，和苔绿主按钮拉开层级 */
+.editor-head .head-btn {
+  --face: var(--panel);
 }
 
-.editor-main {
-  padding: 16px 18px 18px;
-  display: flex;
-  flex-direction: column;
+.editor {
+  /* 标题栏 54 + 主区上下内边距 28/44，让编辑器正好铺满可视高度 */
+  height: calc(100vh - 126px);
+  min-height: 400px;
   gap: 12px;
 }
 
-.editor-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  align-items: center;
+.editor-layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 182px minmax(0, 1fr) 224px;
+  gap: 12px;
 }
 
-.tool-group {
+/* 两侧工具列：内容多时自己滚动，不挤压中间画布 */
+.editor-col {
+  padding: 10px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+
+.editor-col .tool,
+.editor-col .switch {
+  height: 26px;
+}
+
+.side-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.side-block + .side-block {
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+}
+
+.side-title {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.seg-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.tool-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.tool-row .tool {
+  padding: 0 2px;
+  font-size: 11px;
+}
+
+.opt-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.part-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.part-grid .tool {
+  padding: 0 2px;
+  font-size: 11px;
+}
+
+.row-inline {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* 选项开关：勾选时点亮苔藓色，和工具按钮一致 */
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 2px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-align: left;
+  transition: border-color var(--dur-1) ease, background var(--dur-1) ease,
+    color var(--dur-1) ease;
+}
+
+.switch:hover {
+  border-color: var(--line-strong);
+}
+
+.switch:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.switch__dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+}
+
+.switch--on {
+  color: var(--moss);
+  background: var(--moss-soft);
+  border-color: color-mix(in srgb, var(--moss) 38%, var(--line));
+}
+
+.switch--on .switch__dot {
+  background: var(--moss);
+  border-color: var(--moss);
+}
+
+.editor-main {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.stage-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.stage-wrap > * {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 画布右上角的预览开关：沿用木质立体按钮材质，叠在 3D 视口之上 */
+.preview-toggle {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  background: var(--panel-2);
+  border-color: color-mix(in srgb, var(--line-strong) 75%, transparent);
+  box-shadow: 0 1px 2px rgba(43, 33, 24, 0.12);
+}
+
+.preview-toggle__icon {
+  display: block;
+  width: 15px;
+  height: 15px;
+  border-radius: 2px;
+  image-rendering: pixelated;
+}
+
+/* 激活时沿用按钮的苔绿底色（覆盖上方的纸质底） */
+.preview-toggle.tool--active {
+  background: var(--moss-soft);
 }
 
 .tool-label {
@@ -907,6 +1272,7 @@ const partOptions = [
   color: var(--muted);
   text-transform: uppercase;
   margin-right: 2px;
+  white-space: nowrap;
 }
 
 /* 工具按钮沿用同一套浮雕：悬停浮起，选中压进面板 */
@@ -923,6 +1289,7 @@ const partOptions = [
   color: var(--ink-soft);
   font-size: 11.5px;
   font-weight: 600;
+  white-space: nowrap;
   transition: background 150ms ease, color 150ms ease,
     border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
 }
@@ -964,21 +1331,33 @@ const partOptions = [
   padding: 0 6px;
 }
 
-.color-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.tool--wide {
+  width: 100%;
+  min-width: 0;
+  padding: 0 4px;
+}
+
+.tool:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.tool:disabled:hover {
+  transform: none;
+  background: transparent;
+  color: var(--ink-soft);
+  border-color: transparent;
 }
 
 .color-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .sv-area {
   position: relative;
-  height: 132px;
+  height: 112px;
   border-radius: 0;
   border-style: solid;
   border-width: 1px;
@@ -1038,31 +1417,18 @@ const partOptions = [
   pointer-events: none;
 }
 
-.preset-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--line);
-  min-width: 0;
-}
-
-.preset-list {
-  display: flex;
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
-  padding: 2px;
 }
 
 .preset {
-  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 3px;
-  padding: 4px 5px;
+  padding: 4px 2px;
   border-radius: 0;
   border: 1px solid transparent;
   transition: border-color var(--dur-1) ease, background var(--dur-1) ease,
@@ -1076,12 +1442,12 @@ const partOptions = [
 }
 
 .preset-face {
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   border-radius: 0;
   border: 1px solid rgba(0, 0, 0, 0.12);
-  background-size: 272px 272px;
-  background-position: -34px -34px;
+  background-size: 352px 352px;
+  background-position: -44px -44px;
   background-repeat: no-repeat;
   image-rendering: pixelated;
 }
@@ -1090,11 +1456,67 @@ const partOptions = [
   font-size: 9.5px;
   letter-spacing: 0.04em;
   color: var(--muted);
-  line-height: 1;
+  line-height: 1.1;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .preset-hint {
+  line-height: 1.5;
+}
+
+/* 色块模板入口 */
+.template {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 2px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  text-align: left;
+  transition: border-color var(--dur-1) ease, transform var(--dur-1) ease;
+}
+
+.template:hover {
+  border-color: var(--moss);
+  transform: translateY(-1px);
+}
+
+.template-face {
+  width: 34px;
+  height: 34px;
   flex-shrink: 0;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: linear-gradient(
+    160deg,
+    #e8c39a 0 30%,
+    #6f8a4f 30% 52%,
+    #4c7f9e 52% 70%,
+    #b06a4a 70% 84%,
+    #7a6aa8 84% 100%
+  );
+}
+
+.template-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.template-name {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
+.template-hint {
+  font-size: 9.5px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
 }
 
 .preset-face--add {
@@ -1138,7 +1560,6 @@ const partOptions = [
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  flex: 1;
   min-width: 0;
 }
 
@@ -1160,7 +1581,8 @@ const partOptions = [
 }
 
 .hex-input {
-  width: 92px;
+  flex: 1;
+  min-width: 0;
   height: 30px;
   border-radius: 0;
   border-style: solid;
@@ -1177,8 +1599,10 @@ const partOptions = [
 }
 
 .canvas-scroll {
+  flex: 1;
+  min-height: 0;
+  display: flex;
   overflow: auto;
-  max-height: 560px;
   border-radius: 2px;
   border: 1px solid var(--line);
   background: var(--paper-2);
@@ -1187,7 +1611,9 @@ const partOptions = [
 
 .canvas-stack {
   position: relative;
-  margin: 0 auto;
+  flex: 0 0 auto;
+  /* flex 中 auto 外边距在放得下时居中、放不下时贴左上，滚动行为正常 */
+  margin: auto;
 }
 
 .skin-canvas,
@@ -1214,22 +1640,6 @@ const partOptions = [
   pointer-events: none;
 }
 
-.editor-side {
-  position: sticky;
-  top: 0;
-}
-
-.preview-card {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.model-toggle {
-  display: flex;
-  gap: 4px;
-}
-
 .warning {
   padding: 11px 13px;
   border-radius: 4px;
@@ -1241,13 +1651,11 @@ const partOptions = [
   margin-bottom: 12px;
 }
 
-@media (max-width: 1120px) {
+/* 窗口变窄时压缩两侧，优先保证中间画布 */
+@media (max-width: 1100px) {
   .editor-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .editor-side {
-    position: static;
+    grid-template-columns: 160px minmax(0, 1fr) 206px;
+    gap: 10px;
   }
 }
 </style>

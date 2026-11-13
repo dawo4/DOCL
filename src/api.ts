@@ -142,6 +142,27 @@ export interface RoomModCheck {
   problems: string[];
 }
 
+export interface CustomTheme {
+  id: string;
+  name: string;
+  /// 页面底色
+  paper: string;
+  /// 卡片底色
+  panel: string;
+  /// 主色（按钮、链接）
+  primary: string;
+  /// 强调色（选中态、进度条）
+  accent: string;
+  /// 标题文字
+  title: string;
+  /// 正文文字
+  text: string;
+  /// 次要文字
+  muted: string;
+  /// 边框线
+  line: string;
+}
+
 export interface Config {
   game_dir: string;
   game_dirs: GameDirEntry[];
@@ -189,6 +210,8 @@ export interface Config {
   profile_card_image: string | null;
   /// 版本页卡片文字颜色，空表示跟随主题
   profile_text_color: string | null;
+  /// 用户创建的主题，theme 为 `custom:<id>` 时启用
+  custom_themes: CustomTheme[];
   ui_font: string;
   ui_density: string;
   window_vibrancy: boolean;
@@ -210,6 +233,13 @@ export interface SystemMemory {
   available_mb: number;
   /// 按当前占用情况推荐的自动分配值（参考 PCL，随可用内存实时变化）
   recommended_mb: number;
+}
+
+export interface MemoryRelease {
+  /// 优化前后系统可用内存的差值（MB），可能为 0
+  freed_mb: number;
+  /// 成功清理工作集的进程数
+  processes: number;
 }
 
 export interface NewsItem {
@@ -702,6 +732,36 @@ export interface SkinLibraryItem {
   data_url: string;
 }
 
+export interface LittleSkinStatus {
+  configured: boolean;
+  authorized: boolean;
+  name: string;
+  uid: number;
+  redirect_uri: string;
+  scope: string;
+}
+
+export interface LittleSkinClosetItem {
+  tid: number;
+  name: string;
+  kind: string;
+  preview: string;
+  texture: string;
+}
+
+export interface LittleSkinClosetPage {
+  total: number;
+  page: number;
+  last_page: number;
+  items: LittleSkinClosetItem[];
+}
+
+export interface LittleSkinPlayer {
+  pid: number;
+  name: string;
+  tid_skin: number;
+}
+
 export interface CapeView {
   id: string;
   alias: string;
@@ -835,6 +895,7 @@ export interface GameExit {
 export const api = {
   getConfig: () => invoke<Config>("get_config"),
   systemMemory: () => invoke<SystemMemory>("system_memory"),
+  optimizeMemory: () => invoke<MemoryRelease>("optimize_memory"),
   newsFeed: (force = false) => invoke<NewsFeed>("news_feed", { force }),
   newsArticle: (path: string, wikiTitle?: string) =>
     invoke<string>("news_article", { path, wikiTitle: wikiTitle ?? null }),
@@ -1018,6 +1079,8 @@ export const api = {
     invoke<{ url: string; file_name: string }>("cf_file_link", { projectId, fileId }),
   cfInstallFile: (versionId: string, kind: string, url: string, fileName: string) =>
     invoke<InstallOutcome>("cf_install_file", { versionId, kind, url, fileName }),
+  cfInstallWorld: (versionId: string, url: string, fileName: string) =>
+    invoke<string>("cf_install_world", { versionId, url, fileName }),
   contentProjects: (source: string, ids: string[]) =>
     invoke<CfProject[]>("content_projects", { source, ids }),
   projectTranslations: (source: string, ids: string[]) =>
@@ -1061,6 +1124,16 @@ export const api = {
   skinLibraryRemove: (id: string) => invoke<void>("skin_library_remove", { id }),
   skinLibraryApply: (id: string, accountId: string, upload: boolean) =>
     invoke<AccountView>("skin_library_apply", { id, accountId, upload }),
+  littleskinStatus: () => invoke<LittleSkinStatus>("littleskin_status"),
+  littleskinSetApp: (clientId: string, clientSecret: string) =>
+    invoke<LittleSkinStatus>("littleskin_set_app", { clientId, clientSecret }),
+  littleskinAuthorize: () => invoke<LittleSkinStatus>("littleskin_authorize"),
+  littleskinLogout: () => invoke<void>("littleskin_logout"),
+  littleskinCloset: (page: number) =>
+    invoke<LittleSkinClosetPage>("littleskin_closet", { page }),
+  littleskinPlayers: () => invoke<LittleSkinPlayer[]>("littleskin_players"),
+  littleskinApply: (pid: number, tid: number) =>
+    invoke<void>("littleskin_apply", { pid, tid }),
   accountCapes: (accountId: string) =>
     invoke<CapeView[]>("account_capes", { accountId }),
   capeSetActive: (accountId: string, capeId: string | null) =>

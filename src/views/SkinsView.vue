@@ -10,12 +10,14 @@ import {
 } from "../api";
 import AppIcon from "../components/AppIcon.vue";
 import IconButton from "../components/IconButton.vue";
+import LittleSkinPanel from "../components/LittleSkinPanel.vue";
 import SkinModel from "../components/SkinModel.vue";
 import WoodButton from "../components/WoodButton.vue";
 import WoodInput from "../components/WoodInput.vue";
 import WoodModal from "../components/WoodModal.vue";
 import WoodSelect from "../components/WoodSelect.vue";
 import WoodToggle from "../components/WoodToggle.vue";
+import { skinPortrait } from "../skinPreview";
 import { loadSelectedSkin, notify, refreshAccounts, store } from "../store";
 
 const items = ref<SkinLibraryItem[]>([]);
@@ -55,6 +57,36 @@ const capesLoading = ref(false);
 const capesError = ref("");
 const capeBusy = ref("");
 
+/// 右栏页签：本地皮肤库 / LittleSkin 衣柜 / 披风
+const tab = ref<"local" | "littleskin" | "capes">("local");
+const keyword = ref("");
+/// 左栏预览：静止或行走
+const walking = ref(true);
+const previewId = ref("");
+/// 卡片缩略图（本地拼好的 16×32 人形立绘）
+const portraits = ref<Record<string, string>>({});
+let portraitToken = 0;
+
+const filteredItems = computed(() => {
+  const key = keyword.value.trim().toLowerCase();
+  if (!key) return items.value;
+  return items.value.filter((item) => item.name.toLowerCase().includes(key));
+});
+const previewItem = computed(
+  () => items.value.find((item) => item.id === previewId.value) ?? null
+);
+const previewData = computed(
+  () => previewItem.value?.data_url ?? store.accountSkin?.data_url ?? ""
+);
+const previewModel = computed(
+  () => previewItem.value?.model ?? store.accountSkin?.model ?? "classic"
+);
+const previewSeed = computed(() => previewItem.value?.id ?? "account-skin");
+const previewName = computed(() => previewItem.value?.name ?? "当前皮肤");
+const previewSource = computed(() =>
+  previewItem.value ? sourceLabel(previewItem.value.source) : store.accountSkin ? "账号" : ""
+);
+
 const accountOptions = computed(() =>
   store.accounts.map((account) => ({ value: account.id, label: account.name }))
 );
@@ -83,11 +115,45 @@ async function loadLibrary() {
   error.value = "";
   try {
     items.value = await api.skinLibraryList();
+    syncPreviewSelection();
+    void buildPortraits();
   } catch (err) {
     error.value = String(err);
   } finally {
     loading.value = false;
   }
+}
+
+/// 默认预览当前正在使用的皮肤；否则预览第一张
+function syncPreviewSelection() {
+  if (previewId.value && items.value.some((item) => item.id === previewId.value)) return;
+  const current = items.value.find(isCurrent);
+  previewId.value = current?.id ?? items.value[0]?.id ?? "";
+}
+
+function isCurrent(item: SkinLibraryItem) {
+  return !!store.accountSkin?.data_url && store.accountSkin.data_url === item.data_url;
+}
+
+function selectItem(item: SkinLibraryItem) {
+  previewId.value = item.id;
+}
+
+/// 用卡片渲染缩略图：一台画布拼几十张也很快，不用为每张卡开 WebGL
+async function buildPortraits() {
+  const token = ++portraitToken;
+  const list = items.value;
+  const entries = await Promise.all(
+    list.map(async (item) => {
+      try {
+        return [item.id, await skinPortrait(item.data_url, item.model)] as const;
+      } catch {
+        return [item.id, ""] as const;
+      }
+    })
+  );
+  if (token !== portraitToken) return;
+  portraits.value = Object.fromEntries(entries);
 }
 
 async function pickImportFile() {
@@ -288,6 +354,20 @@ function openSkinSite() {
   openExternal(site);
 }
 
+/// 打开指定账号所属皮肤站的衣柜页（上传皮肤只能在那里做）
+function openAccountSite(accountId: string) {
+  const account = store.accounts.find((item) => item.id === accountId);
+  const trimmed = (account?.authlib_url ?? "").trim().replace(/\/+$/, "");
+  if (!trimmed) {
+    notify("这个账号没有记录皮肤站地址", "err");
+    return;
+  }
+  const site = trimmed.endsWith("/api/yggdrasil")
+    ? trimmed.slice(0, -"/api/yggdrasil".length)
+    : trimmed;
+  openExternal(`${site}/user/closet`);
+}
+
 onMounted(async () => {
   await loadLibrary();
   if (capeAccountOptions.value.length) {
@@ -301,76 +381,165 @@ onMounted(async () => {
 
 <template>
   <div class="page skins">
-    <section class="lib card">
-      <header class="lib__head">
-        <div class="lib__title">
-          皮肤收藏
-          <span class="lib__count mono">{{ items.length }}</span>
+    <div class="skin-stage">
+      <aside class="preview card">
+        <div class="preview__viewport">
+          <SkinModel
+            :skin="previewData"
+            :seed="previewSeed"
+            :model="previewModel"
+            :walking="walking"
+            :height="430"
+          />
         </div>
-        <div class="lib__actions">
-          <WoodButton variant="ghost" size="sm" @click="openHarvest">
-            <AppIcon name="user" :size="14" />
-            从账号收录
-          </WoodButton>
-          <WoodButton variant="ghost" size="sm" @click="playerOpen = true">
-            <AppIcon name="globe" :size="14" />
-            按玩家名抓取
-          </WoodButton>
-          <WoodButton variant="primary" size="sm" @click="importOpen = true">
-            <AppIcon name="plus" :size="14" />
-            导入 PNG
-          </WoodButton>
+        <div class="preview__seg">
+          <button :class="{ 'preview__seg-btn--active': !walking }" @click="walking = false">
+            静止
+          </button>
+          <button :class="{ 'preview__seg-btn--active': walking }" @click="walking = true">
+            行走
+          </button>
         </div>
-      </header>
+        <p class="preview__tip">拖动旋转</p>
+        <div class="preview__meta">
+          <strong>{{ previewName }}</strong>
+          <span class="muted small">
+            {{ previewModel === "slim" ? "纤细" : "经典" }}{{
+              previewSource ? ` · ${previewSource}` : ""
+            }}
+          </span>
+        </div>
+        <WoodButton
+          variant="primary"
+          size="sm"
+          :disabled="!previewItem"
+          @click="previewItem && openApply(previewItem)"
+        >
+          使用这张皮肤
+        </WoodButton>
+      </aside>
 
-      <div v-if="loading" class="lib__empty">
-        <span class="muted small">正在读取皮肤库…</span>
-      </div>
-      <div v-else-if="error" class="lib__empty">
-        <span class="muted small">{{ error }}</span>
-        <WoodButton variant="ghost" size="sm" @click="loadLibrary">重试</WoodButton>
-      </div>
-      <div v-else-if="!items.length" class="lib__empty">
-        <span class="muted small">皮肤库还是空的，导入 PNG 或从账号收录一件吧</span>
-      </div>
+      <section class="stage-main">
+        <header class="stage-head">
+          <div class="tabs">
+            <button
+              class="tabs__btn"
+              :class="{ 'tabs__btn--active': tab === 'local' }"
+              @click="tab = 'local'"
+            >
+              本地皮肤库
+              <span class="tabs__count mono">{{ items.length }}</span>
+            </button>
+            <button
+              class="tabs__btn"
+              :class="{ 'tabs__btn--active': tab === 'littleskin' }"
+              @click="tab = 'littleskin'"
+            >
+              LittleSkin 衣柜
+            </button>
+            <button
+              class="tabs__btn"
+              :class="{ 'tabs__btn--active': tab === 'capes' }"
+              @click="tab = 'capes'"
+            >
+              披风
+            </button>
+          </div>
+          <div class="stage-tools">
+            <label v-if="tab !== 'capes'" class="search">
+              <AppIcon name="search" :size="14" />
+              <input v-model="keyword" :placeholder="tab === 'local' ? '搜索皮肤' : '搜索衣柜'" />
+            </label>
+            <template v-if="tab === 'local'">
+              <WoodButton variant="ghost" size="sm" @click="openHarvest">
+                <AppIcon name="user" :size="14" />
+                从账号收录
+              </WoodButton>
+              <WoodButton variant="ghost" size="sm" @click="playerOpen = true">
+                <AppIcon name="globe" :size="14" />
+                按玩家名抓取
+              </WoodButton>
+              <WoodButton variant="primary" size="sm" @click="importOpen = true">
+                <AppIcon name="plus" :size="14" />
+                导入 PNG
+              </WoodButton>
+            </template>
+          </div>
+        </header>
 
-      <div v-else class="skin-grid">
-        <article v-for="item in items" :key="item.id" class="skin">
-          <div class="skin__preview">
-            <SkinModel :skin="item.data_url" :seed="item.id" :model="item.model" :height="200" />
+        <section v-show="tab === 'local'" class="lib card">
+          <div v-if="loading" class="lib__empty">
+            <span class="muted small">正在读取皮肤库…</span>
           </div>
-          <div class="skin__meta">
-            <strong class="skin__name">{{ item.name }}</strong>
-            <span class="skin__tags">
-              {{ item.model === "slim" ? "纤细" : "经典" }} · {{ sourceLabel(item.source) }}
-            </span>
+          <div v-else-if="error" class="lib__empty">
+            <span class="muted small">{{ error }}</span>
+            <WoodButton variant="ghost" size="sm" @click="loadLibrary">重试</WoodButton>
           </div>
-          <footer class="skin__foot">
-            <WoodButton variant="primary" size="sm" @click="openApply(item)">
-              应用
-            </WoodButton>
-            <IconButton icon="settings" label="重命名" :size="26" @click="openRename(item)" />
-            <IconButton
-              icon="trash"
-              label="删除"
-              :size="26"
-              variant="danger-quiet"
-              @click="deleteTarget = item"
+          <div v-else-if="!items.length" class="lib__empty">
+            <span class="muted small">皮肤库还是空的，导入 PNG 或从账号收录一件吧</span>
+          </div>
+          <div v-else-if="!filteredItems.length" class="lib__empty">
+            <span class="muted small">没有匹配「{{ keyword }}」的皮肤</span>
+          </div>
+
+          <div v-else class="skin-grid">
+            <article
+              v-for="item in filteredItems"
+              :key="item.id"
+              class="skin"
+              :class="{ 'skin--active': previewId === item.id }"
+              @click="selectItem(item)"
+            >
+              <span v-if="isCurrent(item)" class="skin__badge">使用中</span>
+              <div class="skin__preview">
+                <img v-if="portraits[item.id]" :src="portraits[item.id]" alt="" />
+              </div>
+              <div class="skin__meta">
+                <strong class="skin__name">{{ item.name }}</strong>
+                <span class="skin__tags">
+                  {{ item.model === "slim" ? "纤细" : "经典" }} · {{ sourceLabel(item.source) }}
+                </span>
+              </div>
+              <footer class="skin__foot">
+                <WoodButton variant="primary" size="sm" @click.stop="openApply(item)">
+                  应用
+                </WoodButton>
+                <IconButton
+                  icon="settings"
+                  label="重命名"
+                  :size="26"
+                  @click.stop="openRename(item)"
+                />
+                <IconButton
+                  icon="trash"
+                  label="删除"
+                  :size="26"
+                  variant="danger-quiet"
+                  @click.stop="deleteTarget = item"
+                />
+              </footer>
+            </article>
+
+            <button class="skin skin--add" @click="importOpen = true">
+              <span class="skin--add__plus">+</span>
+              <span class="muted small">添加皮肤</span>
+            </button>
+          </div>
+        </section>
+
+        <section v-show="tab === 'littleskin'" class="lib card">
+          <LittleSkinPanel :keyword="keyword" />
+        </section>
+
+        <section v-show="tab === 'capes'" class="lib card">
+          <header class="cape-head">
+            <span class="muted small">按账号查看可用的披风</span>
+            <WoodSelect
+              v-if="capeAccountOptions.length"
+              v-model="capeAccount"
+              :options="capeAccountOptions"
             />
-          </footer>
-        </article>
-      </div>
-    </section>
-
-    <section class="lib card">
-      <header class="lib__head">
-        <div class="lib__title">披风管理</div>
-        <WoodSelect
-          v-if="capeAccountOptions.length"
-          v-model="capeAccount"
-          :options="capeAccountOptions"
-        />
-      </header>
+          </header>
 
       <div v-if="!capeAccountOptions.length" class="lib__empty">
         <span class="muted small">登录微软或第三方账号后可以查看披风</span>
@@ -398,6 +567,7 @@ onMounted(async () => {
           :key="cape.id"
           class="cape"
         >
+          <span v-if="cape.active" class="cape__badge">使用中</span>
           <div class="cape__preview">
             <div
               class="cape-front"
@@ -431,7 +601,9 @@ onMounted(async () => {
           </footer>
         </article>
       </div>
-    </section>
+        </section>
+      </section>
+    </div>
 
     <WoodModal v-if="importOpen" title="导入皮肤 PNG" :width="440" @close="importOpen = false">
       <div class="form">
@@ -533,8 +705,18 @@ onMounted(async () => {
           <span>同步上传 Mojang（替换该账号的官方皮肤，游戏内生效）</span>
         </label>
         <p v-else-if="applyAccountView?.kind === 'authlib'" class="muted small">
-          第三方账号的游戏内皮肤由皮肤站下发，启动器无法修改；请到皮肤站官网更换。这里应用后只影响启动器内的预览与导出。
+          第三方账号的游戏内皮肤由皮肤站下发，启动器没有上传权限。可以先去皮肤站网页上传这张皮肤，
+          再用「LittleSkin 衣柜」把它应用到角色。
         </p>
+        <WoodButton
+          v-if="applyAccountView?.kind === 'authlib'"
+          variant="ghost"
+          size="sm"
+          @click="openAccountSite(applyAccount)"
+        >
+          <AppIcon name="external" :size="13" />
+          打开皮肤站
+        </WoodButton>
         <p v-else class="muted small">
           离线账号的皮肤只用于启动器预览与导出，不会改变游戏内显示。
         </p>
@@ -593,6 +775,198 @@ onMounted(async () => {
   gap: 16px;
 }
 
+/* 左预览 + 右卡片库 */
+.skin-stage {
+  display: grid;
+  grid-template-columns: 318px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 1080px) {
+  .skin-stage {
+    grid-template-columns: 258px minmax(0, 1fr);
+  }
+}
+
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.preview__viewport {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: radial-gradient(
+      circle at 50% 38%,
+      rgba(var(--ambient-a), 0.16),
+      transparent 68%
+    ),
+    linear-gradient(180deg, var(--panel-2), var(--panel));
+  overflow: hidden;
+}
+
+.preview__seg {
+  display: flex;
+  align-self: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel-2);
+}
+
+.preview__seg button {
+  height: 24px;
+  padding: 0 16px;
+  border-radius: 2px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  transition: background var(--dur-1) ease, color var(--dur-1) ease;
+}
+
+.preview__seg-btn--active {
+  background: var(--panel);
+  color: var(--walnut-deep);
+  font-weight: 700;
+  box-shadow: 0 1px 2px rgba(43, 33, 24, 0.12);
+}
+
+.preview__tip {
+  margin: 0;
+  text-align: center;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.preview__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+  text-align: center;
+}
+
+.preview__meta strong {
+  font-size: 13px;
+  color: var(--walnut-deep);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.stage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* 页签沿用项目里的分段按键：凹槽容器 + 选中压入，和导入弹窗的「经典/纤细」同一套 */
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--paper-2);
+}
+
+.tabs__btn {
+  --face: var(--panel-2);
+  height: 28px;
+  padding: 0 14px;
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-color: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  transition: background 150ms ease, color 150ms ease,
+    border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
+}
+
+.tabs__btn:not(.tabs__btn--active):hover {
+  color: var(--walnut-deep);
+  background: var(--hover);
+  transform: translateY(-1px);
+  border-top-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-left-color: color-mix(in srgb, var(--face) 52%, #fff);
+  border-right-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-bottom-color: color-mix(in srgb, var(--face) 42%, #000);
+}
+
+.tabs__btn--active {
+  background: var(--panel-2);
+  color: var(--walnut-deep);
+  font-weight: 700;
+  transform: translateY(1px);
+  border-top-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-left-color: color-mix(in srgb, var(--face) 42%, #000);
+  border-right-color: color-mix(in srgb, var(--face) 34%, #fff);
+  border-bottom-color: color-mix(in srgb, var(--face) 34%, #fff);
+  border-bottom-width: 1px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.14);
+}
+
+.tabs__count {
+  margin-left: 5px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.stage-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--panel);
+  color: var(--muted);
+}
+
+.search input {
+  width: 132px;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.cape-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
 .lib {
   display: flex;
   flex-direction: column;
@@ -641,43 +1015,86 @@ onMounted(async () => {
 
 .skin-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(172px, 1fr));
-  gap: 1px;
-  background: var(--line);
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 10px;
+  padding: 12px;
 }
 
 .skin {
+  position: relative;
   display: flex;
   flex-direction: column;
-  background: rgba(var(--glass-rgb), 0.72);
-  transition: background var(--dur-2) ease;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel-2);
+  cursor: pointer;
+  transition: transform var(--dur-1) ease, border-color var(--dur-1) ease,
+    background var(--dur-1) ease;
 }
 
 .skin:hover {
-  background: rgba(var(--glass-rgb), 0.86);
+  transform: translateY(-1px);
+  border-color: var(--line-strong);
+  background: var(--panel);
+}
+
+.skin--active {
+  border-color: var(--moss);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--moss) 42%, transparent);
+}
+
+.skin__badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  padding: 1px 6px;
+  border-radius: 2px;
+  background: var(--moss);
+  color: #fffdf6;
+  font-size: 10px;
 }
 
 .skin__preview {
   display: grid;
   place-items: center;
-  height: 214px;
+  aspect-ratio: 1;
+  border-radius: 2px;
   background: rgba(var(--glass-rgb), 0.42);
-  border-bottom: 1px solid var(--line);
   overflow: hidden;
 }
 
-/* 预览浮起：去掉 SkinModel 自带的渐变底和边框，融入卡片底色 */
-.skin__preview :deep(.skin-model) {
-  border: none;
-  border-radius: 0;
+.skin__preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+/* 最后一格是「添加皮肤」 */
+.skin--add {
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 186px;
+  border-style: dashed;
+  border-color: var(--line-strong);
   background: transparent;
+}
+
+.skin--add__plus {
+  font-size: 26px;
+  line-height: 1;
+  color: var(--muted);
 }
 
 .skin__meta {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 8px 10px;
+  padding: 0 2px;
 }
 
 .skin__name {
@@ -699,7 +1116,7 @@ onMounted(async () => {
   align-items: center;
   gap: 4px;
   margin-top: auto;
-  padding: 6px 8px 8px;
+  padding-top: 6px;
   border-top: 1px solid var(--line);
 }
 
@@ -709,28 +1126,48 @@ onMounted(async () => {
 
 .cape-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(172px, 1fr));
-  gap: 1px;
-  background: var(--line);
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 10px;
+  padding: 12px;
 }
 
 .cape {
+  position: relative;
   display: flex;
   flex-direction: column;
-  background: rgba(var(--glass-rgb), 0.72);
-  transition: background var(--dur-2) ease;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel-2);
+  transition: transform var(--dur-1) ease, border-color var(--dur-1) ease,
+    background var(--dur-1) ease;
 }
 
 .cape:hover {
-  background: rgba(var(--glass-rgb), 0.86);
+  transform: translateY(-1px);
+  border-color: var(--line-strong);
+  background: var(--panel);
+}
+
+.cape__badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  padding: 1px 6px;
+  border-radius: 2px;
+  background: var(--moss);
+  color: #fffdf6;
+  font-size: 10px;
 }
 
 .cape__preview {
   display: grid;
   place-items: center;
   height: 150px;
+  border-radius: 2px;
   background: rgba(var(--glass-rgb), 0.42);
-  border-bottom: 1px solid var(--line);
   overflow: hidden;
 }
 
@@ -750,7 +1187,7 @@ onMounted(async () => {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
-  padding: 8px 10px;
+  padding: 0 2px;
 }
 
 .cape__name {
@@ -771,7 +1208,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   margin-top: auto;
-  padding: 6px 8px 8px;
+  padding-top: 6px;
   border-top: 1px solid var(--line);
 }
 
