@@ -32,6 +32,29 @@ export type Page =
   | "instance"
   | "settings";
 
+export type JobStatus =
+  | "queued"
+  | "running"
+  | "paused"
+  | "done"
+  | "partial"
+  | "failed"
+  | "cancelled";
+
+export interface DownloadJob {
+  id: string;
+  title: string;
+  stage: string;
+  status: JobStatus;
+  progress: ProgressSnapshot | null;
+  error: string | null;
+  partial: boolean;
+  createdAt: number;
+  finishedAt: number | null;
+  /// 去重键：同一版本/同一目标文件同时只允许一个任务
+  key?: string;
+}
+
 export const store = reactive({
   page: "home" as Page,
   instanceId: null as string | null,
@@ -60,6 +83,8 @@ export const store = reactive({
   loadingVersions: false,
   progress: null as ProgressSnapshot | null,
   installingId: null as string | null,
+  /// 下载中心的任务队列（运行 / 排队 / 暂停 / 完成 / 失败）
+  jobs: [] as DownloadJob[],
   log: [] as LogLine[],
   /// 运行日志弹窗是否打开
   logPanel: false,
@@ -454,182 +479,344 @@ export async function shuffleBackground() {
   }
 }
 
-function primeProgress(stage: string, message: string) {
-  store.lastJobPartial = false;
-  store.progress = {
+/// 同时运行的下载任务上限；其余任务在队列里等待
+export const MAX_PARALLEL_JOBS = 2;
+
+interface JobSpec {
+  title: string;
+  stage: string;
+  message: string;
+  doneMessage?: string;
+  errorPrefix?: string;
+  /// 去重键：同键的任务还在队列/运行时不重复入队
+  key?: string;
+  run: (jobId: string, job: DownloadJob) => Promise<unknown>;
+}
+
+const jobSpecs = new Map<string, JobSpec>();
+const jobResolvers = new Map<string, (value: unknown) => void>();
+const jobCancelFlags = new Map<string, boolean>();
+let jobSeq = 0;
+
+function primeSnapshot(stage: string, message: string, job: string): ProgressSnapshot {
+  return {
+    job,
     stage,
     message,
-    steps: [{ label: message, done: false }],
+    steps: [{ label: message, done: false, percent: 0 }],
     files_done: 0,
     files_total: 0,
     bytes_done: 0,
     bytes_total: 0,
     elapsed_ms: 0,
     active: true,
+    paused: false,
   };
-  store.lastProgress = store.progress;
 }
 
-export async function installVersion(id: string) {
-  if (store.installingId) {
-    notify("已有安装任务正在进行", "err");
+/// 真正在下载的任务；暂停的任务不占并发槽位，让排队任务先跑
+function runningJobs() {
+  return store.jobs.filter((job) => job.status === "running");
+}
+
+function pausedJobs() {
+  return store.jobs.filter((job) => job.status === "paused");
+}
+
+function syncInstalling() {
+  store.installingId = (runningJobs()[0] ?? pausedJobs()[0])?.title ?? null;
+}
+
+export function jobById(id: string) {
+  return store.jobs.find((job) => job.id === id) ?? null;
+}
+
+/// 读取任务当前状态；包一层函数绕过 TS 对属性赋值的字面量收窄
+function currentStatus(job: DownloadJob): JobStatus {
+  return job.status;
+}
+
+/// 排空队列：有空位就启动下一个
+export function scheduleJobs() {
+  let free = MAX_PARALLEL_JOBS - runningJobs().length;
+  for (const job of store.jobs) {
+    if (free <= 0) break;
+    if (job.status !== "queued") continue;
+    free -= 1;
+    void startJob(job);
+  }
+  syncInstalling();
+}
+
+async function startJob(job: DownloadJob) {
+  const spec = jobSpecs.get(job.id);
+  if (!spec || job.status !== "queued") return;
+  job.status = "running";
+  job.error = null;
+  job.partial = false;
+  job.finishedAt = null;
+  job.progress = primeSnapshot(job.stage, spec.message, job.id);
+  syncInstalling();
+  try {
+    const result = await spec.run(job.id, job);
+    // 任务运行期间状态可能被取消按钮改写，这里用函数取一次最新值避免类型收窄
+    const after = currentStatus(job);
+    if (after !== "cancelled") {
+      job.status = job.partial ? "partial" : "done";
+    }
+    if (spec.doneMessage && currentStatus(job) !== "cancelled") notify(spec.doneMessage);
+    if (currentStatus(job) === "done") jobSpecs.delete(job.id);
+    jobResolvers.get(job.id)?.(result);
+  } catch (err) {
+    const cancelled = jobCancelFlags.get(job.id) || currentStatus(job) === "cancelled";
+    job.status = cancelled ? "cancelled" : "failed";
+    job.error = cancelled ? "已取消" : String(err);
+    if (!cancelled) notify(`${spec.errorPrefix ?? "任务失败"}：${job.error}`, "err");
+    jobResolvers.get(job.id)?.(undefined);
+  } finally {
+    job.finishedAt = Date.now();
+    jobResolvers.delete(job.id);
+    jobCancelFlags.delete(job.id);
+    syncInstalling();
+    scheduleJobs();
+  }
+}
+
+/// 把一次下载/安装登记成任务：有空位立即开始，否则排队
+export function enqueueJob<T>(
+  spec: Omit<JobSpec, "run"> & { run: (jobId: string, job: DownloadJob) => Promise<T> }
+): Promise<T | undefined> {
+  // 同一版本/同一文件重复入队会并发写同一个 .part，直接挡掉
+  if (spec.key) {
+    const existing = store.jobs.find(
+      (job) =>
+        job.key === spec.key &&
+        (job.status === "queued" || job.status === "running" || job.status === "paused")
+    );
+    if (existing) {
+      notify(`「${existing.title}」已在任务队列中`, "err");
+      return Promise.resolve(undefined);
+    }
+  }
+  const id = `job-${Date.now().toString(36)}-${++jobSeq}`;
+  const job: DownloadJob = {
+    id,
+    title: spec.title,
+    stage: spec.stage,
+    status: "queued",
+    progress: primeSnapshot(spec.stage, spec.message, id),
+    error: null,
+    partial: false,
+    createdAt: Date.now(),
+    finishedAt: null,
+    key: spec.key,
+  };
+  store.jobs.push(job);
+  jobSpecs.set(id, spec as JobSpec);
+  jobCancelFlags.set(id, false);
+  if (store.downloadPanel === "hidden") store.downloadPanel = "open";
+  return new Promise<T | undefined>((resolve) => {
+    jobResolvers.set(id, resolve as (value: unknown) => void);
+    scheduleJobs();
+  });
+}
+
+export async function pauseJob(id: string) {
+  const job = jobById(id);
+  if (!job || job.status !== "running") return;
+  try {
+    await api.pauseJob(id);
+    job.status = "paused";
+    // 让出并发槽位，排队任务可以立刻开始
+    scheduleJobs();
+  } catch (err) {
+    notify(`暂停失败：${String(err)}`, "err");
+  }
+}
+
+/// 批量暂停/继续：下载页任务面板用
+export async function pauseAllJobs() {
+  for (const job of runningJobs()) {
+    if (job.status === "running") await pauseJob(job.id);
+  }
+}
+
+export async function resumeAllJobs() {
+  for (const job of [...store.jobs]) {
+    if (job.status === "paused") await resumeJob(job.id);
+  }
+}
+
+export async function resumeJob(id: string) {
+  const job = jobById(id);
+  if (!job || job.status !== "paused") return;
+  // 暂停不占槽位，恢复时若并行数已满，只能继续等待
+  if (runningJobs().length >= MAX_PARALLEL_JOBS) {
+    notify(`已有 ${MAX_PARALLEL_JOBS} 个任务在下载，请先暂停或取消一个`, "err");
     return;
   }
-  store.installingId = id;
-  store.progress = null;
-  store.lastProgress = null;
-  store.lastJobError = null;
-  store.lastJobTitle = id;
-  store.downloadPanel = "open";
-  primeProgress("install", `准备安装 ${id}…`);
   try {
-    await api.installVersion(id);
-    await refreshInstalled();
-    await refreshConfig();
-    notify(`${id} 安装完成`);
+    await api.resumeJob(id);
+    job.status = "running";
   } catch (err) {
-    store.lastJobError = String(err);
-    notify(`安装失败：${String(err)}`, "err");
-  } finally {
-    store.installingId = null;
-    window.setTimeout(() => {
-      if (!store.progress?.active) store.progress = null;
-    }, 800);
+    notify(`继续失败：${String(err)}`, "err");
   }
 }
 
-export async function installLoader(
+export async function cancelJob(id: string) {
+  const job = jobById(id);
+  if (!job) return;
+  if (job.status === "queued") {
+    job.status = "cancelled";
+    job.error = "已取消";
+    job.finishedAt = Date.now();
+    jobResolvers.get(id)?.(undefined);
+    jobResolvers.delete(id);
+    scheduleJobs();
+    return;
+  }
+  jobCancelFlags.set(id, true);
+  job.status = "cancelled";
+  try {
+    await api.cancelInstall(id);
+  } catch {
+    // 任务可能已经结束，忽略
+  }
+}
+
+export function retryJob(id: string) {
+  const spec = jobSpecs.get(id);
+  if (!spec) {
+    notify("该任务无法重试", "err");
+    return;
+  }
+  dismissJob(id);
+  void enqueueJob(spec);
+}
+
+export function dismissJob(id: string) {
+  const job = jobById(id);
+  if (!job) return;
+  if (job.status === "running" || job.status === "paused") {
+    void cancelJob(id);
+  }
+  jobSpecs.delete(id);
+  jobResolvers.delete(id);
+  jobCancelFlags.delete(id);
+  store.jobs = store.jobs.filter((item) => item.id !== id);
+  syncInstalling();
+}
+
+export function clearFinishedJobs() {
+  for (const job of [...store.jobs]) {
+    if (job.status !== "running" && job.status !== "paused" && job.status !== "queued") {
+      dismissJob(job.id);
+    }
+  }
+}
+
+
+export function installVersion(id: string) {
+  return enqueueJob({
+    title: id,
+    stage: "install",
+    message: `准备安装 ${id}…`,
+    doneMessage: `${id} 安装完成`,
+    errorPrefix: "安装失败",
+    key: `version:${id}`,
+    run: async (jobId) => {
+      await api.installVersion(id, jobId);
+      await refreshInstalled();
+      await refreshConfig();
+    },
+  });
+}
+
+export function installLoader(
   versionId: string,
   loader: string,
   loaderVersion?: string
 ) {
-  if (store.installingId) {
-    notify("已有安装任务正在进行", "err");
-    return;
-  }
-  store.installingId = `${versionId} · ${loader}`;
-  store.progress = null;
-  store.lastProgress = null;
-  store.lastJobError = null;
-  store.lastJobTitle = `${versionId} · ${loader}${loaderVersion ? ` ${loaderVersion}` : ""}`;
-  store.downloadPanel = "open";
-  primeProgress("install", `准备安装 ${loader}…`);
-  try {
-    await api.installLoader(versionId, loader, loaderVersion);
-    await refreshInstalled();
-    await refreshConfig();
-    notify(`${loader} 安装完成`);
-  } catch (err) {
-    store.lastJobError = String(err);
-    notify(`安装失败：${String(err)}`, "err");
-  } finally {
-    store.installingId = null;
-    window.setTimeout(() => {
-      if (!store.progress?.active) store.progress = null;
-    }, 800);
-  }
+  return enqueueJob({
+    title: `${versionId} · ${loader}${loaderVersion ? ` ${loaderVersion}` : ""}`,
+    stage: "install",
+    message: `准备安装 ${loader}…`,
+    doneMessage: `${loader} 安装完成`,
+    errorPrefix: "安装失败",
+    key: `loader:${versionId}:${loader}`,
+    run: async (jobId) => {
+      await api.installLoader(versionId, loader, loaderVersion, jobId);
+      await refreshInstalled();
+      await refreshConfig();
+    },
+  });
 }
 
 /// 重装加载器：清理损坏的版本目录后按原加载器版本重装，实例文件不受影响
 export async function reinstallLoader(versionId: string) {
-  if (store.installingId) {
-    notify("已有安装任务正在进行", "err");
-    return false;
-  }
-  store.installingId = "重装加载器";
-  store.progress = null;
-  store.lastProgress = null;
-  store.lastJobError = null;
-  store.lastJobTitle = "重装加载器";
-  store.downloadPanel = "open";
-  primeProgress("install", "准备重装加载器…");
-  try {
-    await api.reinstallLoader(versionId);
-    await refreshInstalled();
-    await refreshConfig();
-    notify("加载器已重装");
-    return true;
-  } catch (err) {
-    store.lastJobError = String(err);
-    notify(`重装加载器失败：${String(err)}`, "err");
-    return false;
-  } finally {
-    store.installingId = null;
-    window.setTimeout(() => {
-      if (!store.progress?.active) store.progress = null;
-    }, 800);
-  }
+  const result = await enqueueJob<boolean>({
+    title: "重装加载器",
+    stage: "install",
+    message: "准备重装加载器…",
+    doneMessage: "加载器已重装",
+    errorPrefix: "重装加载器失败",
+    key: `reload:${versionId}`,
+    run: async (jobId) => {
+      await api.reinstallLoader(versionId, jobId);
+      await refreshInstalled();
+      await refreshConfig();
+      return true;
+    },
+  });
+  return result === true;
 }
 
-export async function installCfFile(
+export function installCfFile(
   versionId: string,
   kind: string,
   url: string,
   fileName: string,
   title: string
 ) {
-  if (store.installingId) {
-    notify("已有下载任务正在进行", "err");
-    return;
-  }
-  store.installingId = `${versionId} · ${fileName}`;
-  store.progress = null;
-  store.lastProgress = null;
-  store.lastJobError = null;
-  store.lastJobTitle = title;
-  store.downloadPanel = "open";
-  primeProgress("install", `准备下载 ${title}…`);
-  try {
-    const result = await api.cfInstallFile(versionId, kind, url, fileName);
-    const deps = result.dependencies;
-    const notes: string[] = [];
-    if (deps.installed.length) notes.push(`已自动补齐前置 ${deps.installed.join("、")}`);
-    if (deps.failed.length) notes.push(`前置下载失败：${deps.failed.join("、")}`);
-    notify(`${title} 下载完成${notes.length ? `，${notes.join("；")}` : ""}`);
-    if (deps.unresolved.length) {
-      store.lastJobError = `缺少前置：${deps.unresolved.join("、")}。当前实例的版本或加载器下没有找到对应文件，请手动安装。`;
-    }
-  } catch (err) {
-    store.lastJobError = String(err);
-    notify(`下载失败：${String(err)}`, "err");
-  } finally {
-    store.installingId = null;
-    window.setTimeout(() => {
-      if (!store.progress?.active) store.progress = null;
-    }, 800);
-  }
+  return enqueueJob({
+    title,
+    stage: "install",
+    message: `准备下载 ${title}…`,
+    errorPrefix: "下载失败",
+    key: `content:${versionId}:${url}`,
+    run: async (jobId, job) => {
+      const result = await api.cfInstallFile(versionId, kind, url, fileName, jobId);
+      const deps = result.dependencies;
+      const notes: string[] = [];
+      if (deps.installed.length) notes.push(`已自动补齐前置 ${deps.installed.join("、")}`);
+      if (deps.failed.length) notes.push(`前置下载失败：${deps.failed.join("、")}`);
+      notify(`${title} 下载完成${notes.length ? `，${notes.join("；")}` : ""}`);
+      if (deps.unresolved.length) {
+        job.partial = true;
+        job.error = `缺少前置：${deps.unresolved.join("、")}。当前实例的版本或加载器下没有找到对应文件，请手动安装。`;
+      }
+    },
+  });
 }
 
-export async function installWorld(
+export function installWorld(
   versionId: string,
   url: string,
   fileName: string,
   title: string
 ) {
-  if (store.installingId) {
-    notify("已有下载任务正在进行", "err");
-    return;
-  }
-  store.installingId = `${versionId} · ${fileName}`;
-  store.progress = null;
-  store.lastProgress = null;
-  store.lastJobError = null;
-  store.lastJobTitle = title;
-  store.downloadPanel = "open";
-  primeProgress("install", `准备下载 ${title}…`);
-  try {
-    const path = await api.cfInstallWorld(versionId, url, fileName);
-    const folder = path.split(/[\\/]/).pop() || "saves";
-    notify(`地图已安装到存档：${folder}`);
-  } catch (err) {
-    store.lastJobError = String(err);
-    notify(`地图安装失败：${String(err)}`, "err");
-  } finally {
-    store.installingId = null;
-    window.setTimeout(() => {
-      if (!store.progress?.active) store.progress = null;
-    }, 800);
-  }
+  return enqueueJob({
+    title: `地图 · ${title}`,
+    stage: "install",
+    message: `准备下载地图 ${title}…`,
+    errorPrefix: "地图安装失败",
+    key: `world:${versionId}:${url}`,
+    run: async (jobId) => {
+      const path = await api.cfInstallWorld(versionId, url, fileName, jobId);
+      const folder = path.split(/[\\/]/).pop() || "saves";
+      notify(`地图已安装到存档：${folder}`);
+    },
+  });
 }
 
 export async function downloadModpack(
@@ -637,31 +824,16 @@ export async function downloadModpack(
   fileName: string,
   title: string
 ): Promise<string | null> {
-  if (store.installingId) {
-    notify("已有下载任务正在进行", "err");
-    return null;
-  }
-  store.installingId = `整合包 · ${fileName}`;
-  store.progress = null;
-  store.lastProgress = null;
-  store.lastJobError = null;
-  store.lastJobTitle = title;
-  store.downloadPanel = "open";
-  primeProgress("install", `准备下载 ${title}…`);
-  try {
-    const path = await api.modpackDownload(url, fileName);
-    notify(`${title} 下载完成`);
-    return path;
-  } catch (err) {
-    store.lastJobError = String(err);
-    notify(`下载失败：${String(err)}`, "err");
-    return null;
-  } finally {
-    store.installingId = null;
-    window.setTimeout(() => {
-      if (!store.progress?.active) store.progress = null;
-    }, 800);
-  }
+  const result = await enqueueJob<string>({
+    title: `整合包 · ${fileName}`,
+    stage: "install",
+    message: `准备下载 ${title}…`,
+    doneMessage: `${title} 下载完成`,
+    errorPrefix: "下载失败",
+    key: `pack:${url}`,
+    run: (jobId) => api.modpackDownload(url, fileName, jobId),
+  });
+  return result ?? null;
 }
 
 export async function importModpack(
@@ -669,78 +841,56 @@ export async function importModpack(
   options: import("./api").ModpackImportOptions,
   title: string
 ) {
-  if (store.installingId) {
-    notify("已有下载任务正在进行", "err");
-    return null;
-  }
-  store.installingId = `整合包 · ${title}`;
-  store.progress = null;
-  store.lastProgress = null;
-  store.lastJobError = null;
-  store.lastJobTitle = `导入整合包 · ${title}`;
-  store.downloadPanel = "open";
-  primeProgress("install", `准备导入 ${title}…`);
-  try {
-    const result = await api.modpackImport(path, options);
-    await refreshInstalled();
-    await refreshConfig();
-    await refreshInstanceMetas();
-    notify(
-      result.failed.length
-        ? `已导入 ${result.display_name}，${result.failed.length} 个文件未能下载`
-        : `已导入 ${result.display_name}`
-    );
-    if (result.failed.length) {
-      const shown = result.failed.slice(0, 5).join("；");
-      store.lastJobPartial = true;
-      store.lastJobError =
-        result.failed.length > 5 ? `${shown} 等 ${result.failed.length} 个` : shown;
-    }
-    return result;
-  } catch (err) {
-    store.lastJobError = String(err);
-    notify(`导入失败：${String(err)}`, "err");
-    return null;
-  } finally {
-    store.installingId = null;
-    window.setTimeout(() => {
-      if (!store.progress?.active) store.progress = null;
-    }, 800);
-  }
+  return (
+    (await enqueueJob({
+      title: `导入整合包 · ${title}`,
+      stage: "install",
+      message: `准备导入 ${title}…`,
+      errorPrefix: "导入失败",
+      key: `pack-import:${path}`,
+      run: async (jobId, job) => {
+        const result = await api.modpackImport(path, options, jobId);
+        await refreshInstalled();
+        await refreshConfig();
+        await refreshInstanceMetas();
+        notify(
+          result.failed.length
+            ? `已导入 ${result.display_name}，${result.failed.length} 个文件未能下载`
+            : `已导入 ${result.display_name}`
+        );
+        if (result.failed.length) {
+          const shown = result.failed.slice(0, 5).join("；");
+          job.partial = true;
+          job.error =
+            result.failed.length > 5 ? `${shown} 等 ${result.failed.length} 个` : shown;
+        }
+        return result;
+      },
+    })) ?? null
+  );
 }
 
-/// 只重试上一批失败文件，不必重新导入整个整合包
-export async function retryFailedDownloads() {
-  if (store.installingId) {
-    notify("已有下载任务正在进行", "err");
-    return;
-  }
-  store.installingId = "重试失败文件";
-  store.lastJobError = null;
-  store.lastJobPartial = false;
-  store.lastJobTitle = "重试失败文件";
-  store.downloadPanel = "open";
-  primeProgress("repair", "准备重试失败文件…");
-  try {
-    const result = await api.retryFailedDownloads();
-    if (result.failed.length) {
-      store.lastJobPartial = true;
-      store.lastJobError =
-        `仍有 ${result.failed.length} 个文件未能下载：` +
-        result.failed.slice(0, 5).join("；");
-      notify(`仍有 ${result.failed.length} 个文件未能下载`, "err");
-    } else {
-      notify("失败文件已全部补齐");
-    }
-  } catch (err) {
-    store.lastJobError = String(err);
-    notify(`重试失败：${String(err)}`, "err");
-  } finally {
-    store.installingId = null;
-    window.setTimeout(() => {
-      if (!store.progress?.active) store.progress = null;
-    }, 800);
-  }
+/// 只重试某个任务上一批失败的文件，不必重新导入整个整合包
+export function retryFailedDownloads(sourceJob?: string) {
+  return enqueueJob({
+    title: "重试失败文件",
+    stage: "repair",
+    message: "准备重试失败文件…",
+    errorPrefix: "重试失败",
+    key: `retry:${sourceJob ?? "latest"}`,
+    run: async (jobId, job) => {
+      const result = await api.retryFailedDownloads(sourceJob, jobId);
+      if (result.failed.length) {
+        job.partial = true;
+        job.error =
+          `仍有 ${result.failed.length} 个文件未能下载：` +
+          result.failed.slice(0, 5).join("；");
+        notify(`仍有 ${result.failed.length} 个文件未能下载`, "err");
+      } else {
+        notify("失败文件已全部补齐");
+      }
+    },
+  });
 }
 
 /// 一键自愈：修清单、补缺失文件、禁用重复模组
@@ -748,51 +898,33 @@ export async function repairInstance(
   versionId: string,
   options?: import("./api").RepairOptions
 ) {
-  if (store.installingId) {
-    notify("已有下载任务正在进行", "err");
-    return null;
-  }
-  store.installingId = "一键修复";
-  store.progress = null;
-  store.lastProgress = null;
-  store.lastJobError = null;
-  store.lastJobPartial = false;
-  store.lastJobTitle = "一键修复";
-  store.downloadPanel = "open";
-  primeProgress("repair", "准备检查版本文件…");
-  try {
-    return await api.repairInstance(versionId, options);
-  } catch (err) {
-    store.lastJobError = String(err);
-    notify(`修复失败：${String(err)}`, "err");
-    return null;
-  } finally {
-    store.installingId = null;
-    window.setTimeout(() => {
-      if (!store.progress?.active) store.progress = null;
-    }, 800);
-  }
+  return (
+    (await enqueueJob({
+      title: "一键修复",
+      stage: "repair",
+      message: "准备检查版本文件…",
+      errorPrefix: "修复失败",
+      key: `repair:${versionId}`,
+      run: (jobId) => api.repairInstance(versionId, options, jobId),
+    })) ?? null
+  );
 }
 
 /// 给实例装一个推荐的光影加载器（Iris / Oculus）
 export async function installShaderLoader(versionId: string) {
-  if (store.installingId) {
-    notify("已有下载任务正在进行", "err");
-    return null;
-  }
-  store.installingId = versionId;
-  primeProgress("download", "正在安装光影加载器…");
-  try {
-    const name = await api.installShaderLoader(versionId);
-    notify(`已安装 ${name}，进游戏就能加载光影了`);
-    return name;
-  } catch (err) {
-    notify(`安装光影加载器失败：${String(err)}`, "err");
-    return null;
-  } finally {
-    store.installingId = null;
-    store.progress = null;
-  }
+  const result = await enqueueJob<string>({
+    title: `光影加载器 · ${versionId}`,
+    stage: "shader",
+    message: "正在安装光影加载器…",
+    errorPrefix: "安装光影加载器失败",
+    key: `shader:${versionId}`,
+    run: async (jobId) => {
+      const name = await api.installShaderLoader(versionId, jobId);
+      notify(`已安装 ${name}，进游戏就能加载光影了`);
+      return name;
+    },
+  });
+  return result ?? null;
 }
 
 /// 还原最近一次一键修复前的备份
@@ -812,66 +944,51 @@ export async function exportModpack(
   options: import("./api").ExportOptions,
   title: string
 ) {
-  if (store.installingId) {
-    notify("已有任务正在进行", "err");
-    return null;
-  }
-  store.installingId = `导出 · ${title}`;
-  store.progress = null;
-  store.lastProgress = null;
-  store.lastJobError = null;
-  store.lastJobTitle = `导出整合包 · ${title}`;
-  store.downloadPanel = "open";
-  primeProgress("install", "准备导出整合包…");
-  try {
-    const result = await api.modpackExport(versionId, options);
-    notify(`已导出到 ${result.paths[0] ?? options.target}`);
-    return result;
-  } catch (err) {
-    store.lastJobError = String(err);
-    notify(`导出失败：${String(err)}`, "err");
-    return null;
-  } finally {
-    store.installingId = null;
-    window.setTimeout(() => {
-      if (!store.progress?.active) store.progress = null;
-    }, 800);
-  }
+  return (
+    (await enqueueJob({
+      title: `导出整合包 · ${title}`,
+      stage: "install",
+      message: "准备导出整合包…",
+      errorPrefix: "导出失败",
+      key: `export:${versionId}:${options.target}`,
+      run: async (jobId) => {
+        const result = await api.modpackExport(versionId, options, jobId);
+        notify(`已导出到 ${result.paths[0] ?? options.target}`);
+        return result;
+      },
+    })) ?? null
+  );
 }
 
 export async function installJava(major: number, source = "mojang") {
-  if (store.installingId) {
-    notify("已有安装任务正在进行", "err");
-    return;
-  }
-  store.installingId = `Java ${major}`;
-  store.progress = null;
-  store.lastProgress = null;
-  store.lastJobError = null;
-  store.lastJobTitle = `Java ${major}`;
-  store.downloadPanel = "open";
-  primeProgress("java", `准备安装 Java ${major}…`);
-  try {
-    const info = await api.installJava(major, source);
-    await refreshJava();
-    await refreshConfig();
-    notify(`Java ${major} 已安装`);
-    return info;
-  } catch (err) {
-    store.lastJobError = String(err);
-    notify(`安装 Java 失败：${String(err)}`, "err");
-    return null;
-  } finally {
-    store.installingId = null;
-    window.setTimeout(() => {
-      if (!store.progress?.active) store.progress = null;
-    }, 800);
-  }
+  const result = await enqueueJob<import("./api").JavaInfo>({
+    title: `Java ${major}`,
+    stage: "java",
+    message: `准备安装 Java ${major}…`,
+    doneMessage: `Java ${major} 已安装`,
+    errorPrefix: "安装 Java 失败",
+    key: `java:${major}:${source}`,
+    run: async (jobId) => {
+      const info = await api.installJava(major, source, jobId);
+      await refreshJava();
+      await refreshConfig();
+      return info;
+    },
+  });
+  return result ?? null;
 }
 
-export async function cancelInstall() {
-  await api.cancelInstall();
-  notify("已请求取消安装");
+export async function cancelInstall(jobId?: string) {
+  if (jobId) {
+    await cancelJob(jobId);
+    return;
+  }
+  const running = runningJobs();
+  if (!running.length) {
+    await api.cancelInstall();
+    return;
+  }
+  for (const job of running) await cancelJob(job.id);
 }
 
 export async function selectVersion(id: string) {
@@ -890,8 +1007,10 @@ export async function createOffline(name: string) {
     await refreshAccounts();
     await refreshConfig();
     notify(`已添加离线账号 ${name}`);
+    return true;
   } catch (err) {
     notify(String(err), "err");
+    return false;
   }
 }
 
@@ -1204,8 +1323,18 @@ export async function initApp() {
   ]);
 
   await onInstallProgress((p) => {
-    store.progress = p;
     store.lastProgress = p;
+    const job = jobById(p.job);
+    if (!job) {
+      // 非队列任务（例如陶瓦联机）仍记录最近一次进度
+      store.progress = p;
+      return;
+    }
+    job.progress = p;
+    if (p.active) {
+      if (p.paused && job.status === "running") job.status = "paused";
+      if (!p.paused && job.status === "paused") job.status = "running";
+    }
   });
 
   await onGameLog((line) => {

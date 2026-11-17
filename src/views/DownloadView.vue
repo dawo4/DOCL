@@ -2,13 +2,12 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { api, type LoaderOption, type LoaderVersion } from "../api";
 import AppIcon from "../components/AppIcon.vue";
+import DownloadTasks from "../components/DownloadTasks.vue";
 import IconButton from "../components/IconButton.vue";
 import WoodButton from "../components/WoodButton.vue";
 import WoodInput from "../components/WoodInput.vue";
-import WoodProgress from "../components/WoodProgress.vue";
 import CommunityView from "./CommunityView.vue";
 import {
-  cancelInstall,
   installLoader,
   installVersion,
   launchVersion,
@@ -18,9 +17,7 @@ import {
 } from "../store";
 import {
   APRIL_FOOLS_IDS,
-  formatBytes,
   formatDate,
-  formatSpeed,
   kindLabel,
   matchVersionFilter,
   type VersionFilter,
@@ -57,6 +54,8 @@ const versionError = ref("");
 const filter = ref<VersionFilter>("release");
 const query = ref("");
 const limit = ref(240);
+/// 只看还没安装的版本，装过的版本在列表里仍然可见但可以过滤掉
+const onlyMissing = ref(false);
 
 const tabs = [
   { key: "release", label: "正式版" },
@@ -124,6 +123,7 @@ const filtered = computed(() => {
   return store.versions
     .filter((v) => matchVersionFilter(v.kind, v.id, filter.value))
     .filter((v) => (keyword ? v.id.toLowerCase().includes(keyword) : true))
+    .filter((v) => (onlyMissing.value ? !v.installed : true))
     .slice(0, limit.value);
 });
 
@@ -131,30 +131,31 @@ const totalMatched = computed(() => {
   const keyword = query.value.trim().toLowerCase();
   return store.versions
     .filter((v) => matchVersionFilter(v.kind, v.id, filter.value))
-    .filter((v) => (keyword ? v.id.toLowerCase().includes(keyword) : true)).length;
+    .filter((v) => (keyword ? v.id.toLowerCase().includes(keyword) : true))
+    .filter((v) => (onlyMissing.value ? !v.installed : true)).length;
 });
 
-const progress = computed(() => {
-  if (!store.installingId || !store.progress) return null;
-  if (store.progress.stage === "java") return null;
-  return store.progress;
-});
+const runningCount = computed(
+  () =>
+    store.jobs.filter((job) => job.status === "running" || job.status === "paused")
+      .length
+);
+const queuedCount = computed(
+  () => store.jobs.filter((job) => job.status === "queued").length
+);
 
-const percent = computed(() => {
-  const p = progress.value;
-  if (!p) return 0;
-  if (p.bytes_total > 0) return Math.min(100, (p.bytes_done / p.bytes_total) * 100);
-  if (p.files_total > 0) return Math.min(100, (p.files_done / p.files_total) * 100);
-  return 0;
-});
+/// 顶部按钮展开的任务卡片
+const taskOpen = ref(false);
 
 function switchCategory(value: Category) {
   category.value = value;
   detailId.value = null;
+  taskOpen.value = false;
 }
 
 function openDetail(id: string) {
   detailId.value = id;
+  taskOpen.value = false;
 }
 
 function backToList() {
@@ -202,9 +203,30 @@ function launchLoader(id: string | null) {
 </script>
 
 <template>
-  <div class="page">
+  <div class="page download-page">
     <header class="page-head">
+      <div class="page-head__title">
+        <h1 class="page-title">下载</h1>
+      </div>
       <div class="page-head__actions">
+        <div v-if="store.jobs.length" class="task-menu">
+          <button
+            class="task-pill"
+            :class="{ 'task-pill--open': taskOpen }"
+            :title="taskOpen ? '收起下载任务' : '展开下载任务'"
+            @click="taskOpen = !taskOpen"
+          >
+            <AppIcon name="download" :size="14" />
+            <span>{{ runningCount ? `${runningCount} 个任务进行中` : `${store.jobs.length} 个任务` }}</span>
+            <span v-if="queuedCount" class="task-pill__badge">+{{ queuedCount }}</span>
+          </button>
+
+          <transition name="task-pop">
+            <div v-if="taskOpen" class="task-menu__card">
+              <DownloadTasks />
+            </div>
+          </transition>
+        </div>
         <IconButton
           v-if="category === 'vanilla' && !detailId"
           icon="refresh"
@@ -215,6 +237,8 @@ function launchLoader(id: string | null) {
         />
       </div>
     </header>
+
+    <div v-if="taskOpen" class="task-catcher" @click="taskOpen = false" />
 
     <div class="download-layout">
       <aside class="dl-side card">
@@ -277,7 +301,6 @@ function launchLoader(id: string | null) {
                 v-if="!detailInstalled"
                 variant="primary"
                 sheen
-                :disabled="!!store.installingId"
                 @click="installVanilla"
               >
                 <AppIcon name="download" :size="15" />
@@ -386,7 +409,6 @@ function launchLoader(id: string | null) {
                           :label="`安装 ${item.label} ${version.version}`"
                           variant="soft"
                           :size="28"
-                          :disabled="!!store.installingId"
                           @click.stop="installLoaderFor(item.loader, version.version)"
                         />
                       </span>
@@ -415,6 +437,15 @@ function launchLoader(id: string | null) {
               <div class="toolbar__search">
                 <WoodInput v-model="query" placeholder="搜索版本号，例如 1.20 / 26.3" />
               </div>
+              <WoodButton
+                variant="ghost"
+                size="sm"
+                :class="{ 'filter-toggle--on': onlyMissing }"
+                class="filter-toggle"
+                @click="onlyMissing = !onlyMissing; limit = 240"
+              >
+                {{ onlyMissing ? "显示全部版本" : "只看未安装" }}
+              </WoodButton>
             </div>
 
             <div v-if="store.loadingVersions" class="skeleton-list">
@@ -468,11 +499,111 @@ function launchLoader(id: string | null) {
 </template>
 
 <style scoped>
+.download-page {
+  max-width: 1360px;
+}
+
+.download-page :deep(.page-head) {
+  justify-content: space-between;
+}
+
+.page-head__title {
+  min-width: 0;
+}
+
+.filter-toggle {
+  white-space: nowrap;
+}
+
+.filter-toggle--on {
+  color: var(--moss);
+  border-color: var(--moss);
+}
+
+.task-pill {
+  position: relative;
+  z-index: 81;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--panel);
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(40, 28, 16, 0.08);
+}
+
+.task-menu {
+  position: relative;
+}
+
+.task-pill--open {
+  color: var(--moss);
+  border-color: var(--moss);
+}
+
+.task-menu__card {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 82;
+  width: 300px;
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+  filter: drop-shadow(0 18px 30px rgba(40, 28, 16, 0.28));
+}
+
+.task-catcher {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: transparent;
+}
+
+.task-pop-enter-active,
+.task-pop-leave-active {
+  transition: opacity 140ms ease, transform 160ms var(--ease-out-expo);
+}
+
+.task-pop-enter-from,
+.task-pop-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+.task-pill:hover {
+  color: var(--moss);
+  border-color: var(--moss);
+}
+
+.task-pill__badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--moss-soft);
+  color: var(--moss);
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .download-layout {
   display: grid;
   grid-template-columns: 192px minmax(0, 1fr);
   gap: 16px;
   align-items: start;
+}
+
+@media (max-width: 900px) {
+  .download-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* 侧栏和联机页一致：整列当托盘，行距收紧、纯色块高亮，不做按键浮雕 */

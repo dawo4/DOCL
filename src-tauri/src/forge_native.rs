@@ -44,6 +44,8 @@ struct InstallProfile {
 struct DataFile {
     #[serde(default)]
     client: Option<String>,
+    // 部分安装器数据会带上服务端 jar，当前流程不需要
+    #[allow(dead_code)]
     #[serde(default)]
     server: Option<String>,
 }
@@ -453,7 +455,6 @@ async fn run_processor(
         .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
     let mut child = command

@@ -1990,10 +1990,12 @@ async function removeJava(path: string) {
       <div class="setting">
         <div class="setting__label">
           <strong>并发下载数</strong>
-          <span>当前 {{ form.concurrency }}；网络不稳定时建议降低</span>
+          <span>
+            当前 {{ form.concurrency }}；建议 8-32，超过 64 容易触发源站限速，下载失败时会自动降并发
+          </span>
         </div>
         <div class="setting__control setting__control--wide">
-          <WoodSlider v-model="form.concurrency" :min="1" :max="64" :step="1" />
+          <WoodSlider v-model="form.concurrency" :min="1" :max="128" :step="1" />
         </div>
       </div>
       <div class="setting setting--stack">

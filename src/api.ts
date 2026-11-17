@@ -601,6 +601,48 @@ export interface WorldSummary {
   datapacks: string;
 }
 
+export interface WorldBackup {
+  /// 存档文件夹名
+  world: string;
+  path: string;
+  size: number;
+  /// 备份时间（Unix 秒）
+  created: number;
+}
+
+export interface WorldRule {
+  key: string;
+  value: string;
+}
+
+export interface WorldSettings {
+  name: string;
+  /// survival / creative / adventure / spectator
+  game_mode: string;
+  /// peaceful / easy / normal / hard
+  difficulty: string | null;
+  difficulty_locked: boolean;
+  hardcore: boolean;
+  allow_commands: boolean | null;
+  seed: string | null;
+  version_name: string | null;
+  game_rules: WorldRule[];
+}
+
+export interface WorldSettingsPatch {
+  name?: string;
+  game_mode?: string;
+  difficulty?: string;
+  allow_commands?: boolean;
+  seed?: string;
+  game_rules?: WorldRule[];
+}
+
+export interface GameRuleLang {
+  name: string | null;
+  description: string | null;
+}
+
 export interface WorldSeed {
   folder: string;
   name: string;
@@ -729,6 +771,12 @@ export interface SkinLibraryItem {
   model: string;
   source: string;
   created_at: number;
+  data_url: string;
+}
+
+export interface LocalCape {
+  name: string;
+  saved_at: number;
   data_url: string;
 }
 
@@ -868,9 +916,13 @@ export interface DeviceCode {
 export interface ProgressStep {
   label: string;
   done: boolean;
+  /// 该步骤的完成百分比；历史步骤为 100，当前步骤为整体进度
+  percent?: number;
 }
 
 export interface ProgressSnapshot {
+  /// 所属任务 ID；下载中心按它把进度分派到对应任务
+  job: string;
   stage: string;
   message: string;
   steps: ProgressStep[];
@@ -880,6 +932,7 @@ export interface ProgressSnapshot {
   bytes_total: number;
   elapsed_ms: number;
   active: boolean;
+  paused: boolean;
 }
 
 export interface LogLine {
@@ -907,28 +960,32 @@ export const api = {
   removeGameDir: (path: string) => invoke<Config>("remove_game_dir", { path }),
   fetchVersions: (force = false) => invoke<VersionSummary[]>("fetch_versions", { force }),
   installedVersions: () => invoke<InstalledVersion[]>("installed_versions"),
-  installVersion: (versionId: string) => invoke<InstalledVersion>("install_version", { versionId }),
-  cancelInstall: () => invoke<void>("cancel_install"),
+  installVersion: (versionId: string, jobId?: string) =>
+    invoke<InstalledVersion>("install_version", { versionId, jobId }),
+  cancelInstall: (jobId?: string) => invoke<void>("cancel_install", { jobId }),
+  pauseJob: (jobId: string) => invoke<void>("pause_job", { jobId }),
+  resumeJob: (jobId: string) => invoke<void>("resume_job", { jobId }),
+  activeJobs: () => invoke<string[]>("active_jobs"),
   loaderOptions: (versionId: string) =>
     invoke<LoaderOption[]>("loader_options", { versionId }),
   loaderVersions: (versionId: string, loader: string) =>
     invoke<LoaderVersion[]>("loader_versions", { versionId, loader }),
-  installLoader: (versionId: string, loader: string, loaderVersion?: string) =>
-    invoke<InstalledVersion>("install_loader", { versionId, loader, loaderVersion }),
-  reinstallLoader: (versionId: string) =>
-    invoke<InstalledVersion>("reinstall_loader", { versionId }),
+  installLoader: (versionId: string, loader: string, loaderVersion?: string, jobId?: string) =>
+    invoke<InstalledVersion>("install_loader", { versionId, loader, loaderVersion, jobId }),
+  reinstallLoader: (versionId: string, jobId?: string) =>
+    invoke<InstalledVersion>("reinstall_loader", { versionId, jobId }),
   instanceContext: (versionId: string) =>
     invoke<InstanceContext>("instance_context", { versionId }),
   checkInstanceFiles: (versionId: string) =>
     invoke<InstanceCheck>("check_instance_files", { versionId }),
-  repairInstance: (versionId: string, options?: RepairOptions) =>
-    invoke<RepairReport>("repair_instance", { versionId, options: options ?? null }),
+  repairInstance: (versionId: string, options?: RepairOptions, jobId?: string) =>
+    invoke<RepairReport>("repair_instance", { versionId, options: options ?? null, jobId }),
   repairRestore: (versionId: string) =>
     invoke<number>("repair_restore", { versionId }),
   shaderSupport: (versionId: string) =>
     invoke<ShaderSupport>("shader_support", { versionId }),
-  installShaderLoader: (versionId: string) =>
-    invoke<string>("install_shader_loader", { versionId }),
+  installShaderLoader: (versionId: string, jobId?: string) =>
+    invoke<string>("install_shader_loader", { versionId, jobId }),
   preflightCheck: (versionId: string) =>
     invoke<PreflightReport>("preflight_check", { versionId }),
   gameOptionsPresets: () => invoke<GameOptionsPreset[]>("game_options_presets"),
@@ -963,8 +1020,8 @@ export const api = {
     invoke<InstanceModMeta[]>("instance_mod_meta", { versionId }),
   instanceImportFiles: (versionId: string, kind: string, paths: string[]) =>
     invoke<number>("instance_import_files", { versionId, kind, paths }),
-  instanceImportMods: (versionId: string, paths: string[]) =>
-    invoke<ModImportOutcome>("instance_import_mods", { versionId, paths }),
+  instanceImportMods: (versionId: string, paths: string[], jobId?: string) =>
+    invoke<ModImportOutcome>("instance_import_mods", { versionId, paths, jobId }),
   dropInspect: (paths: string[]) => invoke<DroppedItem[]>("drop_inspect", { paths }),
   instancePaths: (versionId: string) =>
     invoke<InstancePaths>("instance_paths", { versionId }),
@@ -972,13 +1029,42 @@ export const api = {
     invoke<WorldSummary[]>("instance_worlds", { versionId }),
   instanceWorldSeed: (versionId: string, folder: string) =>
     invoke<WorldSeed>("instance_world_seed", { versionId, folder }),
+  instanceBackups: (versionId: string) =>
+    invoke<WorldBackup[]>("instance_backups", { versionId }),
+  instanceBackupsDir: (versionId: string) =>
+    invoke<string>("instance_backups_dir", { versionId }),
+  instanceBackupWorld: (versionId: string, folder: string) =>
+    invoke<WorldBackup>("instance_backup_world", { versionId, folder }),
+  instanceRestoreBackup: (versionId: string, path: string) =>
+    invoke<string>("instance_restore_backup", { versionId, path }),
+  instanceImportWorld: (versionId: string, path: string) =>
+    invoke<string>("instance_import_world", { versionId, path }),
+  instanceDeleteBackup: (versionId: string, path: string) =>
+    invoke<void>("instance_delete_backup", { versionId, path }),
+  instanceWorldSettings: (versionId: string, folder: string) =>
+    invoke<WorldSettings>("instance_world_settings", { versionId, folder }),
+  instanceSaveWorldSettings: (
+    versionId: string,
+    folder: string,
+    patch: WorldSettingsPatch
+  ) =>
+    invoke<WorldSettings>("instance_save_world_settings", {
+      versionId,
+      folder,
+      patch,
+    }),
+  instanceGameRuleLang: (versionId: string) =>
+    invoke<Record<string, GameRuleLang>>("instance_game_rule_lang", {
+      versionId,
+    }),
   appVersion: () => invoke<string>("app_version"),
   appPortable: () => invoke<boolean>("app_portable"),
   pclImportPreview: (path: string) =>
     invoke<PclPreview>("pcl_import_preview", { path }),
   pclImportApply: (path: string) => invoke<Config>("pcl_import_apply", { path }),
   probeDownloadSources: () => invoke<SourceProbe[]>("probe_download_sources"),
-  retryFailedDownloads: () => invoke<RetryDownloads>("retry_failed_downloads"),
+  retryFailedDownloads: (sourceJob?: string, jobId?: string) =>
+    invoke<RetryDownloads>("retry_failed_downloads", { sourceJob, jobId }),
   playStats: () => invoke<PlayStats>("play_stats"),
   updateCheck: (url: string) => invoke<UpdateInfo>("update_check", { url }),
   updateDownload: (url: string, version: string) =>
@@ -1009,15 +1095,15 @@ export const api = {
       sha1,
     }),
   modpackInspect: (path: string) => invoke<PackPreview>("modpack_inspect", { path }),
-  modpackDownload: (url: string, fileName: string) =>
-    invoke<string>("modpack_download", { url, fileName }),
+  modpackDownload: (url: string, fileName: string, jobId?: string) =>
+    invoke<string>("modpack_download", { url, fileName, jobId }),
   modpackTempRemove: (path: string) => invoke<void>("modpack_temp_remove", { path }),
-  modpackImport: (path: string, options: ModpackImportOptions) =>
-    invoke<ModpackImportResult>("modpack_import", { path, options }),
+  modpackImport: (path: string, options: ModpackImportOptions, jobId?: string) =>
+    invoke<ModpackImportResult>("modpack_import", { path, options, jobId }),
   modpackExportPreview: (versionId: string) =>
     invoke<ExportPreview>("modpack_export_preview", { versionId }),
-  modpackExport: (versionId: string, options: ExportOptions) =>
-    invoke<ExportResult>("modpack_export", { versionId, options }),
+  modpackExport: (versionId: string, options: ExportOptions, jobId?: string) =>
+    invoke<ExportResult>("modpack_export", { versionId, options, jobId }),
   cfSearch: (
     classId: number,
     query: string,
@@ -1077,10 +1163,10 @@ export const api = {
     }),
   cfFileLink: (projectId: string, fileId: string) =>
     invoke<{ url: string; file_name: string }>("cf_file_link", { projectId, fileId }),
-  cfInstallFile: (versionId: string, kind: string, url: string, fileName: string) =>
-    invoke<InstallOutcome>("cf_install_file", { versionId, kind, url, fileName }),
-  cfInstallWorld: (versionId: string, url: string, fileName: string) =>
-    invoke<string>("cf_install_world", { versionId, url, fileName }),
+  cfInstallFile: (versionId: string, kind: string, url: string, fileName: string, jobId?: string) =>
+    invoke<InstallOutcome>("cf_install_file", { versionId, kind, url, fileName, jobId }),
+  cfInstallWorld: (versionId: string, url: string, fileName: string, jobId?: string) =>
+    invoke<string>("cf_install_world", { versionId, url, fileName, jobId }),
   contentProjects: (source: string, ids: string[]) =>
     invoke<CfProject[]>("content_projects", { source, ids }),
   projectTranslations: (source: string, ids: string[]) =>
@@ -1108,9 +1194,24 @@ export const api = {
     invoke<AccountView>("clear_account_skin", { accountId }),
   exportAccountSkin: (accountId: string, targetPath: string) =>
     invoke<void>("export_account_skin", { accountId, targetPath }),
+  exportSkinToCsl: (accountId: string, versionId: string, pngBase64?: string | null) =>
+    invoke<{ path: string }>("export_skin_to_customskinloader", {
+      accountId,
+      versionId,
+      pngBase64: pngBase64 ?? null,
+    }),
   uploadAccountSkin: (accountId: string, pngBase64: string, model: string) =>
     invoke<AccountView>("upload_account_skin", { accountId, pngBase64, model }),
   skinLibraryList: () => invoke<SkinLibraryItem[]>("skin_library_list"),
+  capeLibraryList: () => invoke<LocalCape[]>("cape_library_list"),
+  capeLibrarySave: (name: string, pngBase64: string) =>
+    invoke<LocalCape>("cape_library_save", { name, pngBase64 }),
+  capeLibraryRemove: (name: string) => invoke<void>("cape_library_remove", { name }),
+  capeImport: (path: string) => invoke<string>("cape_import", { path }),
+  capeExport: (path: string, pngBase64: string) =>
+    invoke<void>("cape_export", { path, pngBase64 }),
+  uploadAccountCape: (accountId: string, pngBase64: string) =>
+    invoke<void>("account_cape_upload", { accountId, pngBase64 }),
   skinLibraryImport: (name: string, model: string, path: string) =>
     invoke<SkinLibraryItem>("skin_library_import", { name, model, path }),
   skinLibrarySave: (name: string, model: string, pngBase64: string) =>
@@ -1143,8 +1244,8 @@ export const api = {
   addJava: (path: string) => invoke<JavaInfo>("add_java", { path }),
   javaRuntimeMajors: (source: string) =>
     invoke<number[]>("java_runtime_majors", { source }),
-  installJava: (major: number, source: string) =>
-    invoke<JavaInfo>("install_java", { major, source }),
+  installJava: (major: number, source: string, jobId?: string) =>
+    invoke<JavaInfo>("install_java", { major, source, jobId }),
   deleteJava: (path: string) => invoke<boolean>("delete_java", { path }),
   launchVersion: (versionId: string) => invoke<number>("launch_version", { versionId }),
   launchServer: (versionId: string, address: string) =>
@@ -1262,6 +1363,16 @@ export async function saveSettingsDialog(): Promise<string | null> {
   return typeof result === "string" ? result : null;
 }
 
+export async function pickWorldZip(): Promise<string | null> {
+  const result = await open({
+    directory: false,
+    multiple: false,
+    title: "选择存档压缩包",
+    filters: [{ name: "Minecraft 存档", extensions: ["zip", "mcworld"] }],
+  });
+  return typeof result === "string" ? result : null;
+}
+
 export async function pickSettingsFile(): Promise<string | null> {
   const result = await open({
     directory: false,
@@ -1277,6 +1388,25 @@ export async function saveSkinDialog(defaultName = "skin.png"): Promise<string |
     title: "导出皮肤",
     defaultPath: defaultName,
     filters: [{ name: "Minecraft 皮肤", extensions: ["png"] }],
+  });
+  return typeof result === "string" ? result : null;
+}
+
+export async function saveCapeDialog(defaultName = "cape.png"): Promise<string | null> {
+  const result = await save({
+    title: "导出披风",
+    defaultPath: defaultName,
+    filters: [{ name: "Minecraft 披风", extensions: ["png"] }],
+  });
+  return typeof result === "string" ? result : null;
+}
+
+export async function pickCapePng(): Promise<string | null> {
+  const result = await open({
+    title: "选择披风 PNG（64×32）",
+    multiple: false,
+    directory: false,
+    filters: [{ name: "Minecraft 披风", extensions: ["png"] }],
   });
   return typeof result === "string" ? result : null;
 }

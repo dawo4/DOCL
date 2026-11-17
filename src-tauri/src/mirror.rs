@@ -1,6 +1,5 @@
 /// BMCLAPI 镜像地址重写。
 /// 文档：https://bmclapidoc.bangbang93.com/
-const MIRROR: &str = "https://bmclapi2.bangbang93.com";
 
 const HOST_MAPPINGS: &[(&str, &str)] = &[
     (
@@ -99,24 +98,4 @@ mod tests {
             "https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/21.1.259/neoforge-21.1.259-installer.jar"
         );
     }
-}
-
-pub fn official(url: &str) -> String {
-    if let Some(rest) = url.strip_prefix(MIRROR) {
-        // 还原为官方地址；多数资源可直接用官方主机
-        if rest.starts_with("/assets/") {
-            return format!(
-                "https://resources.download.minecraft.net/{}",
-                rest.trim_start_matches("/assets/")
-            );
-        }
-        if rest.starts_with("/maven/") {
-            return format!(
-                "https://libraries.minecraft.net/{}",
-                rest.trim_start_matches("/maven/")
-            );
-        }
-        return format!("https://launchermeta.mojang.com{rest}");
-    }
-    url.to_string()
 }

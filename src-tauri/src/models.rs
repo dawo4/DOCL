@@ -236,8 +236,11 @@ pub struct RuntimeFile {
     #[serde(rename = "type")]
     pub kind: String,
     pub downloads: Option<RuntimeDownloads>,
+    // 清单里的可执行标记与安装目标：当前按运行时类库统一处理
+    #[allow(dead_code)]
     #[serde(default)]
     pub executable: bool,
+    #[allow(dead_code)]
     pub target: Option<String>,
 }
 

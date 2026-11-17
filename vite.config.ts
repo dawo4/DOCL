@@ -18,5 +18,11 @@ export default defineConfig({
     target: "chrome105",
     minify: "esbuild",
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        // three 只在 3D 组件挂载时动态加载，单独成 chunk，不拖慢首屏
+        manualChunks: { three: ["three"] },
+      },
+    },
   },
 });

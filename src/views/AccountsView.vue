@@ -12,6 +12,7 @@ import SkinEditorView from "./SkinEditorView.vue";
 import {
   beginMsLogin,
   createOffline,
+  installCfFile,
   loadSelectedSkin,
   notify,
   refreshAccounts,
@@ -24,6 +25,8 @@ import {
 
 const name = ref("");
 const confirmId = ref<string | null>(null);
+/// CustomSkinLoader 导出/安装进行中
+const cslBusy = ref(false);
 /// 添加账户弹窗：type 选择 → 离线表单，正版直接走微软登录
 const addOpen = ref(false);
 const offlineOpen = ref(false);
@@ -114,16 +117,16 @@ function fullUuid(uuid: string) {
   return privacy.value ? "••••••••••••••••••••••••••••••••" : uuid;
 }
 
-function addOffline() {
+async function addOffline() {
   const value = name.value.trim();
   if (!value) {
     notify("请输入离线用户名", "err");
     return;
   }
-  createOffline(value);
+  const added = await createOffline(value);
+  if (!added) return;
   name.value = "";
   offlineOpen.value = false;
-  notify(`已添加离线账号 ${value}`);
 }
 
 function pickAccountType(kind: "offline" | "microsoft" | "authlib") {
@@ -207,6 +210,99 @@ async function clearLocalSkin() {
     notify("已清除本地皮肤覆盖");
   } catch (err) {
     notify(`清除失败：${String(err)}`, "err");
+  }
+}
+
+/// CustomSkinLoader 的目标实例：手动选择优先，否则跟随启动台选中的版本
+const cslTargetId = ref<string | null>(null);
+const cslPickerOpen = ref(false);
+
+const cslInstances = computed(() => store.installed.filter((item) => !item.dependency));
+
+const cslTarget = computed(() => {
+  const picked = cslTargetId.value;
+  if (picked && cslInstances.value.some((item) => item.id === picked)) return picked;
+  const selected = store.config?.selected_version;
+  if (selected && cslInstances.value.some((item) => item.id === selected)) return selected;
+  return cslInstances.value[0]?.id ?? null;
+});
+
+function pickCslInstance(id: string) {
+  cslTargetId.value = id;
+  cslPickerOpen.value = false;
+}
+
+/// 把当前皮肤写到目标实例的 CustomSkinLoader/LocalSkin/skins/<用户名>.png
+async function exportToCsl() {
+  const account = selectedAccount.value;
+  if (!account) return;
+  const versionId = cslTarget.value;
+  if (!versionId) {
+    notify("还没有已安装的实例，请先在下载页安装一个版本", "err");
+    return;
+  }
+  if (cslBusy.value) return;
+  cslBusy.value = true;
+  try {
+    const dataUrl = store.accountSkin?.data_url;
+    const png = dataUrl?.startsWith("data:") ? dataUrl : null;
+    const result = await api.exportSkinToCsl(account.id, versionId, png);
+    notify(`已写入 CustomSkinLoader 本地皮肤：${result.path}`);
+  } catch (err) {
+    notify(`导出到 CustomSkinLoader 失败：${String(err)}`, "err");
+  } finally {
+    cslBusy.value = false;
+  }
+}
+
+/// 从 Modrinth 安装与当前实例版本、加载器匹配的 CustomSkinLoader
+async function installCustomSkinLoader() {
+  const versionId = cslTarget.value;
+  if (!versionId) {
+    notify("还没有已安装的实例，请先在下载页安装一个版本", "err");
+    return;
+  }
+  if (cslBusy.value) return;
+  cslBusy.value = true;
+  try {
+    const mods = await api.instanceFiles(versionId, "mods");
+    const existed = mods.find(
+      (item) => !item.is_dir && item.name.toLowerCase().includes("customskinloader")
+    );
+    if (existed) {
+      notify(`当前实例已有 ${existed.name}，如需更新请先在版本页禁用或删除旧文件`, "err");
+      return;
+    }
+
+    const context = await api.instanceContext(versionId);
+    if (!["fabric", "quilt", "forge", "neoforge"].includes(context.loader)) {
+      notify(
+        "当前实例是原版（没有 Mod 加载器），请先安装 Fabric / Forge / NeoForge / Quilt",
+        "err"
+      );
+      return;
+    }
+    const files = await api.modrinthFiles("idMHQ4n2", context.game_version, context.loader);
+    const file = files.find((item) => item.download_url);
+    if (!file?.download_url) {
+      notify(
+        `没有找到适配 ${context.game_version} · ${context.loader} 的 CustomSkinLoader`,
+        "err"
+      );
+      return;
+    }
+    void installCfFile(
+      versionId,
+      "mods",
+      file.download_url,
+      file.file_name,
+      `CustomSkinLoader ${file.name}`
+    );
+    notify("已加入下载任务，安装完成后重启游戏生效");
+  } catch (err) {
+    notify(`安装 CustomSkinLoader 失败：${String(err)}`, "err");
+  } finally {
+    cslBusy.value = false;
   }
 }
 
@@ -309,19 +405,19 @@ onMounted(() => {
         <header class="acc-detail__head">
           <div class="acc-detail__id">
             <span class="acc-detail__label mono">当前账号</span>
-            <h2 class="acc-detail__name">{{ selectedAccount.name }}</h2>
-          </div>
-          <div class="acc-detail__tags">
-            <span class="tag" :class="{ 'tag--grass': selectedAccount.kind === 'microsoft' }">
-              {{
-                selectedAccount.kind === "microsoft"
-                  ? "微软账号"
-                  : selectedAccount.kind === "authlib"
-                    ? "第三方账号"
-                    : "离线账号"
-              }}
-            </span>
-            <span class="tag">{{ skinSourceLabel }}</span>
+            <div class="acc-detail__name-row">
+              <h2 class="acc-detail__name">{{ selectedAccount.name }}</h2>
+              <span class="tag" :class="{ 'tag--grass': selectedAccount.kind === 'microsoft' }">
+                {{
+                  selectedAccount.kind === "microsoft"
+                    ? "微软账号"
+                    : selectedAccount.kind === "authlib"
+                      ? "第三方账号"
+                      : "离线账号"
+                }}
+              </span>
+              <span class="tag">{{ skinSourceLabel }}</span>
+            </div>
           </div>
         </header>
 
@@ -371,8 +467,47 @@ onMounted(() => {
           </WoodButton>
         </div>
 
+        <section class="acc-csl">
+          <div class="acc-csl__head">
+            <span class="acc-csl__title">游戏内皮肤</span>
+            <span class="acc-csl__badge mono">CustomSkinLoader</span>
+          </div>
+          <div class="acc-csl__row">
+            <button
+              class="acc-csl__target"
+              title="选择要写入的实例"
+              @click="cslPickerOpen = true"
+            >
+              <span class="acc-csl__label">目标实例</span>
+              <span v-if="cslTarget" class="acc-csl__id mono">{{ cslTarget }}</span>
+              <span v-else class="muted">未安装版本</span>
+              <AppIcon name="chevron-down" :size="12" />
+            </button>
+            <div class="acc-csl__buttons">
+              <WoodButton
+                variant="soft"
+                size="sm"
+                :disabled="cslBusy"
+                title="把当前皮肤写入目标实例的 CustomSkinLoader/LocalSkin/skins 目录"
+                @click="exportToCsl"
+              >
+                写入皮肤
+              </WoodButton>
+              <WoodButton
+                variant="ghost"
+                size="sm"
+                :disabled="cslBusy"
+                title="从 Modrinth 安装与目标实例版本、加载器匹配的 CustomSkinLoader"
+                @click="installCustomSkinLoader"
+              >
+                安装 Mod
+              </WoodButton>
+            </div>
+          </div>
+        </section>
+
         <p class="acc-note">
-          离线账号的皮肤只用于启动器内预览与导出，游戏内原版不会显示；第三方账号会自动读取皮肤站上的角色皮肤；微软账号可在编辑页选择上传到 Mojang。
+          离线皮肤默认只在启动器内预览，写入 CustomSkinLoader 后游戏内可见；第三方账号自动读取皮肤站皮肤。
         </p>
       </section>
 
@@ -380,6 +515,31 @@ onMounted(() => {
         选择或创建一个账号后，这里会显示 3D 皮肤
       </section>
     </div>
+
+    <WoodModal
+      v-if="cslPickerOpen"
+      title="CustomSkinLoader 目标实例"
+      :width="440"
+      @close="cslPickerOpen = false"
+    >
+      <p class="muted small">皮肤和 Mod 会写入所选实例；默认跟随启动台当前版本。</p>
+      <div class="csl-pick-list">
+        <button
+          v-for="item in cslInstances"
+          :key="item.id"
+          class="csl-pick"
+          :class="{ 'csl-pick--active': item.id === cslTarget }"
+          @click="pickCslInstance(item.id)"
+        >
+          <span class="csl-pick__text">
+            <b>{{ item.id }}</b>
+            <span class="csl-pick__meta mono">{{ item.game_version }} · {{ item.loader }}</span>
+          </span>
+          <AppIcon v-if="item.id === cslTarget" name="check" :size="14" />
+        </button>
+        <p v-if="!cslInstances.length" class="muted small">还没有已安装的版本。</p>
+      </div>
+    </WoodModal>
 
     <WoodModal v-if="addOpen" title="添加账户" :width="440" @close="addOpen = false">
       <p class="add-type__hint muted">选择要添加的账户类型。</p>
@@ -810,6 +970,7 @@ onMounted(() => {
 }
 
 .acc-detail__name {
+  min-width: 0;
   font-size: 26px;
   font-weight: 800;
   line-height: 1.1;
@@ -820,10 +981,12 @@ onMounted(() => {
   white-space: nowrap;
 }
 
-.acc-detail__tags {
+.acc-detail__name-row {
   display: flex;
-  gap: 6px;
-  flex-shrink: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
 }
 
 .acc-detail__uuid {
@@ -884,6 +1047,123 @@ onMounted(() => {
 
 .acc-actions__danger:hover {
   color: var(--danger);
+}
+
+/* CustomSkinLoader 目标实例：默认跟随启动台，可手动改 */
+.acc-csl {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel-2);
+}
+
+.acc-csl__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.acc-csl__title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.acc-csl__badge {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.acc-csl__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.acc-csl__target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--panel);
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.acc-csl__target:hover {
+  color: var(--moss);
+  border-color: var(--moss);
+}
+
+.acc-csl__label {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.acc-csl__id {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acc-csl__buttons {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.csl-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.csl-pick {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel-2);
+  color: var(--ink);
+  text-align: left;
+}
+
+.csl-pick:hover {
+  border-color: var(--moss);
+}
+
+.csl-pick--active {
+  border-color: var(--moss);
+  background: var(--moss-soft);
+}
+
+.csl-pick__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.csl-pick__meta {
+  font-size: 10.5px;
+  color: var(--muted);
 }
 
 .acc-note {

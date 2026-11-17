@@ -2,7 +2,7 @@ use crate::auth::{self, Account};
 use crate::config;
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 const SKIN_SIZE: u32 = 64;
@@ -210,8 +210,10 @@ pub fn normalize_png(bytes: Vec<u8>) -> Result<Vec<u8>> {
             }
         }
     };
-    // 64×32 的头部/身体/右臂/右腿平移到现代布局
+    // 64×32 的头部/帽子/身体/右臂/右腿平移到现代布局
     copy_rect(&mut out, 0, 0, 32, 16, 0, 0);
+    // 帽子图层（头发、头盔等）在旧版布局里同样位于 (32,0)，之前漏掉会让皮肤看起来像换了个人
+    copy_rect(&mut out, 32, 0, 32, 16, 32, 0);
     copy_rect(&mut out, 16, 16, 24, 16, 16, 16);
     copy_rect(&mut out, 40, 16, 16, 16, 40, 16);
     copy_rect(&mut out, 0, 16, 16, 16, 0, 16);
@@ -505,6 +507,195 @@ pub fn export_bytes(account: &Account, target: &str) -> Result<()> {
     }
     std::fs::write(target, bytes)?;
     Ok(())
+}
+
+// ---------- 披风：本地库 / 导入导出 / 第三方上传 ----------
+
+const CAPE_WIDTH: u32 = 64;
+const CAPE_HEIGHT: u32 = 32;
+
+fn capes_dir() -> PathBuf {
+    skins_dir().join("capes")
+}
+
+/// 披风只接受 64×32 的 PNG；皮肤那套 64×32→64×64 的旧版补全不适用于披风
+fn normalize_cape_png(bytes: Vec<u8>) -> Result<Vec<u8>> {
+    if bytes.len() > MAX_SKIN_BYTES {
+        bail!("披风文件过大（上限 2 MB）");
+    }
+    if bytes.len() < 33 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" {
+        bail!("不是有效的 PNG 图片");
+    }
+    let decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
+    let reader = decoder.read_info().context("解码 PNG 失败")?;
+    let info = reader.info();
+    if info.width != CAPE_WIDTH || info.height != CAPE_HEIGHT {
+        bail!(
+            "披风尺寸必须是 {CAPE_WIDTH}×{CAPE_HEIGHT}，当前为 {}×{}",
+            info.width,
+            info.height
+        );
+    }
+    Ok(bytes)
+}
+
+fn decode_cape_base64(raw: &str) -> Result<Vec<u8>> {
+    normalize_cape_png(decode_base64(raw)?)
+}
+
+fn cape_path(name: &str) -> PathBuf {
+    capes_dir().join(format!("{}.png", safe_id(name)))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalCapeView {
+    pub name: String,
+    pub saved_at: i64,
+    pub data_url: String,
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+pub fn save_local_cape(name: &str, raw_base64: &str) -> Result<LocalCapeView> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("披风名称不能为空");
+    }
+    let name: String = name.chars().take(32).collect();
+    let bytes = decode_cape_base64(raw_base64)?;
+    std::fs::create_dir_all(capes_dir())?;
+    std::fs::write(cape_path(&name), &bytes).context("保存披风失败")?;
+    Ok(LocalCapeView {
+        name,
+        saved_at: now_secs(),
+        data_url: to_data_url(&bytes, "image/png"),
+    })
+}
+
+pub fn list_local_capes() -> Vec<LocalCapeView> {
+    let Ok(entries) = std::fs::read_dir(capes_dir()) else {
+        return Vec::new();
+    };
+    let mut list: Vec<LocalCapeView> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().map(|ext| ext != "png").unwrap_or(true) {
+                return None;
+            }
+            let bytes = std::fs::read(&path).ok()?;
+            if normalize_cape_png(bytes.clone()).is_err() {
+                return None;
+            }
+            let saved_at = entry
+                .metadata()
+                .ok()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            Some(LocalCapeView {
+                name: path.file_stem()?.to_string_lossy().to_string(),
+                saved_at,
+                data_url: to_data_url(&bytes, "image/png"),
+            })
+        })
+        .collect();
+    list.sort_by(|a, b| b.saved_at.cmp(&a.saved_at));
+    list
+}
+
+pub fn remove_local_cape(name: &str) -> Result<()> {
+    let path = cape_path(name);
+    if !path.is_file() {
+        bail!("披风不存在：{name}");
+    }
+    std::fs::remove_file(path).context("删除披风失败")
+}
+
+/// 导出为 PNG 文件
+pub fn export_cape_file(target: &str, raw_base64: &str) -> Result<()> {
+    let bytes = decode_cape_base64(raw_base64)?;
+    if let Some(parent) = std::path::Path::new(target).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(target, bytes).context("写入披风文件失败")
+}
+
+/// 从本地 PNG 导入，返回 data URL 供画布直接加载
+pub fn import_cape_file(path: &str) -> Result<String> {
+    let bytes = std::fs::read(path).context("读取披风文件失败")?;
+    let bytes = normalize_cape_png(bytes)?;
+    Ok(to_data_url(&bytes, "image/png"))
+}
+
+/// 材质上传接口挂在站点根上（`{站点}/api/user/profile/{uuid}/{type}`），
+/// 而 authlib_url 通常带着 `/api/yggdrasil` 前缀，需要先退回站点根再拼路径。
+fn site_root(authlib_url: &str) -> String {
+    let root = authlib_url.trim().trim_end_matches('/');
+    for suffix in ["/api/yggdrasil", "/api/yggdrasil/v2", "/api"] {
+        if let Some(stripped) = root.strip_suffix(suffix) {
+            return stripped.trim_end_matches('/').to_string();
+        }
+    }
+    root.to_string()
+}
+
+/// 上传到 authlib 第三方皮肤站（LittleSkin 等）。
+/// 微软账号没有自定义披风上传接口，只能选择账号已拥有的披风。
+pub async fn upload_cape(
+    client: &reqwest::Client,
+    account: &Account,
+    raw_base64: &str,
+) -> Result<()> {
+    let bytes = decode_cape_base64(raw_base64)?;
+    let Some(root) = account
+        .authlib_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        bail!("微软账号不支持上传自定义披风，请在账号页选择已拥有的披风");
+    };
+    if account.access_token.is_empty() {
+        bail!("登录凭据缺失，请先重新登录该皮肤站账号");
+    }
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name("cape.png")
+        .mime_str("image/png")?;
+    let form = reqwest::multipart::Form::new().part("file", part);
+    let url = format!(
+        "{}/api/user/profile/{}/cape",
+        site_root(root),
+        account.uuid
+    );
+    let response = client
+        .put(url)
+        .bearer_auth(&account.access_token)
+        .multipart(form)
+        .send()
+        .await
+        .context("连接皮肤站失败")?;
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let text = response.text().await.unwrap_or_default();
+    let message = match status.as_u16() {
+        401 | 403 => "皮肤站拒绝上传：登录已过期或令牌权限不足，请重新登录该账号".to_string(),
+        404 => format!(
+            "该皮肤站没有开放材质上传接口，请到 {}/user/player 网页上传披风",
+            site_root(root)
+        ),
+        413 => "披风文件超出皮肤站限制".to_string(),
+        _ => format!("上传失败（{status}）：{text}"),
+    };
+    bail!(message)
 }
 
 // ---------- 皮肤库 ----------
@@ -811,6 +1002,70 @@ pub async fn set_cape(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn png_of(width: u32, height: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&vec![0u8; (width * height * 4) as usize])
+                .unwrap();
+        }
+        out
+    }
+
+    /// 披风只接受 64×32，皮肤那套 64×64 不能被当成披风混进来
+    #[test]
+    fn cape_png_must_be_64x32() {
+        assert!(normalize_cape_png(png_of(64, 32)).is_ok());
+        assert!(normalize_cape_png(png_of(64, 64)).is_err());
+        assert!(normalize_cape_png(b"not a png".to_vec()).is_err());
+    }
+
+    /// 材质上传要退回站点根，不能把 authlib 的 /api/yggdrasil 前缀再拼一遍
+    #[test]
+    fn site_root_strips_authlib_prefix() {
+        assert_eq!(
+            site_root("https://littleskin.cn/api/yggdrasil"),
+            "https://littleskin.cn"
+        );
+        assert_eq!(
+            site_root("https://littleskin.cn/api/yggdrasil/"),
+            "https://littleskin.cn"
+        );
+        assert_eq!(site_root("https://littleskin.cn/api"), "https://littleskin.cn");
+        assert_eq!(
+            site_root("https://skin.example.com"),
+            "https://skin.example.com"
+        );
+    }
+
+    /// 64×32 旧皮肤转 64×64 时帽子图层不能丢，否则头发/头盔消失，看起来像换了个皮肤
+    #[test]
+    fn legacy_skin_keeps_hat_layer() {
+        let mut raw = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut raw, 64, 32);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            let mut data = vec![0u8; (64 * 32 * 4) as usize];
+            let idx = ((64 + 33) * 4) as usize;
+            data[idx..idx + 4].copy_from_slice(&[255, 0, 0, 255]);
+            writer.write_image_data(&data).unwrap();
+        }
+        let normalized = normalize_png(raw).unwrap();
+        let decoder = png::Decoder::new(std::io::Cursor::new(&normalized));
+        let mut reader = decoder.read_info().unwrap();
+        let mut buffer = vec![0; reader.output_buffer_size()];
+        let frame = reader.next_frame(&mut buffer).unwrap();
+        buffer.truncate(frame.buffer_size());
+        let idx = ((64 + 33) * 4) as usize;
+        assert_eq!(&buffer[idx..idx + 4], &[255, 0, 0, 255]);
+    }
 
     /// 联网实测：能从官方档案解析出皮肤与模型。
     /// cargo test --lib skins::tests::live_official_skin -- --ignored --nocapture

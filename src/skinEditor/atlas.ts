@@ -23,6 +23,15 @@ export interface BoxSpec {
 
 export const FACE_ORDER: FaceName[] = ["top", "bottom", "right", "left", "front", "back"];
 
+/** 披风展开图固定为 64×32，正面/背面各 10×16 */
+export const CAPE_WIDTH = 64;
+export const CAPE_HEIGHT = 32;
+/** 外侧面（穿在身上能看到的正面） */
+export const CAPE_FRONT: Rect = [1, 1, 10, 16];
+/** 贴住身体的内侧面 */
+export const CAPE_BACK: Rect = [12, 1, 10, 16];
+export const CAPE_FACES: Rect[] = [CAPE_FRONT, CAPE_BACK];
+
 /** BoxGeometry 的材质组顺序：+X / -X / +Y / -Y / +Z / -Z */
 export const FACE_BY_GROUP: FaceName[] = ["left", "right", "top", "bottom", "front", "back"];
 

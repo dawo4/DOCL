@@ -107,6 +107,7 @@ struct TokenResp {
     access_token: Option<String>,
     #[serde(default)]
     refresh_token: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     expires_in: Option<u64>,
     #[serde(default)]
@@ -166,13 +167,23 @@ pub fn offline_uuid(name: &str) -> String {
     )
 }
 
+/// 游戏（包括单人世界的内置服务端）只接受 1-16 位字母、数字和下划线。
+/// 中文等字符进世界时会被踢成「连接中断 / Invalid characters in username」。
+pub fn valid_player_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    (1..=16).contains(&bytes.len())
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+}
+
 pub fn create_offline(name: &str) -> Result<Account> {
     let name = name.trim();
     if name.is_empty() {
         bail!("用户名不能为空");
     }
-    if name.chars().count() > 16 {
-        bail!("用户名不能超过 16 个字符");
+    if !valid_player_name(name) {
+        bail!("用户名只能用 1-16 位字母、数字或下划线");
     }
     Ok(Account {
         id: format!("offline-{}", name.to_lowercase()),

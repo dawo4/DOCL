@@ -1,6 +1,6 @@
 {
-  "version": "1.7.0",
-  "url": "https://github.com/dawo4/DOCL/releases/download/v1.7.0/DOCL_1.7.0_x64-setup.exe",
-  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.7.0/DOCL_1.7.0_portable.zip",
-  "notes": "新增自定义主题系统：主题配色里可以新建主题，弹窗内命名并逐个调整页面底色、卡片底色、主色、强调色、标题/正文/次要文字与边框线，带实时预览，保存后立即应用，支持编辑和删除。下载页新增地图分类，可从 CurseForge 浏览并一键安装地图到所选实例的存档。皮肤功能重做：皮肤页改为左侧大预览 + 右侧本地皮肤库 / LittleSkin 衣柜 / 披风分类，接入 LittleSkin 授权与衣柜同步；3D 皮肤编辑器支持直接绘制、按部位和图层隔离、内外层同时显示、对称镜像、撤销重做、2D/3D 模式与行走动画。设置页新增内存优化。下载悬浮球改为方形水位进度。修复 Win10 开启毛玻璃时拖动窗口内容漂移、页面切换时卡片先清晰后变模糊，以及无底图时界面出现彩色光晕的问题。"
+  "version": "1.7.1",
+  "url": "https://github.com/dawo4/DOCL/releases/download/v1.7.1/DOCL_1.7.1_x64-setup.exe",
+  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.7.1/DOCL_1.7.1_portable.zip",
+  "notes": "下载中心重做：顶部任务按钮展开任务卡片，保留悬浮球；支持多任务排队/暂停/继续/重试/补下失败文件。皮肤功能增强：披风支持 3D 预览、本地库与导入导出；账号页可把皮肤写入 CustomSkinLoader 的目标实例或一键安装 CSL，并修复旧版 64×32 皮肤帽子图层丢失、导入后预览不切换的问题。修复 Forge/NeoForge 实例上 CustomSkinLoader 因 classpath 缺少 version.json 导致的启动崩溃，崩溃分析也新增了对应结论。前置下载改用 Modrinth 官方依赖（SHA1 / 项目链接），修复整合包实例加载器误判；一键修复的补前置同步接入。新实例首次启动自动设为中文并跳过无障碍引导；离线账号用户名强制校验字母/数字/下划线。账号页与运行日志窗口重新美化。"
 }

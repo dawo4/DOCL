@@ -7,6 +7,7 @@ import WoodModal from "./WoodModal.vue";
 import WoodInput from "./WoodInput.vue";
 import WoodSelect from "./WoodSelect.vue";
 import {
+  enqueueJob,
   importModpack,
   notify,
   refreshInstanceMetas,
@@ -124,7 +125,15 @@ async function installContent() {
       if (!kind) continue;
       if (kind === "mods") {
         // 模组走带前置检测的通道，装完会自动补齐 Fabric API 之类的必需依赖
-        const result = await api.instanceImportMods(target.value, [item.path]);
+        const result = await enqueueJob({
+          title: `导入模组 · ${item.file_name}`,
+          stage: "install",
+          message: "正在导入模组…",
+          errorPrefix: "导入模组失败",
+          key: `import-mod:${item.path}`,
+          run: (jobId) => api.instanceImportMods(target.value, [item.path], jobId),
+        });
+        if (!result) continue;
         count += result.imported;
         installed.push(...result.dependencies.installed);
         failed.push(...result.dependencies.failed);

@@ -319,6 +319,23 @@ const RULES: &[Rule] = &[
         category: "loader",
     },
     Rule {
+        id: "customskinloader-version-detect",
+        title: "CustomSkinLoader 无法识别游戏版本",
+        summary: "CustomSkinLoader 读不到 classpath 上的 version.json，把游戏当成旧版本，补丁没有命中后直接崩溃。",
+        patterns: &[
+            "customskinloader:skin-manager-patch",
+            "customskinloader.ignorepatchfailure",
+        ],
+        advice: &[
+            "更新到最新版 DOCL 后重新启动：新版会为 Forge / NeoForge 实例补上只含 version.json 的元数据包。",
+            "检查 mods 里是否同时放了多个 CustomSkinLoader jar：Universal 与 ForgeV3 / Fabric 只能保留一个。",
+            "临时应急可以在 Java 参数里加 -Dcustomskinloader.ignorePatchFailure=true，但皮肤不会加载。",
+        ],
+        links: &[("CustomSkinLoader 项目页", "https://modrinth.com/mod/customskinloader")],
+        priority: 96,
+        category: "mod",
+    },
+    Rule {
         id: "loader-incomplete",
         title: "加载器没有完整安装",
         summary: "Java 找不到加载器的引导类或启动 jar，通常是加载器安装中断、文件被删、或版本清单损坏。",
@@ -1967,6 +1984,15 @@ mod tests {
         assert_eq!(matches[0].id, "java-version");
         assert!(!matches[0].evidence.is_empty());
         assert_eq!(matches[0].priority, 90);
+    }
+
+    /// CSL 读不到 version.json 时会用旧补丁直接崩，不能再被误判成 VC++ 缺失
+    #[test]
+    fn detects_customskinloader_version_detection_failure() {
+        let text = "java.lang.IllegalStateException: Transformation rule 'customskinloader:skin-manager-patch/skin-manager.constructor.v1' selected net/minecraft/client/resources/SkinManager for protocol=0, world=0 but did not modify any bytecode. If you want to force CustomSkinLoader to ignore this patch failure, add -Dcustomskinloader.ignorePatchFailure=true to the JVM arguments.";
+        let report = matches_in(text);
+        assert_eq!(report[0].id, "customskinloader-version-detect");
+        assert!(report[0].priority >= 96);
     }
 
     #[test]

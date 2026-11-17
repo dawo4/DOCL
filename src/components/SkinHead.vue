@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import * as THREE from "three";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import type { Clock, Group, Material, Mesh, PerspectiveCamera, Scene, Texture, WebGLRenderer } from "three";
 import { store } from "../store";
 import { canvasFromSource, createDefaultSkin, seedFromString } from "../skin";
+
+/// 运行时按需加载 three，避免它进入首屏包
+type Three = typeof import("three");
+let THREE: Three;
 
 const props = withDefaults(
   defineProps<{
@@ -34,16 +38,17 @@ const HAT: Record<string, Region> = {
 };
 
 const host = ref<HTMLDivElement | null>(null);
-let renderer: THREE.WebGLRenderer | null = null;
-let scene: THREE.Scene | null = null;
-let camera: THREE.PerspectiveCamera | null = null;
-let group: THREE.Group | null = null;
-let clock: THREE.Clock | null = null;
+let renderer: WebGLRenderer | null = null;
+let scene: Scene | null = null;
+let camera: PerspectiveCamera | null = null;
+let group: Group | null = null;
+let clock: Clock | null = null;
 let frame = 0;
 let resizeObserver: ResizeObserver | null = null;
 let buildToken = 0;
-const textures: THREE.Texture[] = [];
-const materials: THREE.Material[] = [];
+let disposed = false;
+const textures: Texture[] = [];
+const materials: Material[] = [];
 
 function faceTexture(source: HTMLCanvasElement, region: Region) {
   const [x, y, w, h] = region;
@@ -99,7 +104,7 @@ function clearScene() {
   if (!scene || !group) return;
   scene.remove(group);
   group.traverse((object) => {
-    const mesh = object as THREE.Mesh;
+    const mesh = object as Mesh;
     if (mesh.isMesh) mesh.geometry?.dispose();
   });
   materials.forEach((material) => material.dispose());
@@ -123,6 +128,8 @@ async function build() {
     canvas = createDefaultSkin(seedFromString(props.seed));
   }
   if (token !== buildToken) return;
+  // 组件在 await 期间卸载时不再建场景
+  if (disposed || !scene) return;
 
   clearScene();
   const root = new THREE.Group();
@@ -153,9 +160,11 @@ function animate() {
   renderer.render(scene, camera);
 }
 
-onMounted(() => {
+onMounted(async () => {
   const element = host.value;
   if (!element) return;
+  THREE = await import("three");
+  if (disposed || !host.value) return;
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(30, 1, 0.1, 200);
   camera.position.set(0, 0, 27);
@@ -200,6 +209,7 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  disposed = true;
   cancelAnimationFrame(frame);
   resizeObserver?.disconnect();
   if (renderer) {

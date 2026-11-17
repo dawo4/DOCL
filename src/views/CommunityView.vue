@@ -922,10 +922,6 @@ async function openPreview(path: string, fromTemp: boolean) {
 }
 
 async function pickPack() {
-  if (store.installingId) {
-    notify("已有下载任务正在进行", "err");
-    return;
-  }
   const selection = await openDialog({
     multiple: false,
     directory: false,
@@ -1172,10 +1168,6 @@ async function confirmImport() {
     notify("请选择一个已安装的父版本", "err");
     return;
   }
-  if (store.installingId) {
-    notify("已有下载任务正在进行，请等待其完成", "err");
-    return;
-  }
   // 快照参数后立即关表单，任务转后台执行
   const job: PackImportJob = {
     path: pending ? null : packPath.value,
@@ -1271,7 +1263,7 @@ async function confirmImport() {
         <WoodButton
           v-if="kind === 'modpacks'"
           variant="soft"
-          :disabled="inspecting || !!store.installingId"
+          :disabled="inspecting"
           @click="pickPack"
         >
           <AppIcon name="package" :size="15" />
@@ -1466,7 +1458,7 @@ async function confirmImport() {
               :label="`安装 ${file.name}`"
               variant="soft"
               :size="30"
-              :disabled="!!store.installingId || inspecting"
+              :disabled="inspecting"
               @click="installPack(active, file)"
             />
             <IconButton
@@ -1475,7 +1467,6 @@ async function confirmImport() {
               :label="`下载 ${file.name}`"
               variant="soft"
               :size="30"
-              :disabled="!!store.installingId"
               @click="install(active, file)"
             />
             <span v-else-if="!file.download_url" class="muted small cf-file__hint">

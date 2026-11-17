@@ -164,7 +164,9 @@ impl Default for Config {
             window_height: 720,
             fullscreen: false,
             download_source: "auto".into(),
-            concurrency: 16,
+            // 32 是安装资源（几千个小文件）与日常下载的平衡点；
+            // 全局并发闸门直接按这个值封顶
+            concurrency: 32,
             speed_limit: 0,
             animations: true,
             version_isolation: true,

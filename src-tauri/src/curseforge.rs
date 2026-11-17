@@ -722,6 +722,7 @@ pub async fn install_world(
         size: 0,
         label: file_name.to_string(),
     };
+    progress.set_message(format!("正在下载地图 {file_name}…"));
     download::run_tasks(app, client, vec![task], 1, cfg.use_mirror(), progress.clone()).await?;
 
     progress.set_message("解压地图…");
@@ -737,6 +738,8 @@ pub async fn install_world(
     extracted?;
 
     let source = find_world_root(&staging)?;
+    progress.set_message("正在安装地图存档…");
+    download::emit_now(app, &progress);
     // 存档根就是临时目录本身时，用压缩包文件名当存档名，别把临时目录名带出去
     let base = if source == staging {
         stem.clone()

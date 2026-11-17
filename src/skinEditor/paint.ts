@@ -1,4 +1,5 @@
 import {
+  CAPE_FACES,
   FACE_ORDER,
   MIRROR_FACE,
   buildBoxes,
@@ -171,5 +172,93 @@ export function paintBlockTemplate(canvas: HTMLCanvasElement, slim: boolean): vo
       const [x, y, w, h] = faceRect(box, face);
       ctx.fillRect(x, y, w, h);
     }
+  }
+}
+
+export type TemplateKind = "block" | "blank" | "solid" | "stripes" | "checker" | "gradient";
+
+/** 把颜色往白色方向提亮，用于双色图案 */
+function lighten(hex: string, amount: number): string {
+  const [r, g, b] = hexToRgba(hex);
+  return rgbaToHex(
+    r + (255 - r) * amount,
+    g + (255 - g) * amount,
+    b + (255 - b) * amount
+  );
+}
+
+/** 在指定矩形内画图案；像素很小，逐像素绘制也不会慢 */
+function fillPattern(
+  ctx: CanvasRenderingContext2D,
+  [x, y, w, h]: Rect,
+  kind: TemplateKind,
+  color: string
+) {
+  if (kind === "solid" || kind === "block") {
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, w, h);
+    return;
+  }
+  if (kind === "gradient") {
+    const grad = ctx.createLinearGradient(0, y, 0, y + h);
+    grad.addColorStop(0, color);
+    grad.addColorStop(1, lighten(color, 0.62));
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, y, w, h);
+    return;
+  }
+  const light = lighten(color, 0.42);
+  for (let py = 0; py < h; py += 1) {
+    for (let px = 0; px < w; px += 1) {
+      const cell =
+        kind === "stripes"
+          ? Math.floor(px / 2)
+          : Math.floor(px / 2) + Math.floor(py / 2);
+      ctx.fillStyle = cell % 2 === 0 ? color : light;
+      ctx.fillRect(x + px, y + py, 1, 1);
+    }
+  }
+}
+
+/**
+ * 皮肤模板：只铺基础层，外层保持透明，避免模板把作者画的外层覆盖掉。
+ * block 沿用原来的分部位色块，其余图案按当前颜色生成。
+ */
+export function paintSkinTemplate(
+  canvas: HTMLCanvasElement,
+  slim: boolean,
+  kind: TemplateKind,
+  color: string
+): void {
+  if (kind === "block") {
+    paintBlockTemplate(canvas, slim);
+    return;
+  }
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.imageSmoothingEnabled = false;
+  if (kind === "blank") return;
+  for (const box of buildBoxes(slim)) {
+    if (box.layer !== "base") continue;
+    for (const face of FACE_ORDER) {
+      fillPattern(ctx, faceRect(box, face), kind, color);
+    }
+  }
+}
+
+/** 披风模板：只覆盖正面与背面，四周拼接边保持透明 */
+export function paintCapeTemplate(
+  canvas: HTMLCanvasElement,
+  kind: TemplateKind,
+  color: string
+): void {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.imageSmoothingEnabled = false;
+  if (kind === "blank") return;
+  for (const rect of CAPE_FACES) {
+    fillPattern(ctx, rect, kind, color);
   }
 }

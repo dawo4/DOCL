@@ -412,8 +412,8 @@ pub async fn install_version(
         app,
         client,
         tasks,
-        // 依赖库多为大文件，并发太高容易触发镜像限流
-        (cfg.concurrency as usize).max(16),
+        // 并发统一由设置页的「并发下载数」决定，全局闸门也按同一个值封顶
+        cfg.concurrency as usize,
         use_mirror,
         progress.clone(),
     )
@@ -473,8 +473,8 @@ pub async fn install_version(
             app,
             client,
             asset_tasks,
-            // 资源文件是几千个小文件，并发 8 严重拖慢；镜像与官方源都支持 32+
-            (cfg.concurrency as usize).max(32),
+            // 资源文件是几千个小文件，并发跟着设置走
+            cfg.concurrency as usize,
             use_mirror,
             progress.clone(),
         )
@@ -1061,14 +1061,6 @@ pub fn merged_classpath_entries(
         }
     }
     entries
-}
-
-pub async fn remove_version(cfg: &Config, version_id: &str) -> Result<()> {
-    let dir = cfg.game_root().join("versions").join(version_id);
-    if dir.exists() {
-        tokio::fs::remove_dir_all(&dir).await?;
-    }
-    Ok(())
 }
 
 pub fn resolve_version_dir(cfg: &Config, version_id: &str) -> PathBuf {
@@ -1916,7 +1908,6 @@ async fn run_official_installer(
         .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
     let mut child = command.spawn().context("启动 Forge/NeoForge 安装器失败")?;

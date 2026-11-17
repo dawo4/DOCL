@@ -1,8 +1,8 @@
 use crate::config::Config;
 use crate::download::{self, FileTask, ProgressState};
 use crate::instance;
-use crate::models::VersionDetail;
 use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Read;
@@ -353,34 +353,12 @@ pub fn missing_requirements(mods_dir: &Path, loader: &str) -> Vec<String> {
     missing
 }
 
-/// 从版本 JSON 判断实例的加载器与游戏版本。
+/// 从完整继承链推断实例的加载器与游戏版本。
+/// 不能只看实例 id：整合包实例的名字通常不含加载器，直接猜会把 Forge 包当成原版，
+/// 之后不带 loader 去 Modrinth 查前置就可能下到别的加载器的 jar。
 fn instance_env(cfg: &Config, version_id: &str) -> (String, String) {
-    let json = cfg
-        .game_root()
-        .join("versions")
-        .join(version_id)
-        .join(format!("{version_id}.json"));
-    let mut game_version = version_id.to_string();
-    if let Ok(bytes) = std::fs::read(&json) {
-        if let Ok(detail) = serde_json::from_slice::<VersionDetail>(&bytes) {
-            if let Some(parent) = detail.inherits_from {
-                game_version = parent;
-            }
-        }
-    }
-    let id = version_id.to_lowercase();
-    let loader = if id.starts_with("fabric-loader") {
-        "fabric"
-    } else if id.starts_with("quilt-loader") {
-        "quilt"
-    } else if id.contains("neoforge") {
-        "neoforge"
-    } else if id.contains("forge") {
-        "forge"
-    } else {
-        "vanilla"
-    };
-    (loader.to_string(), game_version)
+    crate::install::instance_context(cfg, version_id)
+        .unwrap_or_else(|_| (version_id.to_string(), "vanilla".to_string()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -389,6 +367,10 @@ struct MrVersion {
     version_number: String,
     #[serde(default)]
     files: Vec<MrFile>,
+    #[serde(default)]
+    project_id: String,
+    #[serde(default)]
+    dependencies: Vec<MrDep>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -403,6 +385,18 @@ struct MrFile {
     size: u64,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct MrDep {
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    version_id: Option<String>,
+    #[serde(default)]
+    file_name: Option<String>,
+    #[serde(default)]
+    dependency_type: String,
+}
+
 struct Resolved {
     name: String,
     url: String,
@@ -410,33 +404,68 @@ struct Resolved {
     size: u64,
 }
 
-/// 在 Modrinth 上找某个 mod id 对应当前加载器 / 游戏版本的最新文件。
-async fn resolve(
-    client: &reqwest::Client,
-    id: &str,
-    loader: &str,
-    game_version: &str,
-) -> Option<Resolved> {
-    let slug = project_slug(id);
-    let mut url = reqwest::Url::parse(&format!("{BASE}/project/{slug}/version")).ok()?;
+fn sha1_of(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let mut hasher = Sha1::new();
+    hasher.update(&bytes);
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+/// 从 jar 的 fabric / quilt / forge 元数据里找 Modrinth 项目链接。
+fn modrinth_slug_from_jar(path: &Path) -> Option<String> {
+    let file = File::open(path).ok()?;
+    let mut archive = ZipArchive::new(file).ok()?;
+    for name in [
+        "fabric.mod.json",
+        "quilt.mod.json",
+        "META-INF/neoforge.mods.toml",
+        "META-INF/mods.toml",
+    ] {
+        if let Some(text) = zip_text(&mut archive, name) {
+            if let Some(slug) = modrinth_slug_from_text(&text) {
+                return Some(slug);
+            }
+        }
+    }
+    None
+}
+
+fn modrinth_slug_from_text(text: &str) -> Option<String> {
+    const MARKER: &str = "modrinth.com/mod/";
+    let mut rest = text;
+    while let Some(index) = rest.find(MARKER) {
+        let tail = &rest[index + MARKER.len()..];
+        let slug: String = tail
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        if !slug.is_empty() {
+            return Some(slug);
+        }
+        rest = tail;
+    }
+    None
+}
+
+/// 只查明确加载器的版本列表；不带 loaders 过滤会拿到别的加载器的 jar。
+fn version_query(project: &str, loader: &str, game_version: &str) -> Option<reqwest::Url> {
+    let tag = match loader {
+        "fabric" => "fabric",
+        "quilt" => "quilt",
+        "forge" => "forge",
+        "neoforge" => "neoforge",
+        _ => return None,
+    };
+    let mut url = reqwest::Url::parse(&format!("{BASE}/project/{project}/version")).ok()?;
     {
         let mut pairs = url.query_pairs_mut();
         pairs.append_pair("game_versions", &format!("[\"{game_version}\"]"));
-        let tag = match loader {
-            "fabric" => "fabric",
-            "quilt" => "quilt",
-            "forge" => "forge",
-            "neoforge" => "neoforge",
-            _ => "",
-        };
-        if !tag.is_empty() {
-            pairs.append_pair("loaders", &format!("[\"{tag}\"]"));
-        }
+        pairs.append_pair("loaders", &format!("[\"{tag}\"]"));
     }
-    let versions: Vec<MrVersion> = download::get_json(client, url.as_str(), false)
-        .await
-        .ok()?;
-    let version = versions.first()?;
+    Some(url)
+}
+
+fn resolved_from(version: &MrVersion) -> Option<Resolved> {
     let file = version
         .files
         .iter()
@@ -448,17 +477,183 @@ async fn resolve(
     let file_name = Path::new(&file.filename)
         .file_name()
         .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_else(|| format!("{id}.jar"));
+        .unwrap_or_else(|| format!("{}.jar", version.project_id));
     Some(Resolved {
-        name: if version.version_number.is_empty() {
-            id.to_string()
+        name: if file.filename.is_empty() {
+            file_name.clone()
         } else {
-            format!("{id} {}", version.version_number)
+            file.filename.clone()
         },
         url: file.url.clone(),
         file_name,
         size: file.size,
     })
+}
+
+/// 在 Modrinth 上找某个 mod id 对应当前加载器 / 游戏版本的最新文件。
+async fn resolve(
+    client: &reqwest::Client,
+    id: &str,
+    loader: &str,
+    game_version: &str,
+) -> Option<Resolved> {
+    let url = version_query(project_slug(id), loader, game_version)?;
+    let versions: Vec<MrVersion> = download::get_json(client, url.as_str(), false)
+        .await
+        .ok()?;
+    let version = versions.first()?;
+    let mut item = resolved_from(version)?;
+    item.name = if version.version_number.is_empty() {
+        id.to_string()
+    } else {
+        format!("{id} {}", version.version_number)
+    };
+    Some(item)
+}
+
+/// 按 Modrinth 项目 / 版本精确解析一个前置。
+async fn resolve_dependency(
+    client: &reqwest::Client,
+    project: Option<&str>,
+    version_id: Option<&str>,
+    loader: &str,
+    game_version: &str,
+) -> Option<Resolved> {
+    if let Some(id) = version_id.filter(|value| !value.is_empty()) {
+        let url = format!("{BASE}/version/{id}");
+        let version: MrVersion = download::get_json(client, &url, false).await.ok()?;
+        return resolved_from(&version);
+    }
+    let project = project.filter(|value| !value.is_empty())?;
+    let url = version_query(project, loader, game_version)?;
+    let versions: Vec<MrVersion> = download::get_json(client, url.as_str(), false)
+        .await
+        .ok()?;
+    resolved_from(versions.first()?)
+}
+
+/// 优先用 jar 的 SHA1 精确命中 Modrinth 官方依赖；
+/// 命中不了再读元数据里的项目链接，取该项目当前匹配版本的依赖列表。
+async fn official_dependencies(
+    client: &reqwest::Client,
+    jar: &Path,
+    loader: &str,
+    game_version: &str,
+) -> Vec<MrDep> {
+    if let Some(hash) = sha1_of(jar) {
+        let url = format!("{BASE}/version_file/{hash}");
+        if let Ok(version) = download::get_json::<MrVersion>(client, &url, false).await {
+            // 命中就以官方列表为准：即使没有 required，也说明这版确实不需要额外前置
+            return version.dependencies;
+        }
+    }
+    let Some(slug) = modrinth_slug_from_jar(jar) else {
+        return Vec::new();
+    };
+    let Some(url) = version_query(&slug, loader, game_version) else {
+        return Vec::new();
+    };
+    let Ok(versions) = download::get_json::<Vec<MrVersion>>(client, url.as_str(), false).await
+    else {
+        return Vec::new();
+    };
+    versions
+        .first()
+        .map(|version| version.dependencies.clone())
+        .unwrap_or_default()
+}
+
+/// 按 Modrinth 官方依赖列表补前置。
+/// 先下到临时目录读出 mod id，已经装过的直接丢掉，避免同一前置出现两份。
+#[allow(clippy::too_many_arguments)]
+async fn install_official(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &Config,
+    mods_dir: &Path,
+    dependencies: Vec<MrDep>,
+    loader: &str,
+    game_version: &str,
+    present: &mut HashSet<String>,
+    progress: Arc<ProgressState>,
+    report: &mut DependencyReport,
+) {
+    let mut seen: HashSet<String> = HashSet::new();
+    let temp_dir = crate::config::data_dir().join("tmp");
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
+    let mut count = 0usize;
+
+    for dep in dependencies {
+        if count >= MAX_AUTO_DEPS || progress.is_cancelled() {
+            break;
+        }
+        if dep.dependency_type != "required" {
+            continue;
+        }
+        let key = dep
+            .project_id
+            .clone()
+            .or_else(|| dep.version_id.clone())
+            .unwrap_or_default();
+        if key.is_empty() || !seen.insert(key.clone()) {
+            continue;
+        }
+        // 报告的失败项尽量用文件名，project_id 是一串随机字符，用户看不懂
+        let label = dep.file_name.clone().unwrap_or_else(|| key.clone());
+        let Some(item) = resolve_dependency(
+            client,
+            dep.project_id.as_deref(),
+            dep.version_id.as_deref(),
+            loader,
+            game_version,
+        )
+        .await
+        else {
+            report.unresolved.push(label);
+            continue;
+        };
+        count += 1;
+
+        if std::fs::create_dir_all(&temp_dir).is_err() {
+            report.failed.push(item.name);
+            continue;
+        }
+        let temp = temp_dir.join(format!("dep-{}-{}-{}", std::process::id(), nonce, count));
+        let task = FileTask {
+            url: item.url.clone(),
+            dest: temp.clone(),
+            sha1: None,
+            size: item.size,
+            label: item.file_name.clone(),
+        };
+        progress.set_message(format!("补齐前置 {}…", item.name));
+        download::emit_now(app, &progress);
+        if download::run_tasks(app, client, vec![task], 1, cfg.use_mirror(), progress.clone())
+            .await
+            .is_err()
+        {
+            let _ = std::fs::remove_file(&temp);
+            report.failed.push(item.name);
+            continue;
+        }
+        if let Some(id) = jar_mod_id(&temp) {
+            if present.contains(&id) {
+                let _ = std::fs::remove_file(&temp);
+                continue;
+            }
+            present.insert(id);
+        }
+        let copied = std::fs::copy(&temp, mods_dir.join(&item.file_name)).is_ok();
+        let _ = std::fs::remove_file(&temp);
+        if copied {
+            report.installed.push(item.name);
+        } else {
+            report.failed.push(item.name);
+        }
+    }
 }
 
 /// 安装完一个模组后，补齐它在元数据里声明但当前实例缺少的前置。
@@ -480,8 +675,38 @@ pub async fn install_missing(
     }
 
     let (loader, game_version) = instance_env(cfg, instance_id);
+    // 原版实例没有加载器，前置装了也不会被加载
+    if loader == "vanilla" {
+        return report;
+    }
+
+    // 元数据里声明的前置都齐了就不用再联网：批量导入整合包时能省掉大量请求
     let requirements = read_requirements(jar, &loader);
-    if requirements.is_empty() {
+    if requirements.is_empty()
+        || !requirements
+            .iter()
+            .any(|item| item.mandatory && !present.contains(&item.id))
+    {
+        return report;
+    }
+
+    // 有缺的才查 Modrinth 官方依赖：jar 的 SHA1 精确命中版本，或者读元数据里的项目链接。
+    // 拿不到官方列表时再退回解析 jar 元数据 + mod id 对照表。
+    let official = official_dependencies(client, jar, &loader, &game_version).await;
+    if !official.is_empty() {
+        install_official(
+            app,
+            client,
+            cfg,
+            &mods_dir,
+            official,
+            &loader,
+            &game_version,
+            &mut present,
+            progress,
+            &mut report,
+        )
+        .await;
         return report;
     }
 
@@ -524,7 +749,8 @@ pub async fn install_missing(
 }
 
 /// 按 mod id 列表补齐前置（一键修复用）。
-/// 只有在 Modrinth 上能明确解析到当前加载器 / 游戏版本的文件才会下载，其余记为未解决。
+/// 先让声明了这些前置的 jar 走 Modrinth 官方依赖（SHA1 / 项目链接），
+/// 剩下的再按 mod id 解析；只有明确匹配当前加载器 / 游戏版本才会下载。
 pub async fn install_requirements(
     app: &AppHandle,
     client: &reqwest::Client,
@@ -541,9 +767,60 @@ pub async fn install_requirements(
         return report;
     };
     let (loader, game_version) = instance_env(cfg, instance_id);
+    if loader == "vanilla" {
+        report.unresolved = ids.to_vec();
+        return report;
+    }
+
+    // 找出声明了这些缺失前置的 jar，用它们的 SHA1 拿官方依赖列表。
+    // 一次修复最多查 24 个 jar，避免整合包场景打出过多请求。
+    let mut declaring: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&mods_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if !path.is_file() || !name.ends_with(".jar") {
+                continue;
+            }
+            if read_requirements(&path, &loader)
+                .into_iter()
+                .any(|item| item.mandatory && ids.contains(&item.id))
+            {
+                declaring.push(path);
+            }
+        }
+    }
+    let mut present = installed_ids(&mods_dir);
+    for jar in declaring.iter().take(24) {
+        let official = official_dependencies(client, jar, &loader, &game_version).await;
+        if official.is_empty() {
+            continue;
+        }
+        install_official(
+            app,
+            client,
+            cfg,
+            &mods_dir,
+            official,
+            &loader,
+            &game_version,
+            &mut present,
+            progress.clone(),
+            &mut report,
+        )
+        .await;
+    }
+
+    // 官方依赖补完后重新扫描，剩下的 mod id 再走原来的解析逻辑
+    present = installed_ids(&mods_dir);
+    let remaining: Vec<String> = ids
+        .iter()
+        .filter(|id| !present.contains(*id))
+        .cloned()
+        .collect();
 
     let mut resolved = Vec::new();
-    for id in ids {
+    for id in &remaining {
         if resolved.len() >= MAX_AUTO_DEPS {
             break;
         }
@@ -658,4 +935,22 @@ pub async fn install_shader_loader(
     };
     download::run_tasks(app, client, vec![task], 1, cfg.use_mirror(), progress.clone()).await?;
     Ok(item.name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 元数据里的 Modrinth 链接要能解析出 slug，供官方依赖查询兜底
+    #[test]
+    fn finds_modrinth_slug_in_metadata() {
+        let fabric = r#"{"contact":{"homepage":"https://modrinth.com/mod/cloth-config","sources":"https://github.com/shedaniel/cloth-config"}}"#;
+        assert_eq!(modrinth_slug_from_text(fabric).as_deref(), Some("cloth-config"));
+
+        let forge = r#"displayURL="https://modrinth.com/mod/jei?tab=versions""#;
+        assert_eq!(modrinth_slug_from_text(forge).as_deref(), Some("jei"));
+
+        assert_eq!(modrinth_slug_from_text("https://example.com/mod/foo"), None);
+        assert_eq!(modrinth_slug_from_text(""), None);
+    }
 }

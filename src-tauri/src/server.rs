@@ -616,7 +616,6 @@ async fn run_installer(
         .stderr(Stdio::piped());
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
     let child = command.spawn().context("启动加载器安装器失败")?;

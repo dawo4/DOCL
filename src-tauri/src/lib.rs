@@ -16,6 +16,7 @@ mod install;
 mod instance;
 mod java;
 mod lan;
+mod lang;
 mod launch;
 mod littleskin;
 mod mirror;
@@ -31,6 +32,7 @@ mod ping;
 mod preflight;
 mod probes;
 mod repair;
+mod saves;
 mod server;
 mod skins;
 mod stats;
@@ -39,17 +41,50 @@ mod terracotta;
 mod translate;
 mod update;
 mod vibrancy;
+mod world_edit;
 
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 pub struct AppState {
     pub config: Mutex<config::Config>,
     pub client: reqwest::Client,
-    pub progress: Mutex<Option<std::sync::Arc<download::ProgressState>>>,
+    /// 正在跑的任务：job id → 进度对象，允许同时存在多个下载任务
+    pub progress: Mutex<HashMap<String, Arc<download::ProgressState>>>,
     pub manifest: Mutex<Option<models::VersionManifest>>,
     pub child_pid: Mutex<Option<u32>>,
     pub accounts: Mutex<Vec<auth::Account>>,
+}
+
+impl AppState {
+    pub fn register_job(&self, progress: &Arc<download::ProgressState>) {
+        if let Ok(mut map) = self.progress.lock() {
+            map.insert(progress.job.clone(), progress.clone());
+        }
+    }
+
+    pub fn unregister_job(&self, job: &str) {
+        if let Ok(mut map) = self.progress.lock() {
+            map.remove(job);
+        }
+    }
+
+    pub fn job(&self, job: &str) -> Option<Arc<download::ProgressState>> {
+        self.progress.lock().ok()?.get(job).cloned()
+    }
+
+    pub fn active_jobs(&self) -> Vec<Arc<download::ProgressState>> {
+        self.progress
+            .lock()
+            .map(|map| {
+                map.values()
+                    .filter(|state| state.active.load(std::sync::atomic::Ordering::Relaxed))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 pub fn run() {
@@ -64,6 +99,8 @@ pub fn run() {
     download::set_speed_limit(cfg.speed_limit as u64 * 1024 * 1024);
     // 「仅镜像」时强制镜像优先，其余走按主机的智能排序
     download::set_force_mirror(cfg.download_source == "mirror");
+    // 全局并发额度：所有并行任务共享，避免多任务叠加打爆源站
+    download::set_concurrency_limit(cfg.concurrency as usize);
     let accounts = auth::load_accounts();
     lan::start();
 
@@ -118,7 +155,7 @@ pub fn run() {
         .manage(AppState {
             config: Mutex::new(cfg),
             client: http::client(),
-            progress: Mutex::new(None),
+            progress: Mutex::new(HashMap::new()),
             manifest: Mutex::new(None),
             child_pid: Mutex::new(None),
             accounts: Mutex::new(accounts),
@@ -153,6 +190,9 @@ pub fn run() {
             commands::installed_versions,
             commands::install_version,
             commands::cancel_install,
+            commands::pause_job,
+            commands::resume_job,
+            commands::active_jobs,
             commands::loader_options,
             commands::loader_versions,
             commands::install_loader,
@@ -176,6 +216,15 @@ pub fn run() {
             commands::instance_paths,
             commands::instance_worlds,
             commands::instance_world_seed,
+            commands::instance_backups,
+            commands::instance_backups_dir,
+            commands::instance_backup_world,
+            commands::instance_restore_backup,
+            commands::instance_import_world,
+            commands::instance_delete_backup,
+            commands::instance_world_settings,
+            commands::instance_save_world_settings,
+            commands::instance_game_rule_lang,
             commands::modpack_inspect,
             commands::modpack_download,
             commands::modpack_temp_remove,
@@ -218,10 +267,17 @@ pub fn run() {
             commands::select_account,
             commands::get_account_skin,
             commands::save_account_skin,
+            commands::export_skin_to_customskinloader,
             commands::clear_account_skin,
             commands::export_account_skin,
             commands::upload_account_skin,
             commands::skin_library_list,
+            commands::cape_library_list,
+            commands::cape_library_save,
+            commands::cape_library_remove,
+            commands::cape_import,
+            commands::cape_export,
+            commands::account_cape_upload,
             commands::skin_library_import,
             commands::skin_library_save,
             commands::skin_library_from_account,

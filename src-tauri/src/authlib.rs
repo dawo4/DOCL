@@ -10,7 +10,6 @@ use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// LittleSkin 的 Yggdrasil API 根
-pub const LITTLESKIN: &str = "https://littleskin.cn/api/yggdrasil";
 
 static INJECTOR: OnceLock<PathBuf> = OnceLock::new();
 
@@ -57,8 +56,11 @@ struct AuthResp {
     selected_profile: Option<ProfileResp>,
     #[serde(default)]
     available_profiles: Vec<ProfileResp>,
+    // 失败响应里的错误信息：目前只用于日志/排查，保留字段便于后续展示
+    #[allow(dead_code)]
     #[serde(default)]
     error: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     error_message: Option<String>,
 }

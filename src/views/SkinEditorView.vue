@@ -1,17 +1,42 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { api, saveSkinDialog } from "../api";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from "vue";
+import { api, openExternal, pickCapePng, saveCapeDialog, saveSkinDialog } from "../api";
 import diamondImg from "../assets/icons/diamond.png";
 import AppIcon from "../components/AppIcon.vue";
 import IconButton from "../components/IconButton.vue";
+import SkinModel from "../components/SkinModel.vue";
 import SkinPaintViewport from "../components/SkinPaintViewport.vue";
 import WoodButton from "../components/WoodButton.vue";
 import WoodInput from "../components/WoodInput.vue";
 import WoodModal from "../components/WoodModal.vue";
-import type { AccountView, DefaultSkin, SkinLibraryItem } from "../api";
-import { canvasFromSource, createDefaultSkin, seedFromString, skinCanvasFromSource, SKIN_SIZE } from "../skin";
-import { copyPartToPair, paintBlockTemplate } from "../skinEditor/paint";
-import type { PartFilter } from "../skinEditor/atlas";
+import type { AccountView, DefaultSkin, LocalCape, SkinLibraryItem } from "../api";
+import {
+  canvasFromSource,
+  canvasToDataUrl,
+  createDefaultSkin,
+  seedFromString,
+  skinCanvasFromSource,
+  SKIN_SIZE,
+} from "../skin";
+import {
+  CAPE_FACES,
+  CAPE_HEIGHT,
+  CAPE_WIDTH,
+  FACE_ORDER,
+  buildBoxes,
+  faceRect,
+  locateTexel,
+  type PartFilter,
+  type Rect,
+} from "../skinEditor/atlas";
+import {
+  copyPartToPair,
+  floodFill,
+  hexToRgba,
+  paintCapeTemplate,
+  paintSkinTemplate,
+  type TemplateKind,
+} from "../skinEditor/paint";
 import { loadSelectedSkin, notify, refreshAccounts, store } from "../store";
 
 const props = defineProps<{ account: AccountView }>();
@@ -27,9 +52,30 @@ const model = ref<"classic" | "slim">("classic");
 const part = ref<PartFilter>("all");
 const mode = ref<"3d" | "2d">("3d");
 const layer = ref<"base" | "overlay">("base");
+/// 两个图层的显隐：隐藏后 2D/3D 都不显示，并且不可绘制
+const layerVisible = reactive({ base: true, overlay: true });
+/// 油漆桶“整块填充”：直接铺满命中的整个面，不做连通判断
+const fillWhole = ref(false);
 const symmetry = ref(false);
 const docVersion = ref(0);
 const showGuides = ref(true);
+
+/// 同一编辑器里编辑皮肤（64×64）或披风（64×32）
+type DocMode = "skin" | "cape";
+interface DocState {
+  canvas: HTMLCanvasElement | null;
+  history: ImageData[];
+  cursor: number;
+}
+const docMode = ref<DocMode>("skin");
+const docSource = shallowRef<HTMLCanvasElement | null>(null);
+const docs: Record<DocMode, DocState> = {
+  skin: { canvas: null, history: [], cursor: -1 },
+  cape: { canvas: null, history: [], cursor: -1 },
+};
+const capeLoading = ref(false);
+/// 从披风切回皮肤时恢复原来的 3D/2D 视图
+let previousMode: "3d" | "2d" = "3d";
 /// 2D 缩放：fit 表示按窗口自适应，其余为每贴图像素放大的倍率
 const zoom = ref<"fit" | 1 | 2 | 4>("fit");
 /// 自适应时算出的每像素尺寸（CSS 像素）
@@ -52,6 +98,11 @@ const library = ref<SkinLibraryItem[]>([]);
 const libraryOpen = ref(false);
 const libraryName = ref("");
 const librarySaving = ref(false);
+/// 披风库：本地保存的披风，可载入/导出
+const capes = ref<LocalCape[]>([]);
+const capeName = ref("");
+const capeSaving = ref(false);
+const capeBusy = ref("");
 
 const palette = [
   "#2b2118", "#4a3220", "#7a5230", "#c08a55",
@@ -245,52 +296,81 @@ const guideRects = computed<Record<PartFilter, [number, number, number, number][
 const limbParts: PartFilter[] = ["armLeft", "armRight", "legLeft", "legRight"];
 const canMirror = computed(() => limbParts.includes(part.value));
 
-/// 自适应时按可用空间取整到整像素，保证放大后依然清晰
-const canvasWidth = computed(
-  () => SKIN_SIZE * (zoom.value === "fit" ? fitScale.value : zoom.value * 8)
-);
+const docWidth = computed(() => (docMode.value === "cape" ? CAPE_WIDTH : SKIN_SIZE));
+const docHeight = computed(() => (docMode.value === "cape" ? CAPE_HEIGHT : SKIN_SIZE));
+/// 每个贴图像素占几个屏幕像素
+const canvasScale = computed(() => (zoom.value === "fit" ? fitScale.value : zoom.value * 8));
+/// 2D 画布显示尺寸：披风是 64×32，高度按比例算
+const canvasWidth = computed(() => docWidth.value * canvasScale.value);
+const canvasHeight = computed(() => docHeight.value * canvasScale.value);
 const isMicrosoft = computed(() => props.account.kind === "microsoft");
+/// 3D 披风预览：人物用账号当前皮肤，披风跟随画布内容
+const capePreviewUrl = computed(() => {
+  void docVersion.value;
+  const canvas = docs.cape.canvas;
+  return canvas ? canvasToDataUrl(canvas) : "";
+});
+const previewSkinUrl = computed(() => {
+  void docVersion.value;
+  return docs.skin.canvas ? canvasToDataUrl(docs.skin.canvas) : "";
+});
 
 function fitCanvas() {
   const box = canvasScroll.value;
   if (!box) return;
-  // 减去容器的内边距，再按 64 整除，得到每个贴图像素占几个屏幕像素
+  // 减去容器的内边距，再按贴图尺寸整除，得到每个贴图像素占几个屏幕像素
   const width = box.clientWidth - 28;
   const height = box.clientHeight - 28;
   if (width <= 0 || height <= 0) return;
-  fitScale.value = Math.max(1, Math.min(16, Math.floor(Math.min(width, height) / SKIN_SIZE)));
+  fitScale.value = Math.max(
+    1,
+    Math.min(
+      16,
+      Math.floor(Math.min(width / docWidth.value, height / docHeight.value))
+    )
+  );
 }
 
 let ctx: CanvasRenderingContext2D | null = null;
-let history: ImageData[] = [];
-let cursor = -1;
 let drawing = false;
+
+function activeState(): DocState {
+  return docs[docMode.value];
+}
+
+function syncHistoryFlags() {
+  const state = activeState();
+  canUndo.value = state.cursor > 0;
+  canRedo.value = state.cursor < state.history.length - 1;
+}
 
 function pushHistory() {
   if (!ctx) return;
-  history = history.slice(0, cursor + 1);
-  history.push(ctx.getImageData(0, 0, SKIN_SIZE, SKIN_SIZE));
-  if (history.length > 40) history.shift();
-  cursor = history.length - 1;
-  canUndo.value = cursor > 0;
-  canRedo.value = false;
+  const state = activeState();
+  state.history = state.history.slice(0, state.cursor + 1);
+  state.history.push(ctx.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height));
+  if (state.history.length > 40) state.history.shift();
+  state.cursor = state.history.length - 1;
+  syncHistoryFlags();
 }
 
 function undo() {
-  if (!ctx || cursor <= 0) return;
-  cursor -= 1;
-  ctx.putImageData(history[cursor], 0, 0);
-  canUndo.value = cursor > 0;
-  canRedo.value = true;
+  const state = activeState();
+  if (!ctx || state.cursor <= 0) return;
+  state.cursor -= 1;
+  ctx.putImageData(state.history[state.cursor], 0, 0);
+  syncHistoryFlags();
+  refreshDisplay();
   bumpDoc();
 }
 
 function redo() {
-  if (!ctx || cursor >= history.length - 1) return;
-  cursor += 1;
-  ctx.putImageData(history[cursor], 0, 0);
-  canUndo.value = true;
-  canRedo.value = cursor < history.length - 1;
+  const state = activeState();
+  if (!ctx || state.cursor >= state.history.length - 1) return;
+  state.cursor += 1;
+  ctx.putImageData(state.history[state.cursor], 0, 0);
+  syncHistoryFlags();
+  refreshDisplay();
   bumpDoc();
 }
 
@@ -301,6 +381,7 @@ function bumpDoc() {
 
 function onViewportCommit() {
   pushHistory();
+  refreshDisplay();
 }
 
 function onViewportPick(value: string) {
@@ -308,92 +389,169 @@ function onViewportPick(value: string) {
 }
 
 function mirrorToPair() {
-  const canvas = drawCanvas.value;
+  const canvas = docs.skin.canvas;
   if (!canvas || !canMirror.value) return;
   if (!copyPartToPair(canvas, part.value as Exclude<PartFilter, "all" | "head" | "body">, model.value === "slim")) {
     return;
   }
   pushHistory();
+  refreshDisplay();
   bumpDoc();
   notify("已把这一侧镜像到对侧");
 }
 
-/// 色块模板：清空皮肤，每个部位填不同颜色，方便从零开始画
-function applyBlockTemplate() {
-  const canvas = drawCanvas.value;
-  if (!canvas) return;
-  paintBlockTemplate(canvas, model.value === "slim");
+const templates: { key: TemplateKind; name: string; hint: string }[] = [
+  { key: "block", name: "色块模板", hint: "各部位不同颜色" },
+  { key: "blank", name: "空白", hint: "清空所有像素" },
+  { key: "solid", name: "纯色", hint: "用当前颜色铺满" },
+  { key: "stripes", name: "条纹", hint: "双色竖条纹" },
+  { key: "checker", name: "棋盘格", hint: "2×2 双色格子" },
+  { key: "gradient", name: "渐变", hint: "当前色到浅色" },
+];
+
+const visibleTemplates = computed(() =>
+  docMode.value === "cape" ? templates.filter((item) => item.key !== "block") : templates
+);
+
+/// 模板按钮上的小预览，直接用 CSS 画出来，不必为每张模板建画布
+function templateFaceStyle(kind: TemplateKind) {
+  const current = color.value;
+  const light = "rgba(255, 255, 255, 0.55)";
+  if (kind === "solid") return { background: current };
+  if (kind === "stripes") {
+    return { background: `repeating-linear-gradient(90deg, ${current} 0 4px, ${light} 4px 8px)` };
+  }
+  if (kind === "checker") {
+    return {
+      background: `conic-gradient(${current} 0 25%, ${light} 0 50%, ${current} 0 75%, ${light} 0) 0 0 / 12px 12px`,
+    };
+  }
+  if (kind === "gradient") return { background: `linear-gradient(180deg, ${current}, ${light})` };
+  if (kind === "blank") {
+    return {
+      background:
+        "repeating-conic-gradient(rgba(0, 0, 0, 0.07) 0 25%, transparent 0 50%) 0 0 / 12px 12px",
+    };
+  }
+  return {};
+}
+
+function applyTemplate(kind: TemplateKind) {
+  const doc = activeState().canvas;
+  if (!doc) return;
+  if (docMode.value === "cape") {
+    paintCapeTemplate(doc, kind, color.value);
+  } else {
+    paintSkinTemplate(doc, model.value === "slim", kind, color.value);
+  }
   pushHistory();
+  refreshDisplay();
   bumpDoc();
-  notify("已套用色块模板");
+  notify(`已套用${templates.find((item) => item.key === kind)?.name ?? "模板"}`);
 }
 
 function drawGuides() {
   const overlay = guideCanvas.value;
   if (!overlay) return;
+  const width = docWidth.value;
+  const height = docHeight.value;
+  if (overlay.width !== width) overlay.width = width;
+  if (overlay.height !== height) overlay.height = height;
   const g = overlay.getContext("2d");
   if (!g) return;
-  g.clearRect(0, 0, SKIN_SIZE, SKIN_SIZE);
+  g.clearRect(0, 0, width, height);
   if (!showGuides.value) return;
+  const rects = docMode.value === "cape" ? CAPE_FACES : guideRects.value[part.value];
   g.save();
   g.setLineDash([2, 2]);
   g.lineWidth = 0.6;
   g.strokeStyle = "rgba(255, 200, 90, 0.9)";
-  for (const [x, y, w, h] of guideRects.value[part.value]) {
+  for (const [x, y, w, h] of rects) {
     g.strokeRect(x + 0.3, y + 0.3, w - 0.6, h - 0.6);
   }
   g.restore();
+}
+
+/**
+ * 把文档画到 2D 显示画布上。
+ * 文档本身保留完整内容，隐藏图层只在显示时抹掉，重新点亮眼睛就能恢复。
+ */
+function refreshDisplay() {
+  const display = drawCanvas.value;
+  const doc = activeState().canvas;
+  if (!display || !doc) return;
+  if (display.width !== doc.width) display.width = doc.width;
+  if (display.height !== doc.height) display.height = doc.height;
+  const target = display.getContext("2d");
+  if (!target) return;
+  target.imageSmoothingEnabled = false;
+  target.clearRect(0, 0, display.width, display.height);
+  target.drawImage(doc, 0, 0);
+  if (docMode.value === "skin") {
+    const hidden: ("base" | "overlay")[] = [];
+    if (!layerVisible.base) hidden.push("base");
+    if (!layerVisible.overlay) hidden.push("overlay");
+    for (const hiddenLayer of hidden) {
+      for (const box of buildBoxes(model.value === "slim")) {
+        if (box.layer !== hiddenLayer) continue;
+        for (const face of FACE_ORDER) {
+          const [rx, ry, rw, rh] = faceRect(box, face);
+          target.clearRect(rx, ry, rw, rh);
+        }
+      }
+    }
+  }
+  drawGuides();
 }
 
 function pointerPos(event: PointerEvent) {
   const canvas = drawCanvas.value;
   if (!canvas) return null;
   const rect = canvas.getBoundingClientRect();
-  const x = Math.floor(((event.clientX - rect.left) / rect.width) * SKIN_SIZE);
-  const y = Math.floor(((event.clientY - rect.top) / rect.height) * SKIN_SIZE);
-  if (x < 0 || y < 0 || x >= SKIN_SIZE || y >= SKIN_SIZE) return null;
+  const x = Math.floor(((event.clientX - rect.left) / rect.width) * docWidth.value);
+  const y = Math.floor(((event.clientY - rect.top) / rect.height) * docHeight.value);
+  if (x < 0 || y < 0 || x >= docWidth.value || y >= docHeight.value) return null;
   return { x, y };
 }
 
-function floodFill(x: number, y: number, fillColor: string) {
-  if (!ctx) return;
-  const image = ctx.getImageData(0, 0, SKIN_SIZE, SKIN_SIZE);
-  const data = image.data;
-  const index = (px: number, py: number) => (py * SKIN_SIZE + px) * 4;
-  const start = index(x, y);
-  const target = [data[start], data[start + 1], data[start + 2], data[start + 3]];
-  const hex = fillColor.replace("#", "");
-  const fill = [
-    parseInt(hex.slice(0, 2), 16),
-    parseInt(hex.slice(2, 4), 16),
-    parseInt(hex.slice(4, 6), 16),
-    255,
-  ];
-  if (target.every((v, i) => v === fill[i])) return;
-  const stack: [number, number][] = [[x, y]];
-  while (stack.length) {
-    const [px, py] = stack.pop()!;
-    if (px < 0 || py < 0 || px >= SKIN_SIZE || py >= SKIN_SIZE) continue;
-    const i = index(px, py);
-    if (
-      data[i] !== target[0] ||
-      data[i + 1] !== target[1] ||
-      data[i + 2] !== target[2] ||
-      data[i + 3] !== target[3]
-    ) {
-      continue;
+/** 点到的贴图属于哪个盒子的哪个面（皮肤）；披风只认正面/背面 */
+function boundsAt(x: number, y: number): Rect | null {
+  if (docMode.value === "cape") {
+    for (const rect of CAPE_FACES) {
+      const [rx, ry, rw, rh] = rect;
+      if (x >= rx && x < rx + rw && y >= ry && y < ry + rh) return rect;
     }
-    data[i] = fill[0];
-    data[i + 1] = fill[1];
-    data[i + 2] = fill[2];
-    data[i + 3] = fill[3];
-    stack.push([px + 1, py], [px - 1, py], [px, py + 1], [px, py - 1]);
+    return null;
   }
-  ctx.putImageData(image, 0, 0);
+  const hit = locateTexel(buildBoxes(model.value === "slim"), x, y);
+  return hit ? faceRect(hit.box, hit.face) : null;
+}
+
+/** 2D 画布上这一格属于被隐藏的图层时不可绘制 */
+function hiddenLayerAt(x: number, y: number): boolean {
+  if (docMode.value !== "skin") return false;
+  const hit = locateTexel(buildBoxes(model.value === "slim"), x, y);
+  return !!hit && !layerVisible[hit.box.layer];
+}
+
+/** 披风双面同步：同一像素在另一面上的镜像坐标 */
+function capeMirrorPoint(x: number, y: number): [number, number] | null {
+  if (docMode.value !== "cape" || !symmetry.value) return null;
+  for (let index = 0; index < CAPE_FACES.length; index += 1) {
+    const [rx, ry, rw, rh] = CAPE_FACES[index];
+    if (x < rx || x >= rx + rw || y < ry || y >= ry + rh) continue;
+    const other = CAPE_FACES[1 - index];
+    return [other[0] + (rw - 1 - (x - rx)), other[1] + (y - ry)];
+  }
+  return null;
 }
 
 function paintAt(x: number, y: number) {
   if (!ctx) return;
+  if (docMode.value === "skin" && !layerVisible[layer.value]) return;
+  const bounds = boundsAt(x, y);
+  if (!bounds) return;
+  if (hiddenLayerAt(x, y)) return;
   if (tool.value === "picker") {
     const pixel = ctx.getImageData(x, y, 1, 1).data;
     const hex = `#${[pixel[0], pixel[1], pixel[2]]
@@ -403,24 +561,76 @@ function paintAt(x: number, y: number) {
     tool.value = "brush";
     return;
   }
+  const mirror = capeMirrorPoint(x, y);
+  const mirrorBounds = mirror ? boundsAt(mirror[0], mirror[1]) : null;
   if (tool.value === "fill") {
-    floodFill(x, y, color.value);
+    if (fillWhole.value) {
+      ctx.fillStyle = color.value;
+      ctx.fillRect(bounds[0], bounds[1], bounds[2], bounds[3]);
+      if (mirrorBounds) {
+        ctx.fillRect(
+          mirrorBounds[0],
+          mirrorBounds[1],
+          mirrorBounds[2],
+          mirrorBounds[3]
+        );
+      }
+    } else {
+      // 填充只在本面范围内扩散，不会沿着图集空隙漏到别的部位
+      floodFill(ctx, x, y, hexToRgba(color.value), bounds);
+      if (mirror && mirrorBounds) {
+        floodFill(ctx, mirror[0], mirror[1], hexToRgba(color.value), mirrorBounds);
+      }
+    }
+    refreshDisplay();
     return;
   }
+  // 笔刷同样裁到命中面的范围内，避免大笔刷溢出到相邻面
+  const [rx, ry, rw, rh] = bounds;
   const size = brushSize.value;
   const offset = Math.floor(size / 2);
+  const x0 = Math.max(rx, x - offset);
+  const y0 = Math.max(ry, y - offset);
+  const x1 = Math.min(rx + rw, x - offset + size);
+  const y1 = Math.min(ry + rh, y - offset + size);
+  if (x1 <= x0 || y1 <= y0) return;
   if (tool.value === "eraser") {
-    ctx.clearRect(x - offset, y - offset, size, size);
+    ctx.clearRect(x0, y0, x1 - x0, y1 - y0);
   } else {
     ctx.fillStyle = color.value;
-    ctx.fillRect(x - offset, y - offset, size, size);
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
   }
+  if (mirror && mirrorBounds) {
+    const [mx, my] = mirror;
+    const [mrx, mry, mrw, mrh] = mirrorBounds;
+    const mx0 = Math.max(mrx, mx - offset);
+    const my0 = Math.max(mry, my - offset);
+    const mx1 = Math.min(mrx + mrw, mx - offset + size);
+    const my1 = Math.min(mry + mrh, my - offset + size);
+    if (mx1 > mx0 && my1 > my0) {
+      if (tool.value === "eraser") {
+        ctx.clearRect(mx0, my0, mx1 - mx0, my1 - my0);
+      } else {
+        ctx.fillRect(mx0, my0, mx1 - mx0, my1 - my0);
+      }
+    }
+  }
+  refreshDisplay();
 }
 
 function onPointerDown(event: PointerEvent) {
   const pos = pointerPos(event);
   if (!pos) return;
+  if (docMode.value === "skin" && !layerVisible[layer.value]) {
+    notify("当前图层已隐藏，点亮眼睛后才能绘制", "err");
+    return;
+  }
   if (tool.value === "fill" || tool.value === "picker") {
+    const bounds = boundsAt(pos.x, pos.y);
+    if (!bounds) {
+      notify("这里是图集空隙，换一块皮肤区域再操作", "err");
+      return;
+    }
     paintAt(pos.x, pos.y);
     pushHistory();
     bumpDoc();
@@ -445,6 +655,17 @@ function onPointerUp() {
   bumpDoc();
 }
 
+/// 把当前文档接到可见画布与 3D 视口上
+function bindActive() {
+  const state = activeState();
+  docSource.value = state.canvas;
+  ctx = state.canvas?.getContext("2d") ?? null;
+  if (ctx) ctx.imageSmoothingEnabled = false;
+  syncHistoryFlags();
+  refreshDisplay();
+  requestAnimationFrame(fitCanvas);
+}
+
 async function loadSource() {
   const source = store.accountSkin?.data_url;
   let base: HTMLCanvasElement;
@@ -458,24 +679,209 @@ async function loadSource() {
   } else {
     base = createDefaultSkin(seedFromString(props.account.uuid));
   }
-  const canvas = drawCanvas.value;
-  if (!canvas) return;
-  ctx = canvas.getContext("2d");
-  if (!ctx) return;
-  ctx.imageSmoothingEnabled = false;
-  ctx.clearRect(0, 0, SKIN_SIZE, SKIN_SIZE);
-  ctx.drawImage(base, 0, 0);
-  history = [];
-  cursor = -1;
-  pushHistory();
+  docs.skin.canvas = base;
+  docs.skin.history = [];
+  docs.skin.cursor = -1;
   const accountModel = store.accountSkin?.model ?? props.account.skin_model;
   model.value = accountModel === "slim" ? "slim" : "classic";
+  if (docMode.value === "skin") {
+    bindActive();
+    pushHistory();
+  }
   docVersion.value += 1;
-  drawGuides();
+}
+
+/** 读取当前账号的披风；跨域读不到就留一张 64×32 空白披风 */
+async function loadCape() {
+  const canvas = document.createElement("canvas");
+  canvas.width = CAPE_WIDTH;
+  canvas.height = CAPE_HEIGHT;
+  const target = canvas.getContext("2d");
+  if (target) target.imageSmoothingEnabled = false;
+  if (target) {
+    try {
+      const list = await api.accountCapes(props.account.id);
+      const cape = list.find((item) => item.active) ?? list[0];
+      if (cape?.url) {
+        const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const element = new Image();
+          element.crossOrigin = "anonymous";
+          element.onload = () => resolve(element);
+          element.onerror = () => reject(new Error("披风图加载失败"));
+          element.src = cape.url;
+        });
+        const height = Math.min(
+          CAPE_HEIGHT,
+          Math.round((image.height / image.width) * CAPE_WIDTH)
+        );
+        target.drawImage(image, 0, 0, CAPE_WIDTH, height);
+        // 跨域且没有 CORS 头时，画完以后读取像素会抛错，此时回退到空白
+        target.getImageData(0, 0, 1, 1);
+      }
+    } catch {
+      target.clearRect(0, 0, CAPE_WIDTH, CAPE_HEIGHT);
+    }
+  }
+  docs.cape.canvas = canvas;
+  docs.cape.history = [];
+  docs.cape.cursor = -1;
+}
+
+/* ---------- 披风：本地库 / 导入导出 / 上传 ---------- */
+
+function capePngBase64() {
+  const canvas = docs.cape.canvas;
+  if (!canvas) return "";
+  return canvasToDataUrl(canvas).split(",")[1] ?? "";
+}
+
+async function applyCapeSource(url: string) {
+  const source = await canvasFromSource(url);
+  const target = document.createElement("canvas");
+  target.width = CAPE_WIDTH;
+  target.height = CAPE_HEIGHT;
+  const targetCtx = target.getContext("2d");
+  if (!targetCtx) throw new Error("无法创建披风画布");
+  targetCtx.imageSmoothingEnabled = false;
+  targetCtx.drawImage(source, 0, 0, CAPE_WIDTH, CAPE_HEIGHT);
+  docs.cape.canvas = target;
+  docs.cape.history = [];
+  docs.cape.cursor = -1;
+  if (docMode.value === "cape") {
+    bindActive();
+    pushHistory();
+  }
+  docVersion.value += 1;
+}
+
+async function refreshCapes() {
+  try {
+    capes.value = await api.capeLibraryList();
+  } catch {
+    capes.value = [];
+  }
+}
+
+async function saveCapeToLibrary() {
+  if (!docs.cape.canvas || capeSaving.value) return;
+  const name = capeName.value.trim() || `披风 ${new Date().toLocaleDateString("zh-CN")}`;
+  capeSaving.value = true;
+  try {
+    const saved = await api.capeLibrarySave(name, capePngBase64());
+    capeName.value = "";
+    await refreshCapes();
+    notify(`已保存披风「${saved.name}」`);
+  } catch (err) {
+    notify(`保存披风失败：${String(err)}`, "err");
+  } finally {
+    capeSaving.value = false;
+  }
+}
+
+async function applyCapeFromLibrary(cape: LocalCape) {
+  if (capeBusy.value) return;
+  capeBusy.value = cape.name;
+  try {
+    await applyCapeSource(cape.data_url);
+    notify(`已载入披风「${cape.name}」`);
+  } catch (err) {
+    notify(`载入披风失败：${String(err)}`, "err");
+  } finally {
+    capeBusy.value = "";
+  }
+}
+
+async function removeCapeFromLibrary(cape: LocalCape) {
+  try {
+    await api.capeLibraryRemove(cape.name);
+    await refreshCapes();
+    notify("披风已从本地库删除");
+  } catch (err) {
+    notify(`删除披风失败：${String(err)}`, "err");
+  }
+}
+
+async function importCapeFile() {
+  if (capeBusy.value) return;
+  const path = await pickCapePng();
+  if (!path) return;
+  capeBusy.value = "import";
+  try {
+    await applyCapeSource(await api.capeImport(path));
+    notify("披风已导入");
+  } catch (err) {
+    notify(`导入披风失败：${String(err)}`, "err");
+  } finally {
+    capeBusy.value = "";
+  }
+}
+
+async function exportCapeFile() {
+  if (!docs.cape.canvas) return;
+  const path = await saveCapeDialog(`${props.account.name}-cape.png`);
+  if (!path) return;
+  try {
+    await api.capeExport(path, capePngBase64());
+    notify("披风已导出为 PNG");
+  } catch (err) {
+    notify(`导出披风失败：${String(err)}`, "err");
+  }
+}
+
+/// 第三方账号的披风只能在皮肤站网页上传，这里按 API 根推出站点地址并打开角色页
+function openCapeUploadPage() {
+  if (props.account.kind !== "authlib") {
+    notify("微软账号不支持自定义披风，只能在账号页选择已拥有的披风", "err");
+    return;
+  }
+  const trimmed = (props.account.authlib_url ?? "").trim().replace(/\/+$/, "");
+  if (!trimmed) {
+    notify("这个账号没有记录皮肤站地址，请重新登录该账号", "err");
+    return;
+  }
+  const site = trimmed.endsWith("/api/yggdrasil")
+    ? trimmed.slice(0, -"/api/yggdrasil".length)
+    : trimmed;
+  void openExternal(`${site}/user/player`).catch((err) =>
+    notify(`打开皮肤站失败：${String(err)}`, "err")
+  );
+}
+
+async function switchDoc(next: DocMode) {
+  if (docMode.value === next || capeLoading.value) return;
+  if (next === "cape") {
+    if (!docs.cape.canvas) {
+      capeLoading.value = true;
+      await loadCape();
+      capeLoading.value = false;
+    }
+    void refreshCapes();
+    previousMode = mode.value;
+    // 披风没有 3D 绘制视图，统一用 2D 画布 + 穿着预览
+    mode.value = "2d";
+  }
+  part.value = "all";
+  docMode.value = next;
+  await nextTick();
+  bindActive();
+  if (next === "skin") {
+    mode.value = previousMode;
+    await nextTick();
+  }
+  fitCanvas();
+}
+
+function toggleLayer(key: "base" | "overlay") {
+  layerVisible[key] = !layerVisible[key];
+  if (!layerVisible[key] && layer.value === key) {
+    const other = key === "base" ? "overlay" : "base";
+    if (layerVisible[other]) layer.value = other;
+  }
+  refreshDisplay();
 }
 
 function currentPng() {
-  return drawCanvas.value?.toDataURL("image/png") ?? "";
+  return docs.skin.canvas?.toDataURL("image/png") ?? "";
 }
 
 async function saveLocal() {
@@ -534,16 +940,27 @@ function selectPart(value: typeof part.value) {
 }
 
 function resetSkin() {
+  if (docMode.value === "cape") {
+    docs.cape.canvas = null;
+    void loadCape().then(() => {
+      if (docMode.value === "cape") bindActive();
+    });
+    return;
+  }
   void loadSource();
 }
 
 async function applyPreset(preset: DefaultSkin) {
-  if (!ctx) return;
+  const doc = docs.skin.canvas;
+  if (!doc) return;
   try {
     const base = await canvasFromSource(preset.data_url);
-    ctx.clearRect(0, 0, SKIN_SIZE, SKIN_SIZE);
-    ctx.drawImage(base, 0, 0);
+    const target = doc.getContext("2d");
+    if (!target) return;
+    target.clearRect(0, 0, SKIN_SIZE, SKIN_SIZE);
+    target.drawImage(base, 0, 0);
     pushHistory();
+    refreshDisplay();
     bumpDoc();
     model.value = preset.model === "slim" ? "slim" : "classic";
     notify(`已套用默认皮肤：${preset.name}`);
@@ -561,12 +978,16 @@ async function loadLibrary() {
 }
 
 async function applyLibrary(item: SkinLibraryItem) {
-  if (!ctx) return;
+  const doc = docs.skin.canvas;
+  if (!doc) return;
   try {
     const base = await canvasFromSource(item.data_url);
-    ctx.clearRect(0, 0, SKIN_SIZE, SKIN_SIZE);
-    ctx.drawImage(base, 0, 0);
+    const target = doc.getContext("2d");
+    if (!target) return;
+    target.clearRect(0, 0, SKIN_SIZE, SKIN_SIZE);
+    target.drawImage(base, 0, 0);
     pushHistory();
+    refreshDisplay();
     bumpDoc();
     model.value = item.model === "slim" ? "slim" : "classic";
     notify(`已载入收藏皮肤：${item.name}`);
@@ -616,9 +1037,20 @@ onBeforeUnmount(() => {
   canvasObserver = null;
 });
 
-/// 切到 2D 时容器刚恢复显示，重新量一次
-watch(mode, () => {
-  if (mode.value === "2d") nextTick(fitCanvas);
+/// 切到 2D 时容器刚恢复显示，重新量一次并重绘图层显隐
+watch(mode, async () => {
+  if (mode.value === "2d") {
+    await nextTick();
+    fitCanvas();
+    refreshDisplay();
+  }
+});
+
+/// 披风画布尺寸不同、图层眼睛或模型变化时，重绘显示画布
+watch([docMode, () => layerVisible.base, () => layerVisible.overlay, model], async () => {
+  await nextTick();
+  fitCanvas();
+  refreshDisplay();
 });
 
 const tools = [
@@ -650,19 +1082,30 @@ const partOptions = [
       </div>
       <div class="row">
         <span class="tag" :class="{ 'tag--grass': isMicrosoft }">
-          {{ isMicrosoft ? "微软账号" : "离线账号" }}
+          {{ docMode === "cape" ? "披风 · 本地编辑" : isMicrosoft ? "微软账号" : "离线账号" }}
         </span>
-        <WoodButton class="head-btn" size="sm" @click="resetSkin">重置</WoodButton>
-        <WoodButton class="head-btn" size="sm" @click="exportPng">导出 PNG</WoodButton>
+        <WoodButton class="head-btn" size="sm" @click="resetSkin">
+          {{ docMode === "cape" ? "重载披风" : "重置" }}
+        </WoodButton>
+        <WoodButton v-if="docMode === 'skin'" class="head-btn" size="sm" @click="exportPng">
+          导出 PNG
+        </WoodButton>
         <WoodButton
-          v-if="isMicrosoft"
+          v-if="isMicrosoft && docMode === 'skin'"
           variant="danger"
           size="sm"
           @click="uploadOpen = true"
         >
           上传到 Mojang
         </WoodButton>
-        <WoodButton variant="primary" size="sm" sheen :disabled="saving" @click="saveLocal">
+        <WoodButton
+          v-if="docMode === 'skin'"
+          variant="primary"
+          size="sm"
+          sheen
+          :disabled="saving"
+          @click="saveLocal"
+        >
           <AppIcon name="check" :size="14" />
           {{ saving ? "保存中…" : "保存到本地" }}
         </WoodButton>
@@ -672,6 +1115,30 @@ const partOptions = [
     <div class="editor-layout">
       <aside class="card editor-col editor-left">
         <section class="side-block">
+          <div class="side-title">编辑内容</div>
+          <div class="seg-row">
+            <button
+              class="tool tool--wide"
+              :class="{ 'tool--active': docMode === 'skin' }"
+              @click="switchDoc('skin')"
+            >
+              皮肤
+            </button>
+            <button
+              class="tool tool--wide"
+              :class="{ 'tool--active': docMode === 'cape' }"
+              :disabled="capeLoading"
+              @click="switchDoc('cape')"
+            >
+              {{ capeLoading ? "载入中…" : "披风" }}
+            </button>
+          </div>
+          <p v-if="docMode === 'cape'" class="muted small cape-note">
+            可保存到本地披风库；第三方账号的披风需到皮肤站网页上传。
+          </p>
+        </section>
+
+        <section v-if="docMode === 'skin'" class="side-block">
           <div class="side-title">模式与模型</div>
           <div class="seg-row">
             <button
@@ -738,9 +1205,17 @@ const partOptions = [
               {{ size }}
             </button>
           </div>
+          <button
+            class="switch"
+            :class="{ 'switch--on': fillWhole }"
+            title="填充时直接铺满命中的整个面，不做连通区域判断"
+            @click="fillWhole = !fillWhole"
+          >
+            <span class="switch__dot" />整块填充
+          </button>
         </section>
 
-        <section class="side-block">
+        <section v-if="docMode === 'skin'" class="side-block">
           <div class="side-title">部位</div>
           <div class="part-grid">
             <button
@@ -755,25 +1230,58 @@ const partOptions = [
           </div>
         </section>
 
-        <section v-if="mode === '3d'" class="side-block">
+        <section v-if="docMode === 'skin'" class="side-block">
           <div class="side-title">图层与选项</div>
-          <div class="seg-row">
+          <div class="layer-grid">
             <button
               class="tool tool--wide"
               :class="{ 'tool--active': layer === 'base' }"
+              :disabled="!layerVisible.base"
+              :title="layerVisible.base ? '编辑基础层' : '基础层已隐藏，先点亮眼睛'"
               @click="layer = 'base'"
             >
               基础
             </button>
             <button
+              class="eye-btn"
+              :class="{ 'eye-btn--off': !layerVisible.base }"
+              :aria-label="layerVisible.base ? '隐藏基础层' : '显示基础层'"
+              :title="layerVisible.base ? '隐藏基础层（隐藏后不可绘制）' : '显示基础层'"
+              @click="toggleLayer('base')"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M2.5 12S6 6 12 6s9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z" />
+                <circle cx="12" cy="12" r="2.6" />
+                <path v-if="!layerVisible.base" d="M4 20 20 4" />
+              </svg>
+            </button>
+            <button
               class="tool tool--wide"
               :class="{ 'tool--active': layer === 'overlay' }"
+              :disabled="!layerVisible.overlay"
+              :title="layerVisible.overlay ? '编辑外层' : '外层已隐藏，先点亮眼睛'"
               @click="layer = 'overlay'"
             >
               外层
             </button>
+            <button
+              class="eye-btn"
+              :class="{ 'eye-btn--off': !layerVisible.overlay }"
+              :aria-label="layerVisible.overlay ? '隐藏外层' : '显示外层'"
+              :title="layerVisible.overlay ? '隐藏外层（隐藏后不可绘制）' : '显示外层'"
+              @click="toggleLayer('overlay')"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M2.5 12S6 6 12 6s9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z" />
+                <circle cx="12" cy="12" r="2.6" />
+                <path v-if="!layerVisible.overlay" d="M4 20 20 4" />
+              </svg>
+            </button>
           </div>
-          <div class="opt-grid">
+          <p v-if="!layerVisible[layer]" class="layer-warn">
+            当前图层已隐藏，点亮眼睛后才能绘制
+          </p>
+          <div v-if="mode === '3d'" class="opt-grid">
             <button
               class="switch"
               :class="{ 'switch--on': symmetry }"
@@ -843,9 +1351,9 @@ const partOptions = [
       </aside>
 
       <section class="card editor-main">
-        <div v-if="mode === '3d'" class="stage-wrap">
+        <div v-if="docMode === 'skin' && mode === '3d'" class="stage-wrap">
           <SkinPaintViewport
-            :source="drawCanvas"
+            :source="docSource"
             :version="docVersion"
             :model="model"
             :tool="tool"
@@ -857,6 +1365,9 @@ const partOptions = [
             :ghost="ghost"
             :show-all="showAll"
             :walk="walk"
+            :fill-whole="fillWhole"
+            :base-visible="layerVisible.base"
+            :overlay-visible="layerVisible.overlay"
             :height="null"
             @commit="onViewportCommit"
             @pick="onViewportPick"
@@ -870,25 +1381,57 @@ const partOptions = [
             <img class="preview-toggle__icon" :src="diamondImg" alt="" />
             预览
           </button>
+          <p v-if="!layerVisible[layer]" class="stage-blocked">
+            当前图层已隐藏，点亮眼睛后才能绘制
+          </p>
         </div>
 
-        <div ref="canvasScroll" v-show="mode === '2d'" class="canvas-scroll">
-          <div class="canvas-stack" :style="{ width: `${canvasWidth}px`, height: `${canvasWidth}px` }">
-            <canvas
-              ref="drawCanvas"
-              width="64"
-              height="64"
-              class="skin-canvas"
-              @pointerdown="onPointerDown"
-              @pointermove="onPointerMove"
-              @pointerup="onPointerUp"
-              @pointerleave="onPointerUp"
-            />
-            <canvas
-              ref="guideCanvas"
-              width="64"
-              height="64"
-              class="guide-canvas"
+        <div v-show="docMode === 'cape' || mode === '2d'" class="canvas-wrap">
+          <div ref="canvasScroll" class="canvas-scroll">
+            <div
+              class="canvas-stack"
+              :style="{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }"
+            >
+              <canvas
+                ref="drawCanvas"
+                width="64"
+                height="64"
+                class="skin-canvas"
+                :class="{ 'skin-canvas--disabled': docMode === 'skin' && !layerVisible[layer] }"
+                @pointerdown="onPointerDown"
+                @pointermove="onPointerMove"
+                @pointerup="onPointerUp"
+                @pointerleave="onPointerUp"
+              />
+              <canvas
+                ref="guideCanvas"
+                width="64"
+                height="64"
+                class="guide-canvas"
+              />
+            </div>
+          </div>
+          <div v-if="docMode === 'cape'" class="cape-preview">
+            <div class="cape-preview__head">
+              <span class="side-title">穿着预览</span>
+              <button
+                class="switch"
+                :class="{ 'switch--on': walk }"
+                @click="walk = !walk"
+              >
+                <span class="switch__thumb" />
+                行走
+              </button>
+            </div>
+            <SkinModel
+              v-if="capePreviewUrl"
+              :skin="previewSkinUrl"
+              :cape="capePreviewUrl"
+              :model="model"
+              :walking="walk"
+              :height="300"
+              view="back"
+              class="cape-preview__model"
             />
           </div>
         </div>
@@ -952,18 +1495,104 @@ const partOptions = [
           </div>
         </section>
 
-        <section class="side-block">
-          <div class="side-title">模板</div>
-          <button class="template" title="清空皮肤，每个部位填成不同颜色" @click="applyBlockTemplate">
-            <span class="template-face" />
-            <span class="template-text">
-              <span class="template-name">色块模板</span>
-              <span class="template-hint">各部位不同颜色，从零开始画</span>
-            </span>
-          </button>
+        <section v-if="docMode === 'cape'" class="side-block">
+          <div class="side-title">披风库</div>
+          <div class="cape-actions cape-actions--name">
+            <WoodInput v-model="capeName" placeholder="披风名称" />
+            <WoodButton
+              variant="primary"
+              size="sm"
+              :disabled="capeSaving || !docs.cape.canvas"
+              @click="saveCapeToLibrary"
+            >
+              {{ capeSaving ? "保存中…" : "保存" }}
+            </WoodButton>
+          </div>
+          <div class="cape-actions">
+            <WoodButton
+              variant="ghost"
+              size="sm"
+              :disabled="!!capeBusy"
+              @click="importCapeFile"
+            >
+              导入 PNG
+            </WoodButton>
+            <WoodButton
+              variant="ghost"
+              size="sm"
+              :disabled="!docs.cape.canvas || !!capeBusy"
+              @click="exportCapeFile"
+            >
+              导出 PNG
+            </WoodButton>
+          </div>
+          <div class="cape-actions">
+            <WoodButton
+              variant="ghost"
+              size="sm"
+              :title="
+                account.kind === 'authlib'
+                  ? '在浏览器打开皮肤站角色页上传披风'
+                  : '微软账号不支持上传自定义披风'
+              "
+              @click="openCapeUploadPage"
+            >
+              {{ account.kind === "authlib" ? "去皮肤站上传" : "上传到皮肤站" }}
+            </WoodButton>
+          </div>
+
+          <div v-if="capes.length" class="cape-grid">
+            <div v-for="cape in capes" :key="cape.name" class="cape-item">
+              <button
+                class="cape-item__face"
+                :title="`载入 ${cape.name}`"
+                :style="{ backgroundImage: `url(${cape.data_url})` }"
+                @click="applyCapeFromLibrary(cape)"
+              />
+              <span class="cape-item__name" :title="cape.name">{{ cape.name }}</span>
+              <button
+                class="cape-item__remove"
+                title="从本地库删除"
+                @click="removeCapeFromLibrary(cape)"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+          <p v-else class="muted small preset-hint">画好后点「保存」即可反复取用。</p>
         </section>
 
-        <section v-if="presets.length" class="side-block">
+        <section class="side-block">
+          <div class="side-title">模板</div>
+          <div class="template-grid">
+            <button
+              v-for="item in visibleTemplates"
+              :key="item.key"
+              class="template template--compact"
+              :title="item.hint"
+              :disabled="docMode === 'skin' && item.key !== 'blank' && !layerVisible.base"
+              @click="applyTemplate(item.key)"
+            >
+              <span
+                class="template-face"
+                :class="`template-face--${item.key}`"
+                :style="templateFaceStyle(item.key)"
+              />
+              <span class="template-text">
+                <span class="template-name">{{ item.name }}</span>
+                <span class="template-hint">{{ item.hint }}</span>
+              </span>
+            </button>
+          </div>
+          <p v-if="docMode === 'cape'" class="muted small preset-hint">
+            披风模板只覆盖正面与背面，四周拼接边保持透明。
+          </p>
+          <p v-else class="muted small preset-hint">
+            皮肤模板只写入基础层，外层保持透明。
+          </p>
+        </section>
+
+        <section v-if="docMode === 'skin' && presets.length" class="side-block">
           <div class="side-title">默认皮肤</div>
           <div class="preset-grid">
             <button
@@ -982,7 +1611,7 @@ const partOptions = [
           </div>
         </section>
 
-        <section class="side-block">
+        <section v-if="docMode === 'skin'" class="side-block">
           <div class="side-title">收藏库</div>
           <div class="preset-grid">
             <button
@@ -1517,6 +2146,230 @@ const partOptions = [
   font-size: 9.5px;
   color: var(--muted);
   letter-spacing: 0.02em;
+}
+
+/* 模板卡片：两列紧凑排布，保持与原来一致的纸质卡片风格 */
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.template--compact {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  padding: 6px;
+}
+
+.template--compact .template-face {
+  width: 100%;
+  height: 26px;
+}
+
+.template--compact .template-name {
+  font-size: 11px;
+}
+
+.template--compact .template-hint {
+  font-size: 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.template:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.template:disabled:hover {
+  border-color: var(--line);
+  transform: none;
+}
+
+.cape-note {
+  line-height: 1.5;
+}
+
+/* 图层：左边选择、右边眼睛，隐藏后按钮与绘制一起禁用 */
+.layer-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 4px;
+  align-items: center;
+}
+
+.eye-btn {
+  display: grid;
+  place-items: center;
+  height: 26px;
+  border-radius: 2px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--moss);
+  transition: border-color var(--dur-1) ease, color var(--dur-1) ease,
+    background var(--dur-1) ease;
+}
+
+.eye-btn:hover {
+  border-color: var(--line-strong);
+}
+
+.eye-btn--off {
+  color: var(--muted);
+  background: transparent;
+  border-style: dashed;
+}
+
+.layer-warn {
+  margin: 2px 0 0;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--danger);
+}
+
+.stage-blocked {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  margin: 0;
+  padding: 5px 9px;
+  border: 1px solid #e7cfc5;
+  border-radius: 2px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 10.5px;
+  pointer-events: none;
+}
+
+.canvas-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.canvas-wrap .canvas-scroll {
+  flex: 1;
+  min-height: 0;
+}
+
+.skin-canvas--disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.cape-preview {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel-2);
+}
+
+.cape-preview__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cape-preview__model {
+  border: 1px solid var(--line-strong);
+  background:
+    linear-gradient(45deg, rgba(0, 0, 0, 0.05) 25%, transparent 25% 75%, rgba(0, 0, 0, 0.05) 75%),
+    linear-gradient(45deg, rgba(0, 0, 0, 0.05) 25%, transparent 25% 75%, rgba(0, 0, 0, 0.05) 75%);
+  background-size: 10px 10px;
+  background-position: 0 0, 5px 5px;
+}
+
+/* 披风库 */
+.cape-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.cape-actions .input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.cape-actions .btn {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.cape-actions--name .btn {
+  flex: 0 0 auto;
+  padding: 0 14px;
+}
+
+.cape-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.cape-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cape-item__face {
+  height: 56px;
+  border-radius: 2px;
+  border: 1px solid var(--line-strong);
+  background-color: var(--panel);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+}
+
+.cape-item__face:hover {
+  border-color: var(--moss);
+}
+
+.cape-item__name {
+  font-size: 10.5px;
+  color: var(--muted);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cape-item__remove {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.cape-item__remove:hover {
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 .preset-face--add {

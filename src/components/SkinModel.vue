@@ -1,8 +1,22 @@
 <script setup lang="ts">
-import * as THREE from "three";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import type {
+  BufferGeometry,
+  Clock,
+  Group,
+  Material,
+  Mesh,
+  PerspectiveCamera,
+  Scene,
+  Texture,
+  WebGLRenderer,
+} from "three";
 import { store } from "../store";
-import { createDefaultSkin, seedFromString, skinCanvasFromSource } from "../skin";
+import { canvasFromSource, createDefaultSkin, seedFromString, skinCanvasFromSource } from "../skin";
+
+/// 运行时按需加载 three，避免它进入首屏包
+type Three = typeof import("three");
+let THREE: Three;
 
 const props = withDefaults(
   defineProps<{
@@ -12,6 +26,10 @@ const props = withDefaults(
     walking?: boolean;
     interactive?: boolean;
     height?: number;
+    /// 披风贴图（64×32 的 data URL），给了就在人物背后挂一块披风
+    cape?: string;
+    /// 初始朝向：披风预览默认转到背面才看得到
+    view?: "front" | "back";
   }>(),
   {
     skin: "",
@@ -20,29 +38,33 @@ const props = withDefaults(
     walking: true,
     interactive: true,
     height: 380,
+    cape: "",
+    view: "front",
   }
 );
 
 const host = ref<HTMLDivElement | null>(null);
-let renderer: THREE.WebGLRenderer | null = null;
-let scene: THREE.Scene | null = null;
-let camera: THREE.PerspectiveCamera | null = null;
-let group: THREE.Group | null = null;
-let armLeft: THREE.Group | null = null;
-let armRight: THREE.Group | null = null;
-let legLeft: THREE.Group | null = null;
-let legRight: THREE.Group | null = null;
-let head: THREE.Group | null = null;
+let renderer: WebGLRenderer | null = null;
+let scene: Scene | null = null;
+let camera: PerspectiveCamera | null = null;
+let group: Group | null = null;
+let armLeft: Group | null = null;
+let armRight: Group | null = null;
+let legLeft: Group | null = null;
+let legRight: Group | null = null;
+let head: Group | null = null;
+let capeGroup: Group | null = null;
 let frame = 0;
-let clock: THREE.Clock | null = null;
+let clock: Clock | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let buildToken = 0;
+let disposed = false;
 
-const textures: THREE.Texture[] = [];
-const materials: THREE.Material[] = [];
-const geometries: THREE.BufferGeometry[] = [];
+const textures: Texture[] = [];
+const materials: Material[] = [];
+const geometries: BufferGeometry[] = [];
 
-let rotationY = 0.45;
+let rotationY = props.view === "back" ? Math.PI - 0.35 : 0.45;
 let rotationX = 0.05;
 let dragging = false;
 let lastX = 0;
@@ -243,7 +265,7 @@ function part(
   // 第二层的层级偏移：0 为贴图层；外套/帽子 1、袖子/裤子 2。
   // 相邻两层表面共面时必须给出不同偏移，否则会 z-fighting 出一条暗线
   layer = 0
-): THREE.Mesh {
+): Mesh {
   const order = [
     // 皮肤展开图的「右/左」面是角色自身的右侧/左侧：角色面向 +Z 时自身右侧为 -X，
     // 所以 right → BoxGeometry 的 -X 面，left → +X 面（顺序反了会整条手臂贴错图）
@@ -280,7 +302,7 @@ function clearScene() {
   if (!scene || !group) return;
   scene.remove(group);
   group.traverse((object) => {
-    const mesh = object as THREE.Mesh;
+    const mesh = object as Mesh;
     if (mesh.isMesh) {
       mesh.geometry?.dispose();
     }
@@ -296,6 +318,7 @@ function clearScene() {
   armRight = null;
   legLeft = null;
   legRight = null;
+  capeGroup = null;
 }
 
 async function build() {
@@ -312,6 +335,8 @@ async function build() {
     canvas = createDefaultSkin(seedFromString(props.seed));
   }
   if (token !== buildToken) return;
+  // 组件在 await 期间卸载时不再建场景
+  if (disposed || !scene) return;
 
   clearScene();
   const root = new THREE.Group();
@@ -369,6 +394,52 @@ async function build() {
   legRight = legRightGroup;
 
   root.add(head, bodyMesh, jacketMesh, armLeft, armRight, legLeft, legRight);
+
+  if (props.cape) {
+    try {
+      const source = await canvasFromSource(props.cape);
+      if (token !== buildToken || disposed || !scene) return;
+      // 披风展开图里正面在 (1,1) 10×16，把它裁出来贴到人物背后
+      const cropped = document.createElement("canvas");
+      cropped.width = 10;
+      cropped.height = 16;
+      const cctx = cropped.getContext("2d");
+      if (cctx) {
+        cctx.imageSmoothingEnabled = false;
+        cctx.drawImage(source, 1, 1, 10, 16, 0, 0, 10, 16);
+        const texture = new THREE.CanvasTexture(cropped);
+        texture.magFilter = THREE.NearestFilter;
+        texture.minFilter = THREE.NearestFilter;
+        texture.colorSpace = THREE.SRGBColorSpace;
+        textures.push(texture);
+        const material = new THREE.MeshStandardMaterial({
+          map: texture,
+          transparent: true,
+          alphaTest: 0.02,
+          roughness: 0.95,
+          metalness: 0,
+          // 转到背面时也要能看到内侧
+          side: THREE.DoubleSide,
+        });
+        materials.push(material);
+        const geometry = new THREE.PlaneGeometry(10, 16);
+        // 顶部对齐肩部，向下垂
+        geometry.translate(0, -8, 0);
+        geometries.push(geometry);
+        const holder = new THREE.Group();
+        // 和后背留出一点距离，否则披风看起来像贴在皮肤上的贴纸
+        holder.position.set(0, 24.2, -2.45);
+        // 平面默认朝 +Z，转到 -Z 才是朝外的背面
+        holder.rotation.y = Math.PI;
+        holder.add(new THREE.Mesh(geometry, material));
+        root.add(holder);
+        capeGroup = holder;
+      }
+    } catch {
+      // 披风图加载失败就只显示人物，不影响其它预览
+    }
+  }
+
   group = root;
   scene.add(root);
 }
@@ -417,6 +488,12 @@ function animate() {
       if (head) head.rotation.y = 0;
       group.position.y = -16;
     }
+    // 披风跟着脚步轻微摆动；站立时也保持一点外翻，避免糊在后背上
+    if (capeGroup) {
+      capeGroup.rotation.x = walking
+        ? 0.3 + Math.sin(t * 4 + 1.1) * 0.08
+        : 0.12;
+    }
   }
   renderer.render(scene, camera);
 }
@@ -424,6 +501,8 @@ function animate() {
 onMounted(async () => {
   const element = host.value;
   if (!element) return;
+  THREE = await import("three");
+  if (disposed || !host.value) return;
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(32, 1, 0.1, 300);
   camera.position.set(0, 6, 64);
@@ -469,13 +548,14 @@ onMounted(async () => {
 });
 
 watch(
-  () => [props.skin, props.seed, props.model],
+  () => [props.skin, props.seed, props.model, props.cape],
   () => {
     void build();
   }
 );
 
 onBeforeUnmount(() => {
+  disposed = true;
   cancelAnimationFrame(frame);
   resizeObserver?.disconnect();
   if (renderer) {

@@ -17,6 +17,7 @@ use crate::java::{self, JavaInfo};
 use crate::lan;
 use crate::launch;
 use crate::littleskin;
+use crate::lang;
 use crate::models::*;
 use crate::moddeps;
 use crate::modpack;
@@ -25,6 +26,8 @@ use crate::pclimport;
 use crate::ping::{self, ServerPingResult};
 use crate::repair;
 use crate::server;
+use crate::saves;
+use crate::world_edit;
 use crate::skins;
 use crate::system;
 use crate::terracotta;
@@ -38,6 +41,29 @@ type CmdResult<T> = Result<T, String>;
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
+}
+
+/// 登记一个下载任务：前端会带着同一个 job id 打开任务列表里的对应条目。
+fn begin_job(
+    state: &AppState,
+    job_id: Option<String>,
+    stage: &str,
+    message: impl Into<String>,
+) -> std::sync::Arc<ProgressState> {
+    let job = job_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let progress = ProgressState::with_job(stage, job);
+    progress.set_message(message);
+    state.register_job(&progress);
+    progress
+}
+
+fn finish_job(state: &AppState, app: &AppHandle, progress: &std::sync::Arc<ProgressState>) {
+    progress.active.store(false, Ordering::Relaxed);
+    download::emit_now(app, progress);
+    state.unregister_job(&progress.job);
 }
 
 #[tauri::command]
@@ -142,6 +168,7 @@ pub fn save_config(
     // 限速设置立即生效（字节/秒；0 = 不限）
     download::set_speed_limit(config.speed_limit as u64 * 1024 * 1024);
     download::set_force_mirror(config.download_source == "mirror");
+    download::set_concurrency_limit(config.concurrency as usize);
     // 毛玻璃开关变化时实时应用；系统不支持则回滚为关闭并照常保存，
     // 返回回滚后的配置让前端把开关弹回去
     if config.window_vibrancy != state.config.lock().unwrap().window_vibrancy {
@@ -369,27 +396,16 @@ pub async fn install_version(
     app: AppHandle,
     state: State<'_, AppState>,
     version_id: String,
+    job_id: Option<String>,
 ) -> CmdResult<InstalledVersion> {
     let cfg = state.config.lock().unwrap().clone();
-    {
-        let guard = state.progress.lock().unwrap();
-        if let Some(p) = guard.as_ref() {
-            if p.active.load(Ordering::Relaxed) {
-                return Err("已有下载任务正在进行".into());
-            }
-        }
-    }
-    let progress = ProgressState::new("install");
-    progress.set_message(format!("准备安装 {version_id}…"));
-    *state.progress.lock().unwrap() = Some(progress.clone());
-    download::reset_failed_batch();
+    let progress = begin_job(&state, job_id, "install", format!("准备安装 {version_id}…"));
+    download::reset_failed_batch(&progress.job);
 
     let result = install::install_version(&app, &state.client, &cfg, &version_id, progress.clone())
         .await;
 
-    progress.active.store(false, Ordering::Relaxed);
-    download::emit_now(&app, &progress);
-    *state.progress.lock().unwrap() = None;
+    finish_job(&state, &app, &progress);
 
     match result {
         Ok(version) => {
@@ -433,20 +449,11 @@ pub async fn install_loader(
     version_id: String,
     loader: String,
     loader_version: Option<String>,
+    job_id: Option<String>,
 ) -> CmdResult<InstalledVersion> {
     let cfg = state.config.lock().unwrap().clone();
-    {
-        let guard = state.progress.lock().unwrap();
-        if let Some(p) = guard.as_ref() {
-            if p.active.load(Ordering::Relaxed) {
-                return Err("已有下载任务正在进行".into());
-            }
-        }
-    }
-    let progress = ProgressState::new("install");
-    progress.set_message(format!("准备安装 {loader}…"));
-    *state.progress.lock().unwrap() = Some(progress.clone());
-    download::reset_failed_batch();
+    let progress = begin_job(&state, job_id, "install", format!("准备安装 {loader}…"));
+    download::reset_failed_batch(&progress.job);
 
     let result = install::install_loader(
         &app,
@@ -459,9 +466,7 @@ pub async fn install_loader(
     )
     .await;
 
-    progress.active.store(false, Ordering::Relaxed);
-    download::emit_now(&app, &progress);
-    *state.progress.lock().unwrap() = None;
+    finish_job(&state, &app, &progress);
 
     match result {
         Ok(version) => {
@@ -480,27 +485,16 @@ pub async fn reinstall_loader(
     app: AppHandle,
     state: State<'_, AppState>,
     version_id: String,
+    job_id: Option<String>,
 ) -> CmdResult<InstalledVersion> {
     let cfg = state.config.lock().unwrap().clone();
-    {
-        let guard = state.progress.lock().unwrap();
-        if let Some(p) = guard.as_ref() {
-            if p.active.load(Ordering::Relaxed) {
-                return Err("已有下载任务正在进行".into());
-            }
-        }
-    }
-    let progress = ProgressState::new("install");
-    progress.set_message("准备重装加载器…");
-    *state.progress.lock().unwrap() = Some(progress.clone());
-    download::reset_failed_batch();
+    let progress = begin_job(&state, job_id, "install", "准备重装加载器…");
+    download::reset_failed_batch(&progress.job);
 
     let result =
         install::reinstall_loader(&app, &state.client, &cfg, &version_id, progress.clone()).await;
 
-    progress.active.store(false, Ordering::Relaxed);
-    download::emit_now(&app, &progress);
-    *state.progress.lock().unwrap() = None;
+    finish_job(&state, &app, &progress);
 
     match result {
         Ok(version) => {
@@ -514,12 +508,45 @@ pub async fn reinstall_loader(
     }
 }
 
+/// 取消任务；不传 id 时取消全部（兼容旧调用）
 #[tauri::command]
-pub fn cancel_install(state: State<'_, AppState>) {
-    if let Some(p) = state.progress.lock().unwrap().as_ref() {
-        p.cancel.store(true, Ordering::Relaxed);
-        p.active.store(false, Ordering::Relaxed);
+pub fn cancel_install(state: State<'_, AppState>, job_id: Option<String>) {
+    let targets = match job_id {
+        Some(job) => state.job(&job).into_iter().collect(),
+        None => state.active_jobs(),
+    };
+    for progress in targets {
+        progress.cancel.store(true, Ordering::Relaxed);
+        progress.resume();
+        progress.active.store(false, Ordering::Relaxed);
     }
+}
+
+#[tauri::command]
+pub fn pause_job(state: State<'_, AppState>, job_id: String) -> CmdResult<()> {
+    match state.job(&job_id) {
+        Some(progress) => {
+            progress.pause();
+            Ok(())
+        }
+        None => Err("任务不存在或已结束".into()),
+    }
+}
+
+#[tauri::command]
+pub fn resume_job(state: State<'_, AppState>, job_id: String) -> CmdResult<()> {
+    match state.job(&job_id) {
+        Some(progress) => {
+            progress.resume();
+            Ok(())
+        }
+        None => Err("任务不存在或已结束".into()),
+    }
+}
+
+#[tauri::command]
+pub fn active_jobs(state: State<'_, AppState>) -> Vec<String> {
+    state.active_jobs().into_iter().map(|job| job.job.clone()).collect()
 }
 
 fn remove_version_files(cfg: &Config, version_id: &str) {
@@ -528,19 +555,6 @@ fn remove_version_files(cfg: &Config, version_id: &str) {
         let _ = std::fs::remove_dir_all(&dir);
     }
     let _ = instance::remove(cfg, version_id);
-}
-
-fn collect_version_ids(cfg: &Config) -> Vec<String> {
-    let dir = cfg.game_root().join("versions");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter(|entry| entry.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        .map(|entry| entry.file_name().to_string_lossy().to_string())
-        .filter(|id| dir.join(id).join(format!("{id}.json")).exists())
-        .collect()
 }
 
 #[tauri::command]
@@ -717,19 +731,10 @@ pub async fn instance_import_mods(
     state: State<'_, AppState>,
     version_id: String,
     paths: Vec<String>,
+    job_id: Option<String>,
 ) -> CmdResult<crate::moddeps::ModImportOutcome> {
     let cfg = state.config.lock().unwrap().clone();
-    {
-        let guard = state.progress.lock().unwrap();
-        if let Some(p) = guard.as_ref() {
-            if p.active.load(Ordering::Relaxed) {
-                return Err("已有下载任务正在进行".into());
-            }
-        }
-    }
-    let progress = ProgressState::new("install");
-    progress.set_message("正在导入模组…");
-    *state.progress.lock().unwrap() = Some(progress.clone());
+    let progress = begin_job(&state, job_id, "install", "正在导入模组…");
 
     let result = async {
         let imported = instance::import_paths(&cfg, &version_id, "mods", &paths)?;
@@ -759,9 +764,7 @@ pub async fn instance_import_mods(
     }
     .await;
 
-    progress.active.store(false, Ordering::Relaxed);
-    download::emit_now(&app, &progress);
-    *state.progress.lock().unwrap() = None;
+    finish_job(&state, &app, &progress);
 
     result.map_err(err)
 }
@@ -789,6 +792,112 @@ pub fn instance_world_seed(
 ) -> CmdResult<WorldSeed> {
     let cfg = state.config.lock().unwrap().clone();
     instance::world_seed(&cfg, &version_id, &folder).map_err(err)
+}
+
+#[tauri::command]
+pub fn instance_backups(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> CmdResult<Vec<saves::WorldBackup>> {
+    let cfg = state.config.lock().unwrap().clone();
+    saves::list_backups(&cfg, &version_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn instance_backups_dir(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> CmdResult<String> {
+    let cfg = state.config.lock().unwrap().clone();
+    saves::backups_dir(&cfg, &version_id)
+        .map(|path| path.to_string_lossy().to_string())
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn instance_backup_world(
+    state: State<'_, AppState>,
+    version_id: String,
+    folder: String,
+) -> CmdResult<saves::WorldBackup> {
+    let cfg = state.config.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || saves::backup_world(&cfg, &version_id, &folder))
+        .await
+        .map_err(|error| format!("备份存档失败：{error}"))?
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn instance_restore_backup(
+    state: State<'_, AppState>,
+    version_id: String,
+    path: String,
+) -> CmdResult<String> {
+    let cfg = state.config.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || saves::restore_backup(&cfg, &version_id, &path))
+        .await
+        .map_err(|error| format!("还原存档失败：{error}"))?
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn instance_import_world(
+    state: State<'_, AppState>,
+    version_id: String,
+    path: String,
+) -> CmdResult<String> {
+    let cfg = state.config.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || saves::import_world(&cfg, &version_id, &path))
+        .await
+        .map_err(|error| format!("导入存档失败：{error}"))?
+        .map_err(err)
+}
+
+#[tauri::command]
+pub fn instance_delete_backup(
+    state: State<'_, AppState>,
+    version_id: String,
+    path: String,
+) -> CmdResult<()> {
+    let cfg = state.config.lock().unwrap().clone();
+    saves::delete_backup(&cfg, &version_id, &path).map_err(err)
+}
+
+#[tauri::command]
+pub fn instance_world_settings(
+    state: State<'_, AppState>,
+    version_id: String,
+    folder: String,
+) -> CmdResult<world_edit::WorldSettingsView> {
+    let cfg = state.config.lock().unwrap().clone();
+    world_edit::read_settings(&cfg, &version_id, &folder).map_err(err)
+}
+
+#[tauri::command]
+pub async fn instance_save_world_settings(
+    state: State<'_, AppState>,
+    version_id: String,
+    folder: String,
+    patch: world_edit::WorldSettingsPatch,
+) -> CmdResult<world_edit::WorldSettingsView> {
+    let cfg = state.config.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || {
+        world_edit::save_settings(&cfg, &version_id, &folder, patch)
+    })
+    .await
+    .map_err(|error| format!("保存世界设置失败：{error}"))?
+    .map_err(err)
+}
+
+#[tauri::command]
+pub async fn instance_game_rule_lang(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> CmdResult<std::collections::HashMap<String, lang::RuleLang>> {
+    let cfg = state.config.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || lang::game_rule_translations(&cfg, &version_id))
+        .await
+        .map_err(|error| format!("读取语言文件失败：{error}"))
 }
 
 #[tauri::command]
@@ -978,24 +1087,18 @@ pub async fn modpack_download(
     state: State<'_, AppState>,
     url: String,
     file_name: String,
+    job_id: Option<String>,
 ) -> CmdResult<String> {
-    {
-        let guard = state.progress.lock().unwrap();
-        if let Some(p) = guard.as_ref() {
-            if p.active.load(Ordering::Relaxed) {
-                return Err("已有下载任务正在进行".into());
-            }
-        }
-    }
-    let progress = ProgressState::new("install");
-    progress.set_message(format!("准备下载 {file_name}…"));
-    *state.progress.lock().unwrap() = Some(progress.clone());
+    let progress = begin_job(
+        &state,
+        job_id,
+        "install",
+        format!("准备下载 {file_name}…"),
+    );
 
     let result = modpack::download(&app, &state.client, &url, &file_name, progress.clone()).await;
 
-    progress.active.store(false, Ordering::Relaxed);
-    download::emit_now(&app, &progress);
-    *state.progress.lock().unwrap() = None;
+    finish_job(&state, &app, &progress);
 
     result.map_err(err)
 }
@@ -1011,26 +1114,15 @@ pub async fn modpack_import(
     state: State<'_, AppState>,
     path: String,
     options: modpack::ImportOptions,
+    job_id: Option<String>,
 ) -> CmdResult<modpack::ImportResult> {
     let cfg = state.config.lock().unwrap().clone();
-    {
-        let guard = state.progress.lock().unwrap();
-        if let Some(progress) = guard.as_ref() {
-            if progress.active.load(Ordering::Relaxed) {
-                return Err("已有下载任务正在进行".into());
-            }
-        }
-    }
-    let progress = ProgressState::new("install");
-    progress.set_message("准备导入整合包…");
-    *state.progress.lock().unwrap() = Some(progress.clone());
-    download::reset_failed_batch();
+    let progress = begin_job(&state, job_id, "install", "准备导入整合包…");
+    download::reset_failed_batch(&progress.job);
 
     let result = modpack::import(&app, &state.client, &cfg, &path, &options, progress.clone()).await;
 
-    progress.active.store(false, Ordering::Relaxed);
-    download::emit_now(&app, &progress);
-    *state.progress.lock().unwrap() = None;
+    finish_job(&state, &app, &progress);
 
     match result {
         Ok(imported) => {
@@ -1054,21 +1146,14 @@ pub struct RetryDownloadsView {
 pub async fn retry_failed_downloads(
     app: AppHandle,
     state: State<'_, AppState>,
+    source_job: Option<String>,
+    job_id: Option<String>,
 ) -> CmdResult<RetryDownloadsView> {
-    {
-        let guard = state.progress.lock().unwrap();
-        if let Some(progress) = guard.as_ref() {
-            if progress.active.load(Ordering::Relaxed) {
-                return Err("已有下载任务正在进行".into());
-            }
-        }
-    }
-    let Some(batch) = download::take_failed_batch() else {
+    // 失败批次按任务存放：指定了原任务就只取它那一批，避免并行时重跑到别人的文件
+    let Some(batch) = download::take_failed_batch(source_job.as_deref()) else {
         return Ok(RetryDownloadsView { failed: Vec::new() });
     };
-    let progress = ProgressState::new("repair");
-    progress.set_message("准备重试失败文件…");
-    *state.progress.lock().unwrap() = Some(progress.clone());
+    let progress = begin_job(&state, job_id, "repair", "准备重试失败文件…");
 
     let result = download::run_tasks_reporting(
         &app,
@@ -1080,9 +1165,7 @@ pub async fn retry_failed_downloads(
     )
     .await;
 
-    progress.active.store(false, Ordering::Relaxed);
-    download::emit_now(&app, &progress);
-    *state.progress.lock().unwrap() = None;
+    finish_job(&state, &app, &progress);
 
     let outcome = result.map_err(err)?;
     Ok(RetryDownloadsView {
@@ -1111,25 +1194,14 @@ pub async fn modpack_export(
     state: State<'_, AppState>,
     version_id: String,
     options: modpack::ExportOptions,
+    job_id: Option<String>,
 ) -> CmdResult<modpack::ExportResult> {
     let cfg = state.config.lock().unwrap().clone();
-    {
-        let guard = state.progress.lock().unwrap();
-        if let Some(progress) = guard.as_ref() {
-            if progress.active.load(Ordering::Relaxed) {
-                return Err("已有任务正在进行".into());
-            }
-        }
-    }
-    let progress = ProgressState::new("install");
-    progress.set_message("准备导出整合包…");
-    *state.progress.lock().unwrap() = Some(progress.clone());
+    let progress = begin_job(&state, job_id, "install", "准备导出整合包…");
 
     let result = modpack::export(&app, &cfg, &version_id, &options, progress.clone()).await;
 
-    progress.active.store(false, Ordering::Relaxed);
-    download::emit_now(&app, &progress);
-    *state.progress.lock().unwrap() = None;
+    finish_job(&state, &app, &progress);
 
     result.map_err(err)
 }
@@ -1182,21 +1254,12 @@ pub async fn repair_instance(
     state: State<'_, AppState>,
     version_id: String,
     options: Option<repair::RepairOptions>,
+    job_id: Option<String>,
 ) -> CmdResult<repair::RepairReport> {
     let options = options.unwrap_or_default();
     let cfg = state.config.lock().unwrap().clone();
-    {
-        let guard = state.progress.lock().unwrap();
-        if let Some(p) = guard.as_ref() {
-            if p.active.load(Ordering::Relaxed) {
-                return Err("已有下载任务正在进行".into());
-            }
-        }
-    }
-    let progress = ProgressState::new("repair");
-    progress.set_message(format!("正在检查 {version_id}…"));
-    *state.progress.lock().unwrap() = Some(progress.clone());
-    download::reset_failed_batch();
+    let progress = begin_job(&state, job_id, "repair", format!("正在检查 {version_id}…"));
+    download::reset_failed_batch(&progress.job);
 
     let result = repair::run(
         &app,
@@ -1208,9 +1271,7 @@ pub async fn repair_instance(
     )
     .await;
 
-    progress.active.store(false, Ordering::Relaxed);
-    download::emit_now(&app, &progress);
-    *state.progress.lock().unwrap() = None;
+    finish_job(&state, &app, &progress);
 
     result.map_err(err)
 }
@@ -1235,18 +1296,10 @@ pub async fn install_shader_loader(
     app: AppHandle,
     state: State<'_, AppState>,
     version_id: String,
+    job_id: Option<String>,
 ) -> CmdResult<String> {
-    {
-        let guard = state.progress.lock().unwrap();
-        if let Some(p) = guard.as_ref() {
-            if p.active.load(Ordering::Relaxed) {
-                return Err("已有下载任务正在进行".into());
-            }
-        }
-    }
     let cfg = state.config.lock().unwrap().clone();
-    let progress = ProgressState::new("shader");
-    *state.progress.lock().unwrap() = Some(progress.clone());
+    let progress = begin_job(&state, job_id, "shader", "准备安装光影加载器…");
     download::begin_stage(&app, &progress, "准备安装光影加载器…");
 
     let result = crate::moddeps::install_shader_loader(
@@ -1258,9 +1311,7 @@ pub async fn install_shader_loader(
     )
     .await;
 
-    progress.active.store(false, Ordering::Relaxed);
-    download::emit_now(&app, &progress);
-    *state.progress.lock().unwrap() = None;
+    finish_job(&state, &app, &progress);
     result.map_err(err)
 }
 
@@ -1460,19 +1511,15 @@ pub async fn cf_install_file(
     kind: String,
     url: String,
     file_name: String,
+    job_id: Option<String>,
 ) -> CmdResult<curseforge::InstallOutcome> {
     let cfg = state.config.lock().unwrap().clone();
-    {
-        let guard = state.progress.lock().unwrap();
-        if let Some(p) = guard.as_ref() {
-            if p.active.load(Ordering::Relaxed) {
-                return Err("已有下载任务正在进行".into());
-            }
-        }
-    }
-    let progress = ProgressState::new("install");
-    progress.set_message(format!("准备下载 {file_name}…"));
-    *state.progress.lock().unwrap() = Some(progress.clone());
+    let progress = begin_job(
+        &state,
+        job_id,
+        "install",
+        format!("准备下载 {file_name}…"),
+    );
 
     let result = curseforge::install_file(
         &app,
@@ -1486,9 +1533,7 @@ pub async fn cf_install_file(
     )
     .await;
 
-    progress.active.store(false, Ordering::Relaxed);
-    download::emit_now(&app, &progress);
-    *state.progress.lock().unwrap() = None;
+    finish_job(&state, &app, &progress);
 
     result.map_err(err)
 }
@@ -1500,19 +1545,15 @@ pub async fn cf_install_world(
     version_id: String,
     url: String,
     file_name: String,
+    job_id: Option<String>,
 ) -> CmdResult<String> {
     let cfg = state.config.lock().unwrap().clone();
-    {
-        let guard = state.progress.lock().unwrap();
-        if let Some(p) = guard.as_ref() {
-            if p.active.load(Ordering::Relaxed) {
-                return Err("已有下载任务正在进行".into());
-            }
-        }
-    }
-    let progress = ProgressState::new("install");
-    progress.set_message(format!("准备下载 {file_name}…"));
-    *state.progress.lock().unwrap() = Some(progress.clone());
+    let progress = begin_job(
+        &state,
+        job_id,
+        "install",
+        format!("正在下载地图 {file_name}…"),
+    );
 
     let result = curseforge::install_world(
         &app,
@@ -1525,9 +1566,7 @@ pub async fn cf_install_world(
     )
     .await;
 
-    progress.active.store(false, Ordering::Relaxed);
-    download::emit_now(&app, &progress);
-    *state.progress.lock().unwrap() = None;
+    finish_job(&state, &app, &progress);
 
     result.map_err(err)
 }
@@ -1701,6 +1740,68 @@ pub fn save_account_skin(
     Ok(view)
 }
 
+fn csl_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "player".into()
+    } else {
+        cleaned
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct CslSkinExport {
+    pub path: String,
+}
+
+/// 把账号当前皮肤写入 CustomSkinLoader 的本地皮肤目录，供客户端皮肤 Mod 读取。
+#[tauri::command]
+pub fn export_skin_to_customskinloader(
+    state: State<'_, AppState>,
+    account_id: String,
+    version_id: String,
+    png_base64: Option<String>,
+) -> CmdResult<CslSkinExport> {
+    let cfg = state.config.lock().unwrap().clone();
+    let account = state
+        .accounts
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|item| item.id == account_id)
+        .cloned()
+        .ok_or_else(|| "账号不存在".to_string())?;
+
+    // 先确认实例存在，避免把皮肤写到不存在的版本目录里
+    install::instance_context(&cfg, &version_id).map_err(err)?;
+
+    let bytes = match png_base64.filter(|value| !value.trim().is_empty()) {
+        Some(raw) => skins::decode_and_normalize(&raw).map_err(err)?,
+        None => skins::current_bytes(&account)
+            .ok_or_else(|| "该账号还没有本地皮肤，请先在皮肤编辑器保存".to_string())?,
+    };
+
+    let dir = crate::instance::game_dir(&cfg, &version_id)
+        .join("CustomSkinLoader")
+        .join("LocalSkin")
+        .join("skins");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let file = dir.join(format!("{}.png", csl_file_name(&account.name)));
+    std::fs::write(&file, bytes).map_err(err)?;
+    Ok(CslSkinExport {
+        path: file.to_string_lossy().to_string(),
+    })
+}
+
 #[tauri::command]
 pub fn clear_account_skin(
     state: State<'_, AppState>,
@@ -1753,6 +1854,45 @@ pub async fn upload_account_skin(
 #[tauri::command]
 pub fn skin_library_list() -> Vec<skins::LibraryItemView> {
     skins::library_views()
+}
+
+/* ---------- 披风库 ---------- */
+
+#[tauri::command]
+pub fn cape_library_list() -> Vec<skins::LocalCapeView> {
+    skins::list_local_capes()
+}
+
+#[tauri::command]
+pub fn cape_library_save(name: String, png_base64: String) -> CmdResult<skins::LocalCapeView> {
+    skins::save_local_cape(&name, &png_base64).map_err(err)
+}
+
+#[tauri::command]
+pub fn cape_library_remove(name: String) -> CmdResult<()> {
+    skins::remove_local_cape(&name).map_err(err)
+}
+
+#[tauri::command]
+pub fn cape_import(path: String) -> CmdResult<String> {
+    skins::import_cape_file(path.trim()).map_err(err)
+}
+
+#[tauri::command]
+pub fn cape_export(path: String, png_base64: String) -> CmdResult<()> {
+    skins::export_cape_file(path.trim(), &png_base64).map_err(err)
+}
+
+#[tauri::command]
+pub async fn account_cape_upload(
+    state: State<'_, AppState>,
+    account_id: String,
+    png_base64: String,
+) -> CmdResult<()> {
+    let account = find_account(&account_id)?;
+    skins::upload_cape(&state.client, &account, &png_base64)
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -1941,18 +2081,15 @@ pub async fn install_java(
     state: State<'_, AppState>,
     major: u32,
     source: Option<String>,
+    job_id: Option<String>,
 ) -> CmdResult<JavaInfo> {
     let cfg = state.config.lock().unwrap().clone();
-    let progress = ProgressState::new("java");
-    progress.set_message(format!("准备安装 Java {major}…"));
-    *state.progress.lock().unwrap() = Some(progress.clone());
+    let progress = begin_job(&state, job_id, "java", format!("准备安装 Java {major}…"));
 
     let source = source.unwrap_or_else(|| "mojang".into());
     let result =
         java::install_runtime_vendor(&app, &cfg, &source, major, progress.clone()).await;
-    progress.active.store(false, Ordering::Relaxed);
-    download::emit_now(&app, &progress);
-    *state.progress.lock().unwrap() = None;
+    finish_job(&state, &app, &progress);
 
     match result {
         Ok(info) => {
@@ -2207,26 +2344,14 @@ pub async fn terracotta_prepare(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> CmdResult<terracotta::TcStatus> {
-    {
-        // 进度槽是全局共用的，别的下载还在跑时不能抢
-        let guard = state.progress.lock().unwrap();
-        if let Some(p) = guard.as_ref() {
-            if p.active.load(Ordering::Relaxed) {
-                return Err("已有下载任务正在进行".into());
-            }
-        }
-    }
     // 组件本身不大，但走国内加速源可能要几分钟，用同一条下载进度展示
-    let progress = ProgressState::new("terracotta");
-    *state.progress.lock().unwrap() = Some(progress.clone());
+    let progress = begin_job(&state, None, "terracotta", "准备陶瓦联机…");
     // 进度条刷新由这里的 ticker 负责，下载过程只更新计数与文案
     download::begin_stage(&app, &progress, "准备陶瓦联机…");
 
     let result = terracotta::prepare(&state.client, Some(progress.clone())).await;
 
-    progress.active.store(false, Ordering::Relaxed);
-    download::emit_now(&app, &progress);
-    *state.progress.lock().unwrap() = None;
+    finish_job(&state, &app, &progress);
     result.map_err(err)
 }
 

@@ -7,7 +7,7 @@ use crate::models::*;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
@@ -165,6 +165,104 @@ pub fn find_java_exact(cfg: &Config, required: u32) -> Option<java::JavaInfo> {
         .find(|info| info.major == required)
 }
 
+fn version_json_from_jar(path: &Path) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read;
+        let mut entry = archive.by_name("version.json").ok()?;
+        entry.read_to_end(&mut bytes).ok()?;
+    }
+    if bytes.is_empty() {
+        None
+    } else {
+        Some(bytes)
+    }
+}
+
+/// 优先从原版 jar 取 version.json；导入的实例可能没有原版 jar，
+/// 再退回 Forge / NeoForge 安装器产出的 `client-*-extra.jar`。
+fn version_json_bytes(game_root: &Path, root_id: &str) -> Option<Vec<u8>> {
+    let vanilla = game_root
+        .join("versions")
+        .join(root_id)
+        .join(format!("{root_id}.jar"));
+    if let Some(bytes) = version_json_from_jar(&vanilla) {
+        return Some(bytes);
+    }
+
+    let client_root = game_root
+        .join("libraries")
+        .join("net")
+        .join("minecraft")
+        .join("client");
+    let prefix = format!("{root_id}-");
+    for entry in std::fs::read_dir(client_root).ok()?.flatten() {
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        if !dir_name.starts_with(&prefix) {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(entry.path()) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let file_name = file.file_name().to_string_lossy().to_string();
+            if !file_name.ends_with("-extra.jar") {
+                continue;
+            }
+            if let Some(bytes) = version_json_from_jar(&file.path()) {
+                return Some(bytes);
+            }
+        }
+    }
+    None
+}
+
+/// 只含 version.json 的小包：Forge / NeoForge 的补丁客户端 jar 里没有这个文件，
+/// 而 CustomSkinLoader 这类 Mod 靠 classpath 上的它识别游戏版本。
+/// 缺失时会退回「版本 0」，把旧版补丁打到新类上直接崩。
+fn version_meta_jar(game_root: &Path, root_id: &str) -> Option<PathBuf> {
+    if root_id.is_empty() {
+        return None;
+    }
+    let dest = crate::config::data_dir()
+        .join("runtime")
+        .join(format!("{root_id}-version.jar"));
+    // 只认非空文件：上次写到一半崩溃留下的空包会让 CSL 继续识别失败
+    if let Ok(meta) = std::fs::metadata(&dest) {
+        if meta.len() > 64 {
+            return Some(dest);
+        }
+        let _ = std::fs::remove_file(&dest);
+    }
+    let bytes = version_json_bytes(game_root, root_id)?;
+    std::fs::create_dir_all(dest.parent()?).ok()?;
+    let tmp = dest.with_file_name(format!("{root_id}-version.jar.tmp"));
+    let out = std::fs::File::create(&tmp).ok()?;
+    let mut writer = zip::ZipWriter::new(out);
+    writer
+        .start_file("version.json", zip::write::SimpleFileOptions::default())
+        .ok()?;
+    writer.write_all(&bytes).ok()?;
+    writer.finish().ok()?;
+    if std::fs::rename(&tmp, &dest).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return None;
+    }
+    Some(dest)
+}
+
+/// 版本隔离时每个实例都有独立的 options.txt；首次启动补一份中文并跳过
+/// 无障碍引导，避免每个新版本都被语言 / 辅助功能向导拦一次。
+fn ensure_default_options(game_dir: &Path) {
+    let path = game_dir.join("options.txt");
+    if path.exists() {
+        return;
+    }
+    let _ = std::fs::write(&path, "lang:zh_cn\nonboardAccessibility:false\n");
+}
+
 pub fn build(
     cfg: &Config,
     merged: &install::MergedDetail,
@@ -174,8 +272,17 @@ pub fn build(
 ) -> Result<(PathBuf, Vec<String>, Vec<String>)> {
     let detail = &merged.detail;
     let game_root = cfg.game_root();
+    // 单人世界也会起内置服务端并校验名字；中文等字符会在进世界时被断开。
+    if !crate::auth::valid_player_name(&account.name) {
+        bail!(
+            "账号名「{}」不符合 Minecraft 规则：只能用 1-16 位字母、数字或下划线。\
+             进入世界会被服务器断开，请重新创建一个合法名称的账号。",
+            account.name
+        );
+    }
     let game_dir = crate::instance::game_dir(cfg, version_id);
     std::fs::create_dir_all(&game_dir)?;
+    ensure_default_options(&game_dir);
 
     let natives_dir = install::natives_dir(cfg, version_id);
     if !natives_dir.exists() {
@@ -227,7 +334,22 @@ pub fn build(
         }
     }
 
-    let classpath_entries = install::merged_classpath_entries(cfg, detail, jar_id.as_deref());
+    let classpath_entries = {
+        let mut entries = install::merged_classpath_entries(cfg, detail, jar_id.as_deref());
+        // Forge / NeoForge 的版本 jar 是补丁后的客户端，不含 version.json；
+        // CustomSkinLoader 这类按版本适配的 Mod 会退回「版本 0」并把旧补丁打到新类上直接崩。
+        // 这里补一个只含 version.json 的小包，模拟官方启动器的 classpath。
+        if let Some(root_id) = merged.chain.last() {
+            if jar_id.as_deref() != Some(root_id.as_str()) {
+                if let Some(meta) = version_meta_jar(&game_root, root_id) {
+                    if !entries.contains(&meta) {
+                        entries.push(meta);
+                    }
+                }
+            }
+        }
+        entries
+    };
     let classpath = classpath_entries
         .iter()
         .map(|p| p.to_string_lossy().to_string())

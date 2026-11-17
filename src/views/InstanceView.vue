@@ -5,6 +5,7 @@ import {
   api,
   openExternal,
   openFolder,
+  pickWorldZip,
   revealFile,
   savePackDialog,
   type ExportPreview,
@@ -19,6 +20,8 @@ import {
   type ModUpdate,
   type ModUpdateReport,
   type WorldSeed,
+  type WorldBackup,
+  type WorldSettings,
   type WorldSummary,
 } from "../api";
 import AppIcon from "../components/AppIcon.vue";
@@ -28,6 +31,8 @@ import WoodButton from "../components/WoodButton.vue";
 import WoodInput from "../components/WoodInput.vue";
 import WoodModal from "../components/WoodModal.vue";
 import WoodSelect from "../components/WoodSelect.vue";
+import WoodToggle from "../components/WoodToggle.vue";
+import WorldSettingsModal from "../components/WorldSettingsModal.vue";
 import {
   exportModpack,
   launchVersion,
@@ -91,6 +96,12 @@ const filesLoading = ref(false);
 const fileQuery = ref("");
 const worlds = ref<WorldSummary[]>([]);
 const datapackWorld = ref("");
+const backups = ref<WorldBackup[]>([]);
+const backupsLoading = ref(false);
+const backupBusy = ref("");
+const backupImporting = ref(false);
+const togglingName = ref("");
+const worldSettingsFolder = ref<string | null>(null);
 const projectionMods = ref<{ litematica: boolean; worldedit: boolean } | null>(null);
 const projectionLoading = ref(false);
 const seedOpen = ref(false);
@@ -420,6 +431,7 @@ watch(
     if (!store.instanceId) return;
     void loadAll();
     if (contentTabs.includes(tab.value)) void loadFiles();
+    if (tab.value === "saves") void loadBackups();
   }
 );
 
@@ -429,6 +441,7 @@ watch(tab, async (value) => {
   if (value === "gameopts") void loadOptionsPresets();
   if (!contentTabs.includes(value)) return;
   if (value === "schematics") void loadProjectionMods();
+  if (value === "saves") void loadBackups();
   if (value === "datapacks") {
     await loadWorlds();
     if (!datapackWorld.value) {
@@ -942,12 +955,15 @@ function openBrokenFolder() {
 }
 
 async function toggleFile(file: InstanceFile) {
-  if (!store.instanceId) return;
+  if (!store.instanceId || togglingName.value) return;
+  togglingName.value = file.name;
   try {
     await api.instanceToggleFile(store.instanceId, contentKind.value, file.name);
     await loadFiles();
   } catch (err) {
     notify(`切换失败：${String(err)}`, "err");
+  } finally {
+    togglingName.value = "";
   }
 }
 
@@ -1066,8 +1082,125 @@ async function importContent() {
   }
 }
 
-function contentIcon() {
-  switch (tab.value) {
+async function loadBackups() {
+  if (!store.instanceId) return;
+  backupsLoading.value = true;
+  try {
+    backups.value = await api.instanceBackups(store.instanceId);
+  } catch (err) {
+    backups.value = [];
+    notify(`读取存档备份失败：${String(err)}`, "err");
+  } finally {
+    backupsLoading.value = false;
+  }
+}
+
+async function backupWorld(file: InstanceFile) {
+  if (!store.instanceId || backupBusy.value) return;
+  if (store.runningVersionId === store.instanceId) {
+    notify("游戏正在运行，请先退出再备份存档", "err");
+    return;
+  }
+  backupBusy.value = file.name;
+  try {
+    const backup = await api.instanceBackupWorld(store.instanceId, file.name);
+    await loadBackups();
+    notify(`已备份「${file.display_name}」（${formatBytes(backup.size)}）`);
+  } catch (err) {
+    notify(`备份存档失败：${String(err)}`, "err");
+  } finally {
+    backupBusy.value = "";
+  }
+}
+
+async function importWorldZip() {
+  if (!store.instanceId || backupImporting.value) return;
+  if (store.runningVersionId === store.instanceId) {
+    notify("游戏正在运行，请先退出再导入存档", "err");
+    return;
+  }
+  const path = await pickWorldZip();
+  if (!path) return;
+  backupImporting.value = true;
+  try {
+    const name = await api.instanceImportWorld(store.instanceId, path);
+    await Promise.all([refreshFiles(), loadBackups()]);
+    notify(`已导入存档「${name}」`);
+  } catch (err) {
+    notify(`导入存档失败：${String(err)}`, "err");
+  } finally {
+    backupImporting.value = false;
+  }
+}
+
+async function restoreBackup(backup: WorldBackup) {
+  if (!store.instanceId) return;
+  if (backupBusy.value) {
+    notify("正在处理另一个存档操作，请稍候", "err");
+    return;
+  }
+  if (store.runningVersionId === store.instanceId) {
+    notify("游戏正在运行，请先退出再还原存档", "err");
+    return;
+  }
+  const ok = await confirm(
+    `还原「${backup.world}」？当前同名存档会先改名为「旧存档 时间戳」保留下来。`,
+    { title: "还原存档备份", kind: "warning" }
+  );
+  if (!ok) return;
+  backupBusy.value = backup.path;
+  try {
+    const name = await api.instanceRestoreBackup(store.instanceId, backup.path);
+    await Promise.all([refreshFiles(), loadBackups()]);
+    notify(`已还原存档「${name}」`);
+  } catch (err) {
+    notify(`还原存档失败：${String(err)}`, "err");
+  } finally {
+    backupBusy.value = "";
+  }
+}
+
+async function deleteBackup(backup: WorldBackup) {
+  if (!store.instanceId) return;
+  const ok = await confirm(`删除「${backup.world}」的这份备份？`, {
+    title: "删除存档备份",
+    kind: "warning",
+  });
+  if (!ok) return;
+  try {
+    await api.instanceDeleteBackup(store.instanceId, backup.path);
+    await loadBackups();
+    notify("备份已删除");
+  } catch (err) {
+    notify(`删除备份失败：${String(err)}`, "err");
+  }
+}
+
+async function openBackupsFolder() {
+  if (!store.instanceId) return;
+  try {
+    openFolder(await api.instanceBackupsDir(store.instanceId));
+  } catch (err) {
+    notify(`打开备份目录失败：${String(err)}`, "err");
+  }
+}
+
+function openWorldSettings(file: InstanceFile) {
+  if (!store.instanceId) return;
+  if (store.runningVersionId === store.instanceId) {
+    notify("游戏正在运行，请先退出再修改世界设置", "err");
+    return;
+  }
+  worldSettingsFolder.value = file.name;
+}
+
+function onWorldSettingsSaved(settings: WorldSettings) {
+  notify(`已保存世界设置：${settings.name}`);
+  void refreshFiles();
+  void loadBackups();
+}
+
+function contentIcon() {  switch (tab.value) {
     case "mods":
       return "grid";
     case "resourcepacks":
@@ -1091,9 +1224,13 @@ function goTab(next: Tab) {
   tab.value = next;
 }
 
+/// 汉化资源包入口：CFPA 提供整合包与模组的中文翻译资源
+function openTranslationPacks() {
+  openExternal("https://cfpa.site/");
+}
+
 function downloadMore() {
-  if (!info.value) return;
-  const map: Record<string, string> = {
+  if (!info.value) return;  const map: Record<string, string> = {
     mods: "mods",
     resourcepacks: "resourcepacks",
     shaderpacks: "shaders",
@@ -1732,13 +1869,33 @@ function launch() {
                 <AppIcon name="download" :size="14" />
                 下载新{{ contentLabel }}
               </WoodButton>
+              <WoodButton
+                v-if="tab === 'resourcepacks'"
+                variant="ghost"
+                size="sm"
+                title="打开 CFPA 汉化资源包页面，安装后可汉化整合包与模组"
+                @click="openTranslationPacks"
+              >
+                <AppIcon name="external" :size="13" />
+                汉化资源包
+              </WoodButton>
               <WoodButton variant="ghost" size="sm" @click="openContentFolder">
                 <AppIcon name="folder" :size="14" />
                 打开文件夹
               </WoodButton>
+              <WoodButton
+                v-if="tab === 'saves'"
+                variant="soft"
+                size="sm"
+                :disabled="backupImporting"
+                @click="importWorldZip"
+              >
+                <AppIcon name="package" :size="14" />
+                {{ backupImporting ? "导入中…" : "导入压缩包" }}
+              </WoodButton>
               <WoodButton v-if="!noWorlds" variant="soft" size="sm" @click="importContent">
                 <AppIcon name="plus" :size="14" />
-                从文件导入
+                {{ tab === "saves" ? "导入存档文件夹" : "从文件导入" }}
               </WoodButton>
               <IconButton
                 icon="refresh"
@@ -1796,6 +1953,69 @@ function launch() {
             <span v-else class="muted small">
               这个版本还没有存档世界，数据包需要放进具体世界。
             </span>
+          </div>
+
+          <div v-if="tab === 'saves'" class="save-backups">
+            <header class="save-backups__head">
+              <div class="save-backups__titles">
+                <strong>存档备份</strong>
+                <span class="muted small">
+                  备份放在实例的 backups 目录；还原时同名存档会先改名为旧存档保留
+                </span>
+              </div>
+              <div class="row">
+                <WoodButton
+                  variant="ghost"
+                  size="sm"
+                  :disabled="backupsLoading"
+                  @click="loadBackups"
+                >
+                  <AppIcon name="refresh" :size="13" />
+                  刷新备份
+                </WoodButton>
+                <WoodButton variant="ghost" size="sm" @click="openBackupsFolder">
+                  <AppIcon name="folder" :size="13" />
+                  备份目录
+                </WoodButton>
+              </div>
+            </header>
+
+            <div v-if="backupsLoading" class="file-state">
+              <span class="skeleton" />
+              <span class="muted small">正在读取备份…</span>
+            </div>
+            <p v-else-if="!backups.length" class="save-backups__empty muted small">
+              还没有备份。点存档右侧的下载按钮，就能为这个存档生成一份 zip。
+            </p>
+            <div v-else class="save-backups__list">
+              <div v-for="backup in backups" :key="backup.path" class="backup-row">
+                <span class="backup-row__icon">
+                  <AppIcon name="database" :size="15" />
+                </span>
+                <div class="backup-row__main">
+                  <strong :title="backup.world">{{ backup.world }}</strong>
+                  <span class="muted small mono">
+                    {{ formatDate(new Date(backup.created * 1000).toISOString()) }} ·
+                    {{ formatBytes(backup.size) }}
+                  </span>
+                </div>
+                <WoodButton
+                  variant="soft"
+                  size="sm"
+                  :disabled="backupBusy === backup.path"
+                  @click="restoreBackup(backup)"
+                >
+                  {{ backupBusy === backup.path ? "还原中…" : "还原" }}
+                </WoodButton>
+                <IconButton
+                  icon="trash"
+                  label="删除备份"
+                  variant="danger-quiet"
+                  :size="28"
+                  @click="deleteBackup(backup)"
+                />
+              </div>
+            </div>
           </div>
 
           <div v-if="tab === 'mods' && updatesLoading" class="update-state">
@@ -1919,17 +2139,13 @@ function launch() {
                     : tab === "screenshots"
                       ? "进游戏按 F2 截图，图片就会出现在这里。"
                       : tab === "saves"
-                        ? "在游戏里新建世界，或从本地导入存档文件夹。"
+                        ? "在游戏里新建世界，或点右上角导入压缩包 / 存档文件夹。"
                         : tab === "schematics"
                           ? "把 .litematic / .schem / .schematic 投影文件放进这里，游戏内用 Mod 载入。"
                           : `点击「下载新${contentLabel}」去资源站挑选，或者从本地文件导入。`
                 }}
               </p>
             </div>
-            <WoodButton v-if="!noWorlds" variant="soft" size="sm" @click="importContent">
-              <AppIcon name="plus" :size="14" />
-              从文件导入
-            </WoodButton>
           </div>
           <div v-else-if="!filteredFiles.length" class="file-state">
             <span class="muted small">没有匹配的文件</span>
@@ -2006,13 +2222,30 @@ function launch() {
                 :size="30"
                 @click="openModSource(file)"
               />
-              <IconButton
+              <WoodToggle
                 v-if="tab === 'mods' || tab === 'resourcepacks' || tab === 'shaderpacks'"
-                :icon="file.enabled ? 'check' : 'close'"
-                :label="file.enabled ? '禁用' : '启用'"
+                class="file-toggle"
+                :model-value="file.enabled"
+                :disabled="togglingName === file.name"
+                :title="file.enabled ? '禁用' : '启用'"
+                @update:model-value="toggleFile(file)"
+              />
+              <IconButton
+                v-if="tab === 'saves' && file.is_dir"
+                icon="settings"
+                label="世界设置"
                 variant="ghost"
                 :size="30"
-                @click="toggleFile(file)"
+                @click="openWorldSettings(file)"
+              />
+              <IconButton
+                v-if="tab === 'saves' && file.is_dir"
+                icon="download"
+                :label="backupBusy === file.name ? '正在备份…' : '备份此存档'"
+                variant="ghost"
+                :size="30"
+                :disabled="backupBusy === file.name"
+                @click="backupWorld(file)"
               />
               <IconButton
                 v-if="tab === 'saves' && file.is_dir"
@@ -2067,6 +2300,14 @@ function launch() {
         </WoodButton>
       </template>
     </WoodModal>
+
+    <WorldSettingsModal
+      v-if="worldSettingsFolder && store.instanceId"
+      :version-id="store.instanceId"
+      :folder="worldSettingsFolder"
+      @close="worldSettingsFolder = null"
+      @saved="onWorldSettingsSaved"
+    />
 
     <WoodModal
       v-if="checkOpen"
@@ -3679,6 +3920,87 @@ function launch() {
 .opts-preset__info strong {
   font-size: 12.5px;
   color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 存档备份面板 */
+.file-toggle {
+  flex-shrink: 0;
+  margin: 0 2px;
+}
+
+.save-backups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 2px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  box-shadow: inset 0 1px 2px rgba(70, 48, 26, 0.06);
+}
+
+.save-backups__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.save-backups__titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.save-backups__titles strong {
+  font-size: 13px;
+  color: var(--walnut-deep);
+}
+
+.save-backups__empty {
+  margin: 2px 0 0;
+}
+
+.save-backups__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.backup-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 2px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.backup-row__icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 2px;
+  background: var(--moss-soft);
+  color: var(--moss);
+}
+
+.backup-row__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.backup-row__main strong {
+  font-size: 12.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

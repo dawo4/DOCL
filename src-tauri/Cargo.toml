@@ -1,6 +1,6 @@
 [package]
 name = "mc-launcher"
-version = "1.7.0"
+version = "1.7.1"
 description = "DOCL - Minecraft 第三方启动器"
 authors = ["deepseekwork"]
 license = "AGPL-3.0-only"
@@ -27,6 +27,7 @@ futures = "0.3"
 sha1 = "0.10"
 sha2 = "0.10"
 zip = "2"
+quartz_nbt = "0.2.9"
 png = "0.17"
 flate2 = "1"
 anyhow = "1"

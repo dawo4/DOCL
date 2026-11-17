@@ -178,7 +178,7 @@ async function confirmImport() {
   }
   importing.value = true;
   try {
-    await api.skinLibraryImport(
+    const item = await api.skinLibraryImport(
       importName.value.trim() || "未命名皮肤",
       importModel.value,
       importPath.value
@@ -188,6 +188,8 @@ async function confirmImport() {
     importPath.value = "";
     importModel.value = "classic";
     await loadLibrary();
+    // 导入后直接预览刚入库的这件，而不是停在原来的选中项
+    previewId.value = item.id;
     notify("皮肤已入库");
   } catch (err) {
     notify(`入库失败：${String(err)}`, "err");
@@ -216,6 +218,7 @@ async function confirmPlayer() {
     playerOpen.value = false;
     playerName.value = "";
     await loadLibrary();
+    previewId.value = item.id;
     notify(`已抓取 ${item.name} 的皮肤`);
   } catch (err) {
     notify(`抓取失败：${String(err)}`, "err");
@@ -228,12 +231,13 @@ async function confirmHarvest() {
   if (harvesting.value) return;
   harvesting.value = true;
   try {
-    await api.skinLibraryFromAccount(
+    const item = await api.skinLibraryFromAccount(
       harvestName.value.trim() || "未命名皮肤",
       harvestAccount.value
     );
     harvestOpen.value = false;
     await loadLibrary();
+    previewId.value = item.id;
     notify("已收录到皮肤库");
   } catch (err) {
     notify(`收录失败：${String(err)}`, "err");

@@ -1,6 +1,17 @@
 <script setup lang="ts">
-import * as THREE from "three";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import type {
+  CanvasTexture,
+  Clock,
+  Group,
+  Mesh,
+  MeshStandardMaterial,
+  Object3D,
+  PerspectiveCamera,
+  Raycaster,
+  Scene,
+  WebGLRenderer,
+} from "three";
 import {
   FACE_BY_GROUP,
   buildBoxes,
@@ -13,6 +24,10 @@ import {
   type PartFilter,
 } from "../skinEditor/atlas";
 import { bresenham, floodFill, hexToRgba, rgbaToHex } from "../skinEditor/paint";
+
+/// 运行时按需加载 three，避免它进入首屏包
+type Three = typeof import("three");
+let THREE: Three;
 
 const props = withDefaults(
   defineProps<{
@@ -31,10 +46,23 @@ const props = withDefaults(
     showAll?: boolean;
     /// 行走动画
     walk?: boolean;
+    /// 油漆桶整块填充：直接铺满命中的面
+    fillWhole?: boolean;
+    /// 图层眼睛：隐藏后不显示、也不可拾取
+    baseVisible?: boolean;
+    overlayVisible?: boolean;
     /// 传 null 时铺满父容器
     height?: number | null;
   }>(),
-  { height: 520, ghost: true, showAll: false, walk: false }
+  {
+    height: 520,
+    ghost: true,
+    showAll: false,
+    walk: false,
+    fillWhole: false,
+    baseVisible: true,
+    overlayVisible: true,
+  }
 );
 
 const emit = defineEmits<{
@@ -45,7 +73,7 @@ const emit = defineEmits<{
 
 interface FaceEntry {
   ctx: CanvasRenderingContext2D;
-  texture: THREE.CanvasTexture;
+  texture: CanvasTexture;
   rect: [number, number, number, number];
   flipX: boolean;
   flipY: boolean;
@@ -53,38 +81,43 @@ interface FaceEntry {
 
 interface BoxEntry {
   box: BoxSpec;
-  mesh: THREE.Mesh;
+  mesh: Mesh;
   faces: FaceEntry[];
-  materials: THREE.MeshStandardMaterial[];
+  materials: MeshStandardMaterial[];
 }
 
 const host = ref<HTMLDivElement | null>(null);
-let renderer: THREE.WebGLRenderer | null = null;
-let scene: THREE.Scene | null = null;
-let camera: THREE.PerspectiveCamera | null = null;
+let renderer: WebGLRenderer | null = null;
+let scene: Scene | null = null;
+let camera: PerspectiveCamera | null = null;
 let frame = 0;
 let resizeObserver: ResizeObserver | null = null;
 let boxes: BoxSpec[] = [];
 let entries: BoxEntry[] = [];
-let worldGroup: THREE.Group | null = null;
-let headGroup: THREE.Group | null = null;
-let armLeftGroup: THREE.Group | null = null;
-let armRightGroup: THREE.Group | null = null;
-let legLeftGroup: THREE.Group | null = null;
-let legRightGroup: THREE.Group | null = null;
+let worldGroup: Group | null = null;
+let headGroup: Group | null = null;
+let armLeftGroup: Group | null = null;
+let armRightGroup: Group | null = null;
+let legLeftGroup: Group | null = null;
+let legRightGroup: Group | null = null;
 let walkFrame = 0;
-let walkClock: THREE.Clock | null = null;
-let meshMap = new Map<THREE.Object3D, BoxEntry>();
+let walkClock: Clock | null = null;
+let meshMap = new Map<Object3D, BoxEntry>();
 let docCanvas: HTMLCanvasElement | null = null;
 let docCtx: CanvasRenderingContext2D | null = null;
+let raycaster: Raycaster | null = null;
+let disposed = false;
 const dirty = new Set<string>();
-const raycaster = new THREE.Raycaster();
 const orbit = { theta: 0.62, phi: 0.12, radius: 66 };
 let orbiting = false;
 let painting = false;
 let activePointer = -1;
 let lastScreen = { x: 0, y: 0 };
 let lastPoint: { boxId: string; face: FaceName; x: number; y: number } | null = null;
+
+function layerOn(layer: "base" | "overlay") {
+  return layer === "base" ? props.baseVisible !== false : props.overlayVisible !== false;
+}
 
 function docContext(): CanvasRenderingContext2D | null {
   if (!props.source) return null;
@@ -98,7 +131,7 @@ function docContext(): CanvasRenderingContext2D | null {
 
 /* ---------- 材质与贴图 ---------- */
 
-function buildBoxEntry(box: BoxSpec, grow: number): THREE.Mesh {
+function buildBoxEntry(box: BoxSpec, grow: number): Mesh {
   const faces: FaceEntry[] = [];
   const materials = FACE_BY_GROUP.map((face) => {
     const [rx, ry, rw, rh] = faceRect(box, face);
@@ -244,7 +277,8 @@ function refreshPaintable() {
     const active = matchPart && entry.box.layer === props.layer;
     // 全显时所有部位/图层都不透明；否则非活动部分按透视开关处理
     const solid = active || props.showAll;
-    entry.mesh.visible = solid || props.ghost;
+    // 图层眼睛关掉后整层不显示，也不参与拾取
+    entry.mesh.visible = layerOn(entry.box.layer) && (solid || props.ghost);
     for (const material of entry.materials) {
       material.opacity = solid ? 1 : 0.16;
       material.depthWrite = solid;
@@ -293,7 +327,7 @@ interface Hit {
 }
 
 function hitAt(event: PointerEvent): Hit | null {
-  if (!renderer || !camera) return null;
+  if (!renderer || !camera || !raycaster) return null;
   const rect = renderer.domElement.getBoundingClientRect();
   if (!rect.width || !rect.height) return null;
   raycaster.setFromCamera(
@@ -314,9 +348,8 @@ function hitAt(event: PointerEvent): Hit | null {
     if (!entry) continue;
     const active =
       (props.part === "all" || entry.box.part === props.part) && entry.box.layer === props.layer;
-    // 其它部位以半透明幽灵显示，只作参考，不参与拾取：
-    // 否则选中手臂后，身体那层半透明仍会挡住射线，手臂就画不上去
-    if (!active) continue;
+    // 隐藏的图层不参与拾取；其它部位只是幽灵参考，也不参与
+    if (!active || !layerOn(entry.box.layer)) continue;
     const face = FACE_BY_GROUP[Math.floor(hit.faceIndex / 2)];
     if (!face) continue;
     const texel = uvToTexel(entry.box, face, hit.uv.x, hit.uv.y);
@@ -349,16 +382,21 @@ function fillAt(hit: Hit) {
   const ctx = docContext();
   if (!ctx) return;
   const color = hexToRgba(props.color);
-  const [rx, ry, rw, rh] = faceRect(hit.box, hit.face);
-  floodFill(ctx, hit.x, hit.y, color, [rx, ry, rw, rh]);
-  markDirty(hit.box.id);
+  const fillRectAt = (box: BoxSpec, face: FaceName, x: number, y: number) => {
+    const [rx, ry, rw, rh] = faceRect(box, face);
+    if (props.fillWhole) {
+      ctx.fillStyle = props.color;
+      ctx.fillRect(rx, ry, rw, rh);
+    } else {
+      // 只在命中的这个面里扩散，不会沿着图集空隙漏色
+      floodFill(ctx, x, y, color, [rx, ry, rw, rh]);
+    }
+    markDirty(box.id);
+  };
+  fillRectAt(hit.box, hit.face, hit.x, hit.y);
   if (props.symmetry) {
     const mirror = mirrorTexel(boxes, hit.box, hit.face, hit.x, hit.y);
-    if (mirror) {
-      const [mx, my, mw, mh] = faceRect(mirror.box, mirror.face);
-      floodFill(ctx, mirror.x, mirror.y, color, [mx, my, mw, mh]);
-      markDirty(mirror.box.id);
-    }
+    if (mirror) fillRectAt(mirror.box, mirror.face, mirror.x, mirror.y);
   }
   flushTextures();
   emit("change");
@@ -407,6 +445,7 @@ function resetPose() {
 
 function startWalk() {
   if (walkFrame) return;
+  if (!THREE || !scene) return;
   if (!walkClock) walkClock = new THREE.Clock();
   walkClock.start();
   const tick = () => {
@@ -508,9 +547,12 @@ function onContextMenu(event: MouseEvent) {
   event.preventDefault();
 }
 
-onMounted(() => {
+onMounted(async () => {
   const element = host.value;
   if (!element) return;
+  THREE = await import("three");
+  if (disposed || !host.value) return;
+  raycaster = new THREE.Raycaster();
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(32, 1, 0.1, 400);
   updateCamera();
@@ -554,7 +596,14 @@ onMounted(() => {
 });
 
 watch(
-  () => [props.part, props.layer, props.ghost, props.showAll],
+  () => [
+    props.part,
+    props.layer,
+    props.ghost,
+    props.showAll,
+    props.baseVisible,
+    props.overlayVisible,
+  ],
   () => refreshPaintable()
 );
 
@@ -582,6 +631,7 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  disposed = true;
   if (frame) cancelAnimationFrame(frame);
   frame = 0;
   if (walkFrame) cancelAnimationFrame(walkFrame);

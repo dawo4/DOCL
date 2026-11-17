@@ -1,12 +1,13 @@
 {
   "name": "docl",
   "private": true,
-  "version": "1.7.0",
+  "version": "1.7.1",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "test": "vitest run",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -23,6 +24,7 @@
     "@vitejs/plugin-vue": "^6",
     "typescript": "^5",
     "vite": "^7",
+    "vitest": "^3.2.7",
     "vue-tsc": "^3"
   }
 }

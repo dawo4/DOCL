@@ -124,6 +124,8 @@ struct CfMod {
     id: i64,
     #[serde(default)]
     name: String,
+    // Modrinth/CurseForge 的 slug，当前只用 id，留着便于以后拼接网站链接
+    #[allow(dead_code)]
     #[serde(default)]
     slug: String,
     #[serde(default)]

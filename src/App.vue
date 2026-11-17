@@ -179,10 +179,6 @@ async function listenDrop() {
 
 async function handleDrop(paths: string[]) {
   if (!paths.length) return;
-  if (store.installingId) {
-    notify("已有任务正在进行，请稍后再导入", "err");
-    return;
-  }
   try {
     const items = await api.dropInspect(paths);
     if (!items.length) {

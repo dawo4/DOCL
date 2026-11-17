@@ -22,6 +22,8 @@ pub struct FileTask {
 #[derive(Debug)]
 pub struct ProgressState {
     pub stage: String,
+    /// 所属任务 ID，前端据此把进度分派到任务列表里的对应条目
+    pub job: String,
     message: Mutex<String>,
     /// 依次经过的安装阶段，供下载面板显示成步骤列表
     steps: Mutex<Vec<ProgressStep>>,
@@ -30,6 +32,8 @@ pub struct ProgressState {
     pub bytes_done: AtomicU64,
     pub bytes_total: AtomicU64,
     pub cancel: AtomicBool,
+    /// 用户暂停：下载循环会在分块之间停下，保留断点
+    pub paused: AtomicBool,
     pub active: AtomicBool,
     /// 是否已有刷新联动的任务，避免重复起多个
     ticking: AtomicBool,
@@ -44,10 +48,14 @@ const MAX_STEPS: usize = 8;
 pub struct ProgressStep {
     pub label: String,
     pub done: bool,
+    /// 该步骤的完成度（0-100）。历史步骤固定 100，当前步骤取整体进度，
+    /// 供下载面板像 PCL 那样逐行显示百分比。
+    pub percent: f64,
 }
 
 #[derive(Clone, Serialize)]
 pub struct ProgressSnapshot {
+    pub job: String,
     pub stage: String,
     pub message: String,
     pub steps: Vec<ProgressStep>,
@@ -57,12 +65,18 @@ pub struct ProgressSnapshot {
     pub bytes_total: u64,
     pub elapsed_ms: u64,
     pub active: bool,
+    pub paused: bool,
 }
 
 impl ProgressState {
     pub fn new(stage: &str) -> Arc<Self> {
+        Self::with_job(stage, "")
+    }
+
+    pub fn with_job(stage: &str, job: impl Into<String>) -> Arc<Self> {
         Arc::new(Self {
             stage: stage.to_string(),
+            job: job.into(),
             message: Mutex::new(String::new()),
             steps: Mutex::new(Vec::new()),
             files_done: AtomicU64::new(0),
@@ -70,6 +84,7 @@ impl ProgressState {
             bytes_done: AtomicU64::new(0),
             bytes_total: AtomicU64::new(0),
             cancel: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
             active: AtomicBool::new(true),
             ticking: AtomicBool::new(false),
             started: Mutex::new(Instant::now()),
@@ -102,10 +117,12 @@ impl ProgressState {
             if !repeated {
                 if let Some(last) = steps.last_mut() {
                     last.done = true;
+                    last.percent = 100.0;
                 }
                 steps.push(ProgressStep {
                     label: msg.clone(),
                     done: false,
+                    percent: 0.0,
                 });
                 if steps.len() > MAX_STEPS {
                     steps.remove(0);
@@ -139,20 +156,61 @@ impl ProgressState {
         self.cancel.load(Ordering::Relaxed)
     }
 
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
+
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Relaxed);
+    }
+
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::Relaxed);
+    }
+
+    /// 暂停期间原地等待；取消优先，避免暂停中的任务无法再取消
+    pub async fn wait_if_paused(&self) {
+        while self.is_paused() {
+            if self.is_cancelled() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(120)).await;
+        }
+    }
+
     pub fn snapshot(&self) -> ProgressSnapshot {
         let active = self.active.load(Ordering::Relaxed);
+        let files_done = self.files_done.load(Ordering::Relaxed);
+        let files_total = self.files_total.load(Ordering::Relaxed);
+        let bytes_done = self.bytes_done.load(Ordering::Relaxed);
+        let bytes_total = self.bytes_total.load(Ordering::Relaxed);
+        let percent = if bytes_total > 0 {
+            (bytes_done as f64 / bytes_total as f64 * 100.0).min(100.0)
+        } else if files_total > 0 {
+            (files_done as f64 / files_total as f64 * 100.0).min(100.0)
+        } else {
+            0.0
+        };
         let mut steps = self
             .steps
             .lock()
             .map(|list| list.clone())
             .unwrap_or_default();
+        // 当前步骤带上整体进度，面板就能逐行显示「49% 下载整合包文件」
+        if active {
+            if let Some(current) = steps.iter_mut().rev().find(|step| !step.done) {
+                current.percent = percent;
+            }
+        }
         // 任务结束后最后一步也视为完成
         if !active {
             if let Some(last) = steps.last_mut() {
                 last.done = true;
+                last.percent = 100.0;
             }
         }
         ProgressSnapshot {
+            job: self.job.clone(),
             stage: self.stage.clone(),
             message: self
                 .message
@@ -160,16 +218,17 @@ impl ProgressState {
                 .map(|m| m.clone())
                 .unwrap_or_default(),
             steps,
-            files_done: self.files_done.load(Ordering::Relaxed),
-            files_total: self.files_total.load(Ordering::Relaxed),
-            bytes_done: self.bytes_done.load(Ordering::Relaxed),
-            bytes_total: self.bytes_total.load(Ordering::Relaxed),
+            files_done,
+            files_total,
+            bytes_done,
+            bytes_total,
             elapsed_ms: self
                 .started
                 .lock()
                 .map(|started| started.elapsed().as_millis() as u64)
                 .unwrap_or(0),
             active,
+            paused: self.is_paused(),
         }
     }
 }
@@ -357,6 +416,71 @@ static WINDOW_START: Mutex<Option<Instant>> = Mutex::new(None);
 
 pub fn set_speed_limit(bytes_per_sec: u64) {
     SPEED_LIMIT.store(bytes_per_sec, Ordering::Relaxed);
+}
+
+/* ---------- 全局并发闸门 ---------- */
+
+/// 参考 PCL 的做法：所有任务共享一个全局并发额度，而不是每个任务各自占满。
+/// 否则「并行 2 个任务 × 每个 128 并发」会瞬间打出 256 条连接，把源站和本机端口都打爆。
+struct GlobalGate {
+    limit: AtomicU64,
+    in_flight: AtomicU64,
+    notify: tokio::sync::Notify,
+}
+
+static GLOBAL_GATE: OnceLock<GlobalGate> = OnceLock::new();
+
+fn global_gate() -> &'static GlobalGate {
+    GLOBAL_GATE.get_or_init(|| GlobalGate {
+        limit: AtomicU64::new(16),
+        in_flight: AtomicU64::new(0),
+        notify: tokio::sync::Notify::new(),
+    })
+}
+
+/// 由设置页的「并发下载数」驱动，立即影响后续派发的文件
+pub fn set_concurrency_limit(limit: usize) {
+    let limit = limit.clamp(1, MAX_CONCURRENCY) as u64;
+    let gate = global_gate();
+    gate.limit.store(limit, Ordering::Relaxed);
+    gate.notify.notify_waiters();
+}
+
+/// 占住一个全局并发名额；取消时直接返回，交给上层报错
+struct GatePermit;
+
+impl GatePermit {
+    async fn acquire(progress: &ProgressState) -> Option<Self> {
+        let gate = global_gate();
+        loop {
+            if progress.is_cancelled() {
+                return None;
+            }
+            let limit = gate.limit.load(Ordering::Relaxed).max(1);
+            let current = gate.in_flight.load(Ordering::Relaxed);
+            if current < limit
+                && gate
+                    .in_flight
+                    .compare_exchange(current, current + 1, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                return Some(Self);
+            }
+            // 等一个名额空出来；同时保持取消可打断
+            tokio::select! {
+                _ = gate.notify.notified() => {}
+                _ = tokio::time::sleep(Duration::from_millis(60)) => {}
+            }
+        }
+    }
+}
+
+impl Drop for GatePermit {
+    fn drop(&mut self) {
+        let gate = global_gate();
+        gate.in_flight.fetch_sub(1, Ordering::Relaxed);
+        gate.notify.notify_waiters();
+    }
 }
 
 /// 用户是否强制「仅镜像」：此时不看智能排序，全部镜像优先
@@ -658,6 +782,8 @@ async fn fetch_to_file(
             drop(file);
             bail!("下载已取消");
         }
+        // 暂停只发生在分块之间：已写入的部分保留，继续后断点续传
+        progress.wait_if_paused().await;
         // 单块读取加超时，避免数据流卡住时永远等不到下一个 chunk
         let next = match tokio::time::timeout(Duration::from_secs(15), stream.next()).await {
             Ok(value) => value,
@@ -988,14 +1114,33 @@ async fn download_one(
         bail!("下载已取消");
     }
     if task.dest.exists() {
-        if let Ok(meta) = tokio::fs::metadata(&task.dest).await {
-            if task.size == 0 || meta.len() == task.size {
+        let meta = tokio::fs::metadata(&task.dest).await.ok();
+        let size_ok = meta
+            .as_ref()
+            .map(|meta| task.size == 0 || meta.len() == task.size)
+            .unwrap_or(false);
+        // 清单给了 SHA1 就以内容为准：长度对得上也要再校验一次，
+        // 避免上次下载被截断/改写后一直被当成已完成跳过
+        let hash_ok = match task.sha1.as_deref().filter(|value| !value.is_empty()) {
+            Some(expected) if size_ok => {
+                let mut hasher = Sha1::new();
+                hash_existing(&task.dest, &mut hasher).await.is_ok()
+                    && format!("{:x}", hasher.finalize()).eq_ignore_ascii_case(expected)
+            }
+            Some(_) => false,
+            None => true,
+        };
+        if size_ok && hash_ok {
+            if let Some(meta) = meta {
                 progress.files_done.fetch_add(1, Ordering::Relaxed);
                 progress
                     .bytes_done
                     .fetch_add(meta.len(), Ordering::Relaxed);
-                return Ok(());
             }
+            return Ok(());
+        }
+        if size_ok && !hash_ok {
+            let _ = tokio::fs::remove_file(&task.dest).await;
         }
     }
 
@@ -1038,7 +1183,14 @@ async fn download_one(
         };
         // 前几次都允许因过慢切源，最后一次只求下完，避免两个源都慢时直接失败
         let allow_slow_bail = attempt + 1 < ATTEMPTS;
-        match fetch_to_file(client, url, alternate, task, progress, allow_slow_bail).await {
+        // 全局并发名额每次尝试单独申请：失败退避期间把名额让给其它文件，
+        // 否则一批失败文件会在 15 秒退避里把额度全占住
+        let Some(permit) = GatePermit::acquire(progress.as_ref()).await else {
+            bail!("下载已取消");
+        };
+        let result = fetch_to_file(client, url, alternate, task, progress, allow_slow_bail).await;
+        drop(permit);
+        match result {
             Ok(()) => {
                 // 镜像侧成功一次就说明源是健康的：清零连续失败计数，
                 // 否则几次偶发失败会把整批文件都切成官方优先，反而更慢
@@ -1087,7 +1239,9 @@ pub async fn refetch(client: &reqwest::Client, task: &FileTask, use_mirror: bool
 
 /// 下载任务并发上限。设置页滑条、各调用点都必须引用它，
 /// 避免像整合包那样各自硬编码成 32 导致上限不一致。
-pub const MAX_CONCURRENCY: usize = 64;
+/// 上限 128 是给「装大整合包」留的余地：源站限速时自适应逻辑会主动降并发，
+/// 默认值仍建议留在 8-32。
+pub const MAX_CONCURRENCY: usize = 128;
 
 /// 一批下载的结果。个别文件失败不再让整批任务直接报错，
 /// 由调用方决定是提示还是中断。
@@ -1100,28 +1254,27 @@ pub struct DownloadOutcome {
 /// 最近一批失败任务，用于「重试失败文件」
 #[derive(Clone)]
 pub struct FailedBatch {
+    /// 这批失败项属于哪个任务：多任务并行时按任务分开存，
+    /// 否则新任务启动会把别的任务的失败清单清掉
+    pub job: String,
     pub tasks: Vec<FileTask>,
     pub concurrency: usize,
     pub use_mirror: bool,
 }
 
-static FAILED_BATCH: OnceLock<Mutex<Option<FailedBatch>>> = OnceLock::new();
+static FAILED_BATCHES: OnceLock<Mutex<Vec<FailedBatch>>> = OnceLock::new();
 
-fn failed_batch_slot() -> &'static Mutex<Option<FailedBatch>> {
-    FAILED_BATCH.get_or_init(|| Mutex::new(None))
+fn failed_batch_slot() -> &'static Mutex<Vec<FailedBatch>> {
+    FAILED_BATCHES.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-fn store_failed_batch(batch: Option<FailedBatch>) {
-    let Ok(mut slot) = failed_batch_slot().lock() else {
-        return;
-    };
-    let Some(incoming) = batch else {
-        *slot = None;
+fn store_failed_batch(batch: FailedBatch) {
+    let Ok(mut list) = failed_batch_slot().lock() else {
         return;
     };
     // 同一次作业会分多个批次下载，失败项要合并而不是覆盖；
     // 重试时也可能只剩最后一次的小批次，导致前面的失败文件丢失
-    if let Some(existing) = slot.as_mut() {
+    if let Some(existing) = list.iter_mut().find(|item| item.job == batch.job) {
         let mut dests: std::collections::HashSet<String> = existing
             .tasks
             .iter()
@@ -1129,26 +1282,36 @@ fn store_failed_batch(batch: Option<FailedBatch>) {
             .collect();
         existing
             .tasks
-            .extend(incoming.tasks.into_iter().filter(|task| {
+            .extend(batch.tasks.into_iter().filter(|task| {
                 dests.insert(task.dest.to_string_lossy().to_lowercase())
             }));
-        existing.concurrency = incoming.concurrency;
-        existing.use_mirror = incoming.use_mirror;
+        existing.concurrency = batch.concurrency;
+        existing.use_mirror = batch.use_mirror;
     } else {
-        *slot = Some(incoming);
+        list.push(batch);
     }
 }
 
-/// 取出并清空失败批次；重试后再次失败会重新写回
-pub fn take_failed_batch() -> Option<FailedBatch> {
-    failed_batch_slot().lock().ok().and_then(|mut slot| slot.take())
+/// 取出并清空某个任务的失败批次；不传任务时取最近的一批。
+/// 重试后再次失败会重新写回。
+pub fn take_failed_batch(job: Option<&str>) -> Option<FailedBatch> {
+    let Ok(mut list) = failed_batch_slot().lock() else {
+        return None;
+    };
+    if let Some(job) = job {
+        let index = list.iter().position(|item| item.job == job)?;
+        return Some(list.remove(index));
+    }
+    list.pop()
 }
 
-/// 新任务开始前清空上一轮遗留的失败批次。
-/// 同一次作业内的多个批次由 store_failed_batch 合并，避免后面的小批次
-/// 把前面真正失败的文件从「重试失败文件」里覆盖掉。
-pub fn reset_failed_batch() {
-    store_failed_batch(None);
+/// 新任务开始前只清空它自己上一轮的失败批次，
+/// 同一次作业内的多个批次由 store_failed_batch 合并。
+pub fn reset_failed_batch(job: &str) {
+    let Ok(mut list) = failed_batch_slot().lock() else {
+        return;
+    };
+    list.retain(|item| item.job != job);
 }
 
 pub async fn run_tasks(
@@ -1179,10 +1342,13 @@ pub async fn run_tasks_reporting(
     // 同一个目标路径只保留一个任务：整合包清单偶尔会把同一文件列两遍，
     // 两个任务同时写同一个 .part 会互相截断，最后内容必然对不上
     let mut seen_dest: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let tasks: Vec<FileTask> = tasks
+    let mut tasks: Vec<FileTask> = tasks
         .into_iter()
         .filter(|task| seen_dest.insert(task.dest.to_string_lossy().to_lowercase()))
         .collect();
+    // 大文件优先（LPT 调度）：先派发最大的文件，把长尾压到最后，
+    // 否则一个几百 MB 的文件排在队尾会让整批任务多等很久。
+    tasks.sort_by(|a, b| b.size.cmp(&a.size));
 
     let total_files = tasks.len() as u64;
     let total_bytes: u64 = tasks.iter().map(|t| t.size).sum();
@@ -1211,6 +1377,8 @@ pub async fn run_tasks_reporting(
     let mut recent_fail = 0u32;
 
     loop {
+        // 暂停时不再派发新文件，等在途任务自然停下
+        progress.wait_if_paused().await;
         // 按当前并发上限补满在途任务
         while in_flight.len() < limit && index < pending.len() {
             let task = pending[index].clone();
@@ -1271,15 +1439,16 @@ pub async fn run_tasks_reporting(
     }
     drop(in_flight);
 
-    // 失败项留在全局槽里，供前端的「重试失败文件」只重跑这些任务。
+    // 失败项按任务留在槽里，供前端的「重试失败文件」只重跑这些任务。
     // 只在确实有失败时写入：空批次不清空已有记录，避免同一作业里
     // 后面的小批次把前一批的失败项覆盖掉
     if !failed_tasks.is_empty() {
-        store_failed_batch(Some(FailedBatch {
+        store_failed_batch(FailedBatch {
+            job: progress.job.clone(),
             tasks: failed_tasks,
             concurrency: conc,
             use_mirror,
-        }));
+        });
     }
 
     progress.active.store(false, Ordering::Relaxed);
@@ -1299,6 +1468,67 @@ mod tests {
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    fn failed_task(name: &str) -> FileTask {
+        FileTask {
+            url: format!("https://example.invalid/{name}"),
+            dest: PathBuf::from(name),
+            sha1: None,
+            size: 0,
+            label: name.to_string(),
+        }
+    }
+
+    /// 失败批次按任务分开存：清空一个任务的失败项不能影响并行中的另一个任务
+    #[test]
+    fn failed_batches_are_scoped_per_job() {
+        reset_failed_batch("job-a");
+        reset_failed_batch("job-b");
+        store_failed_batch(FailedBatch {
+            job: "job-a".into(),
+            tasks: vec![failed_task("a.jar")],
+            concurrency: 4,
+            use_mirror: false,
+        });
+        store_failed_batch(FailedBatch {
+            job: "job-b".into(),
+            tasks: vec![failed_task("b.jar"), failed_task("c.jar")],
+            concurrency: 8,
+            use_mirror: true,
+        });
+
+        // 新任务只清自己的那批
+        reset_failed_batch("job-a");
+        assert!(take_failed_batch(Some("job-a")).is_none());
+
+        let batch = take_failed_batch(Some("job-b")).expect("job-b 的失败项应保留");
+        assert_eq!(batch.tasks.len(), 2);
+        assert_eq!(batch.concurrency, 8);
+        assert!(batch.use_mirror);
+        // 取走后再取为空
+        assert!(take_failed_batch(Some("job-b")).is_none());
+    }
+
+    /// 同一任务分多批下载时，失败项合并而不是互相覆盖
+    #[test]
+    fn failed_batches_merge_within_one_job() {
+        reset_failed_batch("job-merge");
+        store_failed_batch(FailedBatch {
+            job: "job-merge".into(),
+            tasks: vec![failed_task("x.jar")],
+            concurrency: 4,
+            use_mirror: false,
+        });
+        store_failed_batch(FailedBatch {
+            job: "job-merge".into(),
+            tasks: vec![failed_task("x.jar"), failed_task("y.jar")],
+            concurrency: 6,
+            use_mirror: false,
+        });
+        let batch = take_failed_batch(Some("job-merge")).unwrap();
+        assert_eq!(batch.tasks.len(), 2);
+        assert_eq!(batch.concurrency, 6);
+    }
 
     /// 极简 HTTP/1.1 测试服务：按请求文本返回固定响应，用完即断
     async fn spawn_server(

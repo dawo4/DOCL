@@ -90,10 +90,19 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
       <div v-if="store.logPanel" class="log-overlay" @mousedown.self="close">
         <section class="log-panel" role="dialog" aria-label="运行日志">
           <header class="log-head">
-            <span class="log-head__title">运行日志</span>
-            <span class="log-head__count mono">{{ store.log.length }} 行</span>
+            <span class="log-head__mark">
+              <AppIcon name="list" :size="15" />
+            </span>
+            <div class="log-head__text">
+              <span class="log-head__title">运行日志</span>
+              <span class="log-head__count mono">{{ store.log.length }} 行</span>
+            </div>
             <span class="log-head__spacer" />
-            <button class="log-tool" @click="openCrashDialog()">崩溃分析</button>
+            <button class="log-tool" @click="openCrashDialog()">
+              <AppIcon name="alert" :size="13" />
+              崩溃分析
+            </button>
+            <span class="log-head__divider" />
             <button class="log-icon" title="复制全部日志" aria-label="复制全部日志" @click="copyAll">
               <AppIcon name="copy" :size="15" />
             </button>
@@ -141,6 +150,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 
           <div ref="view" class="log-view mono" @scroll="onScroll">
             <div v-if="!lines.length" class="log-empty">
+              <span class="log-empty__icon">
+                <AppIcon name="list" :size="20" />
+              </span>
               <span class="log-empty__title">
                 {{ store.log.length ? "没有匹配的日志行" : "还没有日志" }}
               </span>
@@ -193,6 +205,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 
 /* 面板材质跟随当前主题：浅色主题是纸张，深色主题自动变暗 */
 .log-panel {
+  position: relative;
   width: min(900px, 92vw);
   height: min(620px, 80vh);
   display: flex;
@@ -203,31 +216,61 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   border-left-color: color-mix(in srgb, var(--frame) 68%, #fff);
   border-right-color: color-mix(in srgb, var(--frame) 76%, #000);
   border-bottom-color: color-mix(in srgb, var(--frame) 76%, #000);
-  border-radius: 0;
+  border-radius: 2px;
   background: var(--panel);
   box-shadow: var(--shadow-3);
   overflow: hidden;
+  animation: log-pop 220ms var(--ease-out-expo) both;
+}
+
+/* 顶部一道苔绿细线，和下载中心面板保持同一套标识 */
+.log-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 1;
+  height: 2px;
+  background: linear-gradient(90deg, var(--moss), var(--moss-bright));
 }
 
 .log-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex-shrink: 0;
-  height: 46px;
-  padding: 0 12px 0 16px;
+  height: 54px;
+  padding: 0 12px 0 14px;
   border-bottom: 1px solid var(--line);
   background: var(--panel-2);
 }
 
+.log-head__mark {
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  flex-shrink: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--moss-soft);
+  color: var(--moss);
+}
+
+.log-head__text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
 .log-head__title {
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 700;
   color: var(--walnut-deep);
 }
 
 .log-head__count {
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--muted);
 }
 
@@ -235,8 +278,17 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   flex: 1;
 }
 
+.log-head__divider {
+  width: 1px;
+  height: 18px;
+  background: var(--line);
+}
+
 .log-tool {
-  height: 27px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
   padding: 0 10px;
   border-radius: 0;
   border-style: solid;
@@ -291,17 +343,21 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   align-items: center;
   gap: 10px;
   flex-shrink: 0;
-  height: 44px;
-  padding: 0 16px;
+  height: 52px;
+  padding: 0 14px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
 }
 
 .log-tabs {
-  display: flex;
-  align-items: stretch;
-  gap: 14px;
-  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel-2);
 }
 
 .log-tab {
@@ -309,10 +365,14 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 1px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
-  transition: color var(--dur-1) ease;
+  transition: color var(--dur-1) ease, background var(--dur-1) ease,
+    box-shadow var(--dur-1) ease;
 }
 
 .log-tab:hover {
@@ -328,16 +388,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 
 .log-tab--active {
   color: var(--walnut-deep);
-}
-
-.log-tab--active::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -1px;
-  height: 2px;
-  background: var(--moss);
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line-strong) 52%, transparent),
+    0 1px 2px rgba(40, 28, 16, 0.08);
 }
 
 .log-tab--active em {
@@ -350,9 +403,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   gap: 7px;
   flex: 1;
   min-width: 120px;
-  height: 28px;
-  padding: 0 9px;
-  border-radius: 0;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 2px;
   border-style: solid;
   border-width: 1px;
   border-top-color: color-mix(in srgb, var(--line-strong) 66%, #000);
@@ -389,9 +442,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 28px;
-  padding: 0 9px;
-  border-radius: 0;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 2px;
   border-style: solid;
   border-width: 1px 1px 2px;
   border-top-color: color-mix(in srgb, var(--frame) 58%, #fff);
@@ -443,8 +496,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 8px 0 10px;
+  padding: 8px 0 12px;
   background: var(--paper-2);
+  box-shadow: inset 0 8px 12px -10px rgba(40, 28, 16, 0.22);
   font-size: 11.8px;
   line-height: 1.8;
   color: var(--ink-soft);
@@ -453,11 +507,21 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .log-line {
   display: flex;
   gap: 8px;
-  padding: 0 16px;
+  padding: 0 16px 0 14px;
+  border-left: 2px solid transparent;
+  transition: background var(--dur-1) ease;
 }
 
 .log-line:hover {
   background: rgba(var(--accent-rgb), 0.06);
+}
+
+.log-line--stderr {
+  border-left-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.log-line--system {
+  border-left-color: color-mix(in srgb, var(--moss) 45%, transparent);
 }
 
 .log-line__no {
@@ -500,13 +564,31 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  padding: 72px 20px;
+  padding: 60px 20px;
   text-align: center;
+}
+
+.log-empty__icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin-bottom: 4px;
+  border-style: solid;
+  border-width: 1px 1px 2px;
+  border-top-color: color-mix(in srgb, var(--line-strong) 48%, #fff);
+  border-left-color: color-mix(in srgb, var(--line-strong) 48%, #fff);
+  border-right-color: color-mix(in srgb, var(--line-strong) 72%, #000);
+  border-bottom-color: color-mix(in srgb, var(--line-strong) 72%, #000);
+  border-radius: 2px;
+  background: var(--panel-2);
+  color: var(--moss);
+  box-shadow: 0 4px 10px rgba(40, 28, 16, 0.1);
 }
 
 .log-empty__title {
   color: var(--ink-soft);
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 700;
 }
 
@@ -556,5 +638,12 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .log-fade-enter-from,
 .log-fade-leave-to {
   opacity: 0;
+}
+
+@keyframes log-pop {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
 }
 </style>
