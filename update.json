@@ -1,6 +1,6 @@
 {
-  "version": "1.7.1",
-  "url": "https://github.com/dawo4/DOCL/releases/download/v1.7.1/DOCL_1.7.1_x64-setup.exe",
-  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.7.1/DOCL_1.7.1_portable.zip",
-  "notes": "下载中心重做：顶部任务按钮展开任务卡片，保留悬浮球；支持多任务排队/暂停/继续/重试/补下失败文件。皮肤功能增强：披风支持 3D 预览、本地库与导入导出；账号页可把皮肤写入 CustomSkinLoader 的目标实例或一键安装 CSL，并修复旧版 64×32 皮肤帽子图层丢失、导入后预览不切换的问题。修复 Forge/NeoForge 实例上 CustomSkinLoader 因 classpath 缺少 version.json 导致的启动崩溃，崩溃分析也新增了对应结论。前置下载改用 Modrinth 官方依赖（SHA1 / 项目链接），修复整合包实例加载器误判；一键修复的补前置同步接入。新实例首次启动自动设为中文并跳过无障碍引导；离线账号用户名强制校验字母/数字/下划线。账号页与运行日志窗口重新美化。"
+  "version": "1.7.2",
+  "url": "https://github.com/dawo4/DOCL/releases/download/v1.7.2/DOCL_1.7.2_x64-setup.exe",
+  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.7.2/DOCL_1.7.2_portable.zip",
+  "notes": "整合包更新：实例页可直接选择新版 .mrpack 或 CurseForge 整合包，先预览新增/更新/移除再动手，覆盖前自动备份，只补差异文件；导出的 .mrpack 现在带完整 files[]，别人用 Modrinth 生态可以继续更新。启动器导入新增 HMCL（含 3.16+ 新配置布局），并完善 PCL 多游戏文件夹与版本隔离识别。诊断增强：一键修复前可预览会改动的文件、修复历史按次还原、撤销本次新增的 Mod、崩溃规则误报可忽略/导出反馈/本地回滚，FileAlreadyExistsException 支持定点清理；损坏 jar 按 SHA-1 重下，自动移除无效 -javaagent。设置页新增「清理游戏垃圾」。修正输入框占位符与侧边栏标题在部分主题下发黄的问题。"
 }

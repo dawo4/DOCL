@@ -755,6 +755,8 @@ async fn fetch_to_file(
     if used_url != primary {
         eprintln!("[download] {} 竞速改用 {}", task.label, used_url);
     }
+    #[cfg(not(debug_assertions))]
+    let _ = &used_url;
 
     let append = resume_from > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
     if !append {

@@ -634,7 +634,7 @@ function launchLoader(id: string | null) {
 }
 
 .dl-side__item .icon {
-  color: #b3a189;
+  color: var(--muted);
   transition: color var(--dur-1) ease;
 }
 

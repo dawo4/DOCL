@@ -44,7 +44,8 @@ defineEmits<{ (e: "update:modelValue", value: string): void }>();
 }
 
 .input::placeholder {
-  color: #b7a68f;
+  /* 跟随主题的次要文字色；写死暖棕会在浅色面板上发黄，深色主题下也不协调 */
+  color: var(--muted);
 }
 
 .input:hover:not(:disabled) {

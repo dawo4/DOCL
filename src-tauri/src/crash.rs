@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::instance;
-use anyhow::Result;
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -57,9 +57,30 @@ pub struct CrashMatch {
     pub links: Vec<CrashLink>,
     /// 90 高（基本可直接定位）/ 70 中 / 50 低
     pub priority: u8,
+    /// 1 环境/安装 → 2 Mod 归因 → 3 兼容 → 4 兜底；只展示最早一层的命中
+    pub phase: u8,
+    /// high / medium / low
+    pub confidence: String,
     /// java / memory / mod / loader / graphics / file / world / server / auth
     pub category: String,
     pub suspects: Vec<CrashSuspect>,
+}
+
+/// 自上次成功启动以来的 Mod 文件变化。
+/// Windows 应用程序日志里与本次崩溃时间接近的条目，用于识别进程被系统结束等情况。
+#[derive(Debug, Clone, Serialize)]
+pub struct WindowsCrashEvent {
+    pub event_id: u32,
+    pub provider: String,
+    pub time_created: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModChange {
+    /// added / removed / modified
+    pub kind: String,
+    pub file_name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,6 +97,8 @@ pub struct CrashReport {
     pub excerpt: Vec<String>,
     pub scanned: Vec<String>,
     pub suspects: Vec<CrashSuspect>,
+    pub mod_changes: Vec<ModChange>,
+    pub windows_events: Vec<WindowsCrashEvent>,
     pub context: CrashContext,
 }
 
@@ -92,6 +115,8 @@ struct Rule {
 
 /// 远端规则库地址。规则只做文本匹配，不包含任何可执行内容。
 const RULES_URL: &str = "https://cdn.jsdelivr.net/gh/dawo4/DOCL@main/crash-rules.json";
+/// 编译期打包一份规则，首次离线启动时也能用上完整规则集
+const BUNDLED_RULES: &str = include_str!("../../crash-rules.json");
 /// 防止远端配置异常拖慢分析
 const MAX_REMOTE_RULES: usize = 200;
 const MAX_PATTERNS_PER_RULE: usize = 40;
@@ -120,6 +145,12 @@ struct RemoteRule {
     /// any（默认）：任一 pattern 命中；all：所有 pattern 都要命中
     #[serde(default = "default_match", rename = "match")]
     match_mode: String,
+    /// 规则所在层：1 环境/安装、2 Mod 归因、3 兼容、4 兜底；缺省按 id 推断
+    #[serde(default)]
+    phase: Option<u8>,
+    /// high / medium / low；缺省按 phase 推断
+    #[serde(default)]
+    confidence: Option<String>,
 }
 
 fn default_priority() -> u8 {
@@ -173,6 +204,23 @@ fn rules_cache_path() -> PathBuf {
     crate::config::data_dir().join("crash-rules.json")
 }
 
+/// 上一次成功更新的规则副本，用于回滚。
+fn rules_prev_path() -> PathBuf {
+    crate::config::data_dir().join("crash-rules.prev.json")
+}
+
+/// 被用户回滚掉的规则摘要：远端下发同一版时保持回滚结果，不再自动覆盖。
+fn rules_skip_path() -> PathBuf {
+    crate::config::data_dir().join("crash-rules.skip")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
 /// 清洗远端规则：丢掉缺关键字段的条目，pattern 统一小写，并限制数量。
 fn sanitize(rules: Vec<RemoteRule>) -> Vec<RemoteRule> {
     let mut rules: Vec<RemoteRule> = rules
@@ -204,12 +252,14 @@ fn sanitize(rules: Vec<RemoteRule>) -> Vec<RemoteRule> {
     rules
 }
 
-/// 启动时先读本地缓存，保证离线时也能用上一次拉到的规则。
+/// 启动时先读本地缓存；没有缓存或缓存损坏时用编译期打包的规则兜底。
 pub fn load_cached_rules() {
-    let Ok(text) = fs::read_to_string(rules_cache_path()) else {
-        return;
-    };
-    let Ok(file) = serde_json::from_str::<RemoteRuleFile>(&text) else {
+    let file = fs::read_to_string(rules_cache_path())
+        .ok()
+        .filter(|text| !text.trim().is_empty())
+        .and_then(|text| serde_json::from_str::<RemoteRuleFile>(&text).ok())
+        .or_else(|| serde_json::from_str::<RemoteRuleFile>(BUNDLED_RULES).ok());
+    let Some(file) = file else {
         return;
     };
     if let Ok(mut guard) = remote_store().write() {
@@ -229,14 +279,122 @@ pub async fn refresh_rules(client: &reqwest::Client) -> Result<usize> {
     if rules.is_empty() {
         anyhow::bail!("规则库内容为空");
     }
+    // 用户回滚过这一版：内容没变就保持回滚后的规则，等远端真正更新再接受
+    if let Ok(skip) = fs::read_to_string(rules_skip_path()) {
+        if skip.trim() == sha256_hex(&bytes) {
+            return Ok(remote_store()
+                .read()
+                .map(|guard| guard.len())
+                .unwrap_or(0));
+        }
+    }
     let count = rules.len();
     if let Ok(mut guard) = remote_store().write() {
         *guard = rules;
     }
     if fs::create_dir_all(crate::config::data_dir()).is_ok() {
-        let _ = fs::write(rules_cache_path(), &bytes);
+        let cache = rules_cache_path();
+        // 内容确实变了才留一份旧副本，避免每次启动都把上一版覆盖成同一份
+        if let Ok(previous) = fs::read(&cache) {
+            if previous != bytes.as_ref() {
+                let _ = fs::write(rules_prev_path(), previous);
+            }
+        }
+        let _ = fs::write(cache, &bytes);
+        // 远端已经换了一版，之前的回滚标记不再需要
+        let _ = fs::remove_file(rules_skip_path());
     }
     Ok(count)
+}
+
+/// 当前生效的规则来源与条数。
+#[derive(Debug, Serialize)]
+pub struct RuleStatus {
+    /// bundled（内置）/ cache（缓存副本）
+    pub source: String,
+    pub count: usize,
+    /// 缓存更新时间（Unix 秒），0 表示使用内置规则
+    pub updated: u64,
+    /// 是否可以回滚到上一版
+    pub has_previous: bool,
+}
+
+pub fn rules_status() -> RuleStatus {
+    let count = remote_store()
+        .read()
+        .map(|guard| guard.len())
+        .unwrap_or(0);
+    let cache = rules_cache_path();
+    // 缓存文件存在但解析失败时实际用的是内置规则，不能标成「远端更新」
+    let cache_ok = fs::read_to_string(&cache)
+        .ok()
+        .and_then(|text| serde_json::from_str::<RemoteRuleFile>(&text).ok())
+        .is_some();
+    let updated = cache_ok
+        .then(|| {
+            fs::metadata(&cache)
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs())
+        })
+        .flatten()
+        .unwrap_or(0);
+    let has_previous = fs::read_to_string(rules_prev_path())
+        .ok()
+        .and_then(|text| serde_json::from_str::<RemoteRuleFile>(&text).ok())
+        .map(|file| !sanitize(file.rules).is_empty())
+        .unwrap_or(false);
+    RuleStatus {
+        source: if cache_ok { "cache" } else { "bundled" }.into(),
+        count,
+        updated,
+        has_previous,
+    }
+}
+
+/// 回滚到上一版规则；回滚本身也可以再撤回一次。
+pub fn rollback_rules() -> Result<usize> {
+    let cache = rules_cache_path();
+    let rejected = fs::read(&cache).ok();
+    let (rules, _) = swap_rule_files(&cache, &rules_prev_path())?;
+    let count = rules.len();
+    if let Ok(mut guard) = remote_store().write() {
+        *guard = rules;
+    }
+    // 记住被拒绝的这一版，下次启动拉取到同样内容时不再自动覆盖回滚结果
+    match rejected {
+        Some(bytes) => {
+            let _ = fs::write(rules_skip_path(), sha256_hex(&bytes));
+        }
+        None => {
+            let _ = fs::remove_file(rules_skip_path());
+        }
+    }
+    Ok(count)
+}
+
+/// 把上一版规则换成当前规则，并把原当前版本留作下一次回滚目标。
+fn swap_rule_files(cache: &Path, prev: &Path) -> Result<(Vec<RemoteRule>, Vec<u8>)> {
+    let bytes = fs::read(prev).map_err(|_| anyhow::anyhow!("没有可回滚的规则版本"))?;
+    let file: RemoteRuleFile = serde_json::from_slice(&bytes)
+        .map_err(|_| anyhow::anyhow!("上一版规则文件已损坏，无法回滚"))?;
+    let rules = sanitize(file.rules);
+    if rules.is_empty() {
+        bail!("上一版规则内容为空，已取消回滚");
+    }
+    let current = fs::read(cache).ok();
+    if let Some(parent) = cache.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(cache, &bytes)?;
+    match current {
+        Some(text) => fs::write(prev, text)?,
+        None => {
+            let _ = fs::remove_file(prev);
+        }
+    }
+    Ok((rules, bytes))
 }
 
 const RULES: &[Rule] = &[
@@ -643,6 +801,624 @@ const RULES: &[Rule] = &[
         priority: 50,
         category: "auth",
     },
+    /* ---------- 1.8.0 崩溃日志扩展 ---------- */
+    Rule {
+        id: "manual-debug-crash",
+        title: "手动触发的调试崩溃",
+        summary: "这次崩溃是按 F3+C 主动生成的调试报告，不是游戏或 Mod 故障。",
+        patterns: &["manually triggered debug crash"],
+        advice: &[
+            "重启游戏即可，不需要修复或删除任何文件。",
+            "如果是不小心误触，可以忽略这份崩溃报告。",
+        ],
+        links: &[],
+        priority: 99,
+        category: "other",
+    },
+    Rule {
+        id: "confirmed-mod-crash",
+        title: "已定位到具体 Mod",
+        summary: "加载器直接点名了崩溃的 Mod，通常带有 “Caught exception from ...” 或 Failure message。",
+        patterns: &[
+            "caught exception from ",
+            "loaderexceptionmodcrash",
+            "multiple entries with same key",
+            "failure message: ",
+        ],
+        advice: &[
+            "日志里 “Caught exception from” 后面的名字就是出问题的 Mod，先把它禁用后重试。",
+            "如果该 Mod 刚更新过，换回上一个版本；如果没有更新过，检查它是否支持当前游戏和加载器版本。",
+            "禁用后能进游戏，再逐个开启其余 Mod 确认冲突对象。",
+        ],
+        links: &[],
+        priority: 95,
+        category: "mod",
+    },
+    Rule {
+        id: "mod-init-failed",
+        title: "Mod 初始化失败",
+        summary: "某个 Mod 在构造或初始化阶段抛出异常，游戏还没进入主界面就退出了。",
+        patterns: &[
+            "failed to create mod instance",
+            "exception during mod construction",
+        ],
+        advice: &[
+            "按日志里的 ModID 找到对应 Mod，先禁用后重试。",
+            "常见原因是 Mod 版本与游戏版本不匹配，或缺少它要求的前置。",
+            "如果是整合包，优先检查最近手动加入的 Mod。",
+        ],
+        links: &[],
+        priority: 94,
+        category: "mod",
+    },
+    Rule {
+        id: "fabric-entrypoint-crash",
+        title: "Fabric Mod 入口点崩溃",
+        summary: "Fabric 在执行某个 Mod 的入口点时出错，日志会写明 provided by 'xxx'。",
+        patterns: &["could not execute entrypoint stage"],
+        advice: &[
+            "按日志里 provided by 后面的 Mod 名，把它更新到与当前 Minecraft 版本匹配的构建。",
+            "如果更新后仍崩溃，先禁用该 Mod，确认游戏能正常启动。",
+            "同时检查它的前置（Fabric API、Cloth Config 等）是否为同一版本线。",
+        ],
+        links: &[],
+        priority: 94,
+        category: "mod",
+    },
+    Rule {
+        id: "fabric-solution",
+        title: "加载器已给出解决方案",
+        summary: "Fabric 在崩溃报告里直接写了 “A potential solution has been determined”，照着做通常就能解决。",
+        patterns: &[
+            "a potential solution has been determined",
+            "potential solution has been determined",
+        ],
+        advice: &[
+            "查看下方摘录中 “A potential solution has been determined” 之后的内容，按它给出的版本安装或替换 Mod。",
+            "如果提示安装某个依赖，可在「下载 → 模组」里搜索并安装对应版本。",
+            "安装完成后不要同时保留新旧两个版本。",
+        ],
+        links: &[],
+        priority: 92,
+        category: "mod",
+    },
+    Rule {
+        id: "fabric-warnings",
+        title: "Fabric 检测到不兼容的 Mod 组合",
+        summary: "加载器列出了不兼容的 Mod 或版本范围，通常会在 Warnings / Incompatible mod set 段落中说明。",
+        patterns: &[
+            "warnings were found!",
+            "incompatible mod set!",
+            "incompatible mods found!",
+            "mod resolution encountered",
+        ],
+        advice: &[
+            "按日志中列出的 Mod 名称和版本要求，把其中一个换成兼容版本。",
+            "优先更新报错里版本号较低或明显过旧的那个 Mod。",
+            "如果提示两个 Mod 互斥，只保留其中一个。",
+        ],
+        links: &[],
+        priority: 90,
+        category: "mod",
+    },
+    Rule {
+        id: "duplicate-mod-files",
+        title: "同一个 Mod 装了多个版本",
+        summary: "mods 目录里存在同一 Mod 的重复文件，加载器无法决定用哪一个。",
+        patterns: &[
+            "duplicatemodsfoundexception",
+            "found a duplicate mod",
+            "found duplicate mods",
+            "duplicate mods found",
+        ],
+        advice: &[
+            "在「版本设置 → 模组」里按名称排序，同一 Mod 只保留一个版本，通常保留较新的。",
+            "注意区分同一 Mod 的不同加载器分支（Forge / Fabric / NeoForge），不要都放进去。",
+            "删除前可以先移到桌面备份，确认能启动后再彻底删除。",
+        ],
+        links: &[],
+        priority: 94,
+        category: "mod",
+    },
+    Rule {
+        id: "forge-java-incompatible",
+        title: "Forge 与 Java 版本不兼容",
+        summary: "旧版 Forge 使用了新版 Java 已移除的内部类，常见于 Java 8u321+ 搭配旧 Forge。",
+        patterns: &["manifestentryverifier"],
+        advice: &[
+            "把 Forge 升级到 36.2.26 或更高（对应 1.16.5），或换回 Java 8u320 及更早的版本。",
+            "不想动 Forge 时，在「设置 → Java」里选择一个 8u302 左右的 Java 8。",
+            "升级 Forge 前先备份 versions 目录下的该实例。",
+        ],
+        links: &[],
+        priority: 93,
+        category: "java",
+    },
+    Rule {
+        id: "optifine-world-load",
+        title: "OptiFine 导致世界无法加载",
+        summary: "进入世界时在区块加载阶段崩溃，堆栈指向 OptiFine 的 shouldForceTicks。",
+        patterns: &["shouldforceticks", "chunkmanager$proxyticketmanager"],
+        advice: &[
+            "把 OptiFine 换成与当前 Forge 版本匹配的构建，或暂时移除 OptiFine 后进世界。",
+            "如果只是为了光影，可改用 Iris + Sodium（Fabric）或对应版本的替代方案。",
+            "换版本前先备份存档。",
+        ],
+        links: &[],
+        priority: 92,
+        category: "mod",
+    },
+    Rule {
+        id: "mod-needs-java11",
+        title: "Mod 需要 Java 11",
+        summary: "某个 Mod 或库编译时使用了 Java 11 的类文件或 API，当前 Java 8 无法加载。",
+        patterns: &[
+            "java_11 could not be set",
+            "unsafe.defineanonymousclass",
+            "class file version 55.0",
+            "class file version 55 ",
+        ],
+        advice: &[
+            "在「设置 → Java」里选择一个 Java 11（或更高，按 Mod 要求）后重新启动。",
+            "Forge 1.16.5 及以下通常用 Java 8，但部分 Mod 会要求 11；以日志中的版本号为准。",
+            "切换 Java 后确认内存参数仍然合法。",
+        ],
+        links: &[],
+        priority: 92,
+        category: "java",
+    },
+    Rule {
+        id: "java-32bit-exact",
+        title: "使用的是 32 位 Java",
+        summary: "32 位 Java 无法分配较大的堆内存，会以 Invalid maximum heap size 或无法保留空间的形式报错。",
+        patterns: &[
+            "invalid maximum heap size",
+            "for 1048576kb object heap",
+            "could not reserve enough space for object heap",
+        ],
+        advice: &[
+            "安装 64 位 Java（Temurin 21 或 17，按游戏版本选择），然后在「设置 → Java」里选中它。",
+            "确认系统本身是 64 位；32 位系统无法运行 64 位 Java。",
+            "换 Java 后把最大内存调到 4096 MB 以上再试。",
+        ],
+        links: &[("下载 Temurin JDK", "https://adoptium.net/temurin/releases/")],
+        priority: 93,
+        category: "java",
+    },
+    Rule {
+        id: "forge-incomplete-more",
+        title: "Forge 安装不完整",
+        summary: "Forge 的启动参数或模块文件缺失，常见于安装中断、文件被杀软删除或手动改过版本 json。",
+        patterns: &[
+            "invalid paths argument",
+            "securemoduleclassloader",
+            "could not find net/minecraft/client/minecraft.class",
+        ],
+        advice: &[
+            "在版本设置里重装 Forge；「一键修复」会重新下载缺失的 libraries。",
+            "检查 versions 目录下该实例的 json 是否被其他启动器改过。",
+            "如果杀毒软件隔离了 Forge 文件，把游戏目录加入白名单后重装。",
+        ],
+        links: &[],
+        priority: 92,
+        category: "loader",
+    },
+    Rule {
+        id: "repeat-installation",
+        title: "加载器或 OptiFine 重复安装",
+        summary: "启动参数里出现了两份加载器或两份 OptiFine，ModLauncher 会直接拒绝启动。",
+        patterns: &[
+            "multipleargumentsforoptionexception",
+            "reads another module named",
+        ],
+        advice: &[
+            "检查 versions 目录下该实例的 json，确认没有重复的加载器参数。",
+            "OptiFine 只能保留一个 jar，不要同时放 Forge 版和独立版。",
+            "无法判断时，重装一次加载器通常能清掉重复项。",
+        ],
+        links: &[],
+        priority: 91,
+        category: "loader",
+    },
+    Rule {
+        id: "file-already-exists",
+        title: "写文件时目标已存在",
+        summary: "游戏或 Mod 尝试创建已存在的文件或目录，常见于上一次异常退出留下的残留。",
+        patterns: &["filealreadyexistsexception", "the file already exists"],
+        advice: &[
+            "按日志里的路径找到该文件或文件夹，先重命名备份再启动。",
+            "如果是 config 目录，可让游戏重新生成配置。",
+            "不要直接删除整个游戏目录。",
+        ],
+        links: &[],
+        priority: 88,
+        category: "file",
+    },
+    Rule {
+        id: "unsatisfied-link",
+        title: "本地库缺失或位数不匹配",
+        summary: "Java 找不到依赖的本地库（.dll/.so），通常是 libraries 不完整或 Java 位数不对。",
+        patterns: &[
+            "failed to locate library",
+            "unsatisfiedlinkerror",
+            "java.library.path",
+        ],
+        advice: &[
+            "在版本设置里点「一键修复」，重新校验并下载 libraries。",
+            "确认 Java 位数与系统一致（64 位系统用 64 位 Java）。",
+            "如果只在某个 Mod 中出现，检查该 Mod 是否自带不兼容的本地库。",
+        ],
+        links: &[],
+        priority: 88,
+        category: "loader",
+    },
+    Rule {
+        id: "sha1-digest-error",
+        title: "文件校验失败",
+        summary: "下载或解压后的文件与清单中的 SHA-1 不一致，说明文件损坏或被替换。",
+        patterns: &["sha1 digest error"],
+        advice: &[
+            "删除日志中提到的文件，让启动器重新下载。",
+            "检查磁盘是否有坏道或空间不足。",
+            "如果反复校验失败，换一个下载源或稍后重试。",
+        ],
+        links: &[],
+        priority: 88,
+        category: "file",
+    },
+    Rule {
+        id: "illegal-access",
+        title: "Mod 访问了无权访问的类",
+        summary: "某个 Mod 试图访问 Java 或游戏内部类，通常是 Mod 版本过旧或与其他 Mod 冲突。",
+        patterns: &["illegalaccesserror", "tried to access class"],
+        advice: &[
+            "把堆栈中出现的 Mod 更新到支持当前游戏版本的构建。",
+            "如果该 Mod 已停止更新，考虑换用替代品或移除。",
+            "不要通过添加 JVM 参数强行开放访问，容易引发更多问题。",
+        ],
+        links: &[],
+        priority: 86,
+        category: "mod",
+    },
+    Rule {
+        id: "module-resolution",
+        title: "模块系统解析失败",
+        summary: "Mod 的模块名非法、模块信息缺失或两个模块导出同一个包，常见于 jar 被改名或打包不规范。",
+        patterns: &[
+            "moduleresolution",
+            "modulefind",
+            "invalid module name",
+            "unable to derive module descriptor",
+        ],
+        advice: &[
+            "检查 mods 目录里是否有被手动改名的 jar，恢复原文件名。",
+            "按日志中的模块名找到对应 Mod，更新到规范打包的版本。",
+            "不要同时放同一个 Mod 的多个分支。",
+        ],
+        links: &[],
+        priority: 85,
+        category: "loader",
+    },
+    Rule {
+        id: "java-agent-failed",
+        title: "Java Agent 加载失败",
+        summary: "启动参数里的 -javaagent 指向了不存在或损坏的 jar，JVM 在启动阶段就退出。",
+        patterns: &[
+            "processing of -javaagent failed",
+            "error opening zip file or jar manifest missing",
+        ],
+        advice: &[
+            "在版本设置的 Java 参数里删掉无效的 -javaagent 项。",
+            "如果该项由某个 Mod 或皮肤补丁添加，重新安装该组件。",
+            "清空自定义参数后仍失败时，检查启动脚本是否被手动改过。",
+        ],
+        links: &[],
+        priority: 90,
+        category: "java",
+    },
+    Rule {
+        id: "fabric-loader-old",
+        title: "Fabric Loader 版本过旧",
+        summary: "旧版 Fabric Loader 缺少新版 Mixin 的类，启动时直接 NoClassDefFoundError。",
+        patterns: &["fabricmixintransformerproxy"],
+        advice: &[
+            "在版本设置里把 Fabric Loader 升级到最新稳定版。",
+            "升级后如果 Mod 不兼容，再逐个更新 Mod。",
+            "不要混用不同加载器的 Mod jar。",
+        ],
+        links: &[],
+        priority: 90,
+        category: "loader",
+    },
+    Rule {
+        id: "process-conflict",
+        title: "游戏进程被占用或强制结束",
+        summary: "文件被其他进程占用，或 Java 进程被 Windows 直接关闭，日志里会留下 WasClosedByWindows。",
+        patterns: &[
+            "wasclosedbywindows",
+            "the process cannot access the file",
+        ],
+        advice: &[
+            "在任务管理器里结束残留的 java.exe / javaw.exe 后重试。",
+            "关闭同时运行的另一个启动器或游戏实例。",
+            "把游戏目录加入杀毒软件白名单，避免扫描时锁文件。",
+        ],
+        links: &[],
+        priority: 84,
+        category: "file",
+    },
+    Rule {
+        id: "curseforge-corrupted",
+        title: "CurseForge 文件损坏",
+        summary: "整合包或 Mod 的 CurseForge 元数据损坏，加载器无法读取。",
+        patterns: &["curseforgecorrupted"],
+        advice: &[
+            "重新下载该整合包或 Mod 文件。",
+            "不要手动编辑 CurseForge 的清单文件。",
+            "如果是整合包，优先用启动器完整重装。",
+        ],
+        links: &[],
+        priority: 84,
+        category: "file",
+    },
+    Rule {
+        id: "intel-driver",
+        title: "Intel 显卡驱动崩溃",
+        summary: "JVM 崩溃日志的 Problematic frame 指向 Intel 显卡驱动 DLL。",
+        patterns: &["ig7icd64", "igdumd64", "ig9icd64", "ig10icd64", "ig12icd64"],
+        advice: &[
+            "到 Intel 官网或笔记本厂商页面更新核显驱动，不要只用 Windows 自动更新。",
+            "如果更新后仍崩溃，尝试在显卡控制面板里为 java.exe 指定高性能显卡。",
+            "临时可关闭光影和抗锯齿后再试。",
+        ],
+        links: &[("Intel 驱动下载", "https://www.intel.cn/content/www/cn/zh/download-center/home.html")],
+        priority: 80,
+        category: "graphics",
+    },
+    Rule {
+        id: "amd-driver",
+        title: "AMD 显卡驱动崩溃",
+        summary: "JVM 崩溃日志的 Problematic frame 指向 AMD 显卡驱动 DLL（atio6axx / amdxx64 等）。",
+        patterns: &["atio6axx", "atidxx64", "amdxx64", "amdxc64"],
+        advice: &[
+            "到 AMD 官网更新显卡驱动，安装时选择「清洁安装」。",
+            "关闭 Radeon 的图像增强、Anti-Lag 等覆盖功能后重试。",
+            "如果是笔记本双显卡，确认游戏使用的是独显。",
+        ],
+        links: &[("AMD 驱动下载", "https://www.amd.com/zh-cn/support/download/drivers.html")],
+        priority: 80,
+        category: "graphics",
+    },
+    Rule {
+        id: "nvidia-driver",
+        title: "NVIDIA 显卡驱动崩溃",
+        summary: "JVM 崩溃日志的 Problematic frame 指向 NVIDIA OpenGL 驱动 DLL（nvoglv64 等）。",
+        patterns: &["nvoglv64", "nvoglv32", "nvd3dum"],
+        advice: &[
+            "到 NVIDIA 官网更新显卡驱动，选择「清洁安装」。",
+            "关闭 GeForce Experience 的游戏内覆盖后重试。",
+            "笔记本用户确认 java.exe 使用的是独显而不是核显。",
+        ],
+        links: &[("NVIDIA 驱动下载", "https://www.nvidia.cn/Download/index.aspx")],
+        priority: 80,
+        category: "graphics",
+    },
+    Rule {
+        id: "insufficient-memory-native",
+        title: "系统内存不足（JVM 层）",
+        summary: "JVM 无法继续申请本地内存，通常是物理内存或虚拟内存耗尽，而不是堆内存设置太小。",
+        patterns: &["there is insufficient memory for the java runtime environment to continue"],
+        advice: &[
+            "关闭浏览器、视频和其他大型程序后重试。",
+            "检查系统虚拟内存（页面文件）是否被禁用或设置得过小。",
+            "如果物理内存本身较小，把游戏内存调低到 4096 MB 左右反而更稳定。",
+        ],
+        links: &[],
+        priority: 86,
+        category: "memory",
+    },
+    Rule {
+        id: "optifine-performant",
+        title: "OptiFine 与 Performant 冲突",
+        summary: "Performant 的 Mixin 注入与 OptiFine 冲突，游戏在启动阶段崩溃。",
+        patterns: &["onisonladder", "performant"],
+        advice: &[
+            "OptiFine 与 Performant 只能保留一个，通常保留 OptiFine。",
+            "如果不用光影，可以移除 OptiFine 改用 Performant。",
+            "不要通过改配置强行让两者共存。",
+        ],
+        links: &[],
+        priority: 82,
+        category: "mod",
+    },
+    Rule {
+        id: "optifine-twilightforest",
+        title: "OptiFine 与暮色森林冲突",
+        summary: "暮色森林的渲染代码在 OptiFine 下出现 outside of image bounds。",
+        patterns: &["outside of image bounds"],
+        advice: &[
+            "把 OptiFine 换成与当前 Forge 和暮色森林版本匹配的构建。",
+            "如果仍冲突，进入暮色森林前临时移除 OptiFine。",
+            "优先备份存档再调整 Mod。",
+        ],
+        links: &[],
+        priority: 82,
+        category: "mod",
+    },
+    Rule {
+        id: "optifine-jade",
+        title: "OptiFine 与 Jade 冲突",
+        summary: "Jade 在 OptiFine 环境下访问 GameRenderer 的局部变量时崩溃。",
+        patterns: &["m_109093_"],
+        advice: &[
+            "升级 Jade 和 OptiFine 到最新版本，两者都在持续修兼容问题。",
+            "如果仍崩溃，暂时移除 Jade 或 OptiFine 其中一个。",
+            "不要同时安装多个信息显示类 Mod（Jade / WAILA / HWM）。",
+        ],
+        links: &[],
+        priority: 82,
+        category: "mod",
+    },
+    Rule {
+        id: "optifine-neoforge",
+        title: "OptiFine 与 NeoForge 不兼容",
+        summary: "NeoForge 在服务加载阶段发现 OptiFine 提供的非法实现，直接拒绝启动。",
+        patterns: &["invalid services found"],
+        advice: &[
+            "NeoForge 不支持 OptiFine，移除 OptiFine 后启动。",
+            "需要光影时改用 Iris / Oculus 等对应方案。",
+            "不要试图用旧版 Forge 的 OptiFine jar 强行加载。",
+        ],
+        links: &[],
+        priority: 86,
+        category: "mod",
+    },
+    Rule {
+        id: "optifine-forest",
+        title: "OptiFine 与 Forest coremod 冲突",
+        summary: "Forest 的 coremod 脚本与 OptiFine 的类转换冲突，启动阶段报 multipart.js 错误。",
+        patterns: &["meta-inf/asm/multipart.js"],
+        advice: &[
+            "移除 OptiFine，或换用不含该 coremod 的 Forest 版本。",
+            "确认 Forge 版本与该整合包要求一致。",
+            "修改前备份 instances 目录。",
+        ],
+        links: &[],
+        priority: 82,
+        category: "mod",
+    },
+    Rule {
+        id: "optifine-sodium",
+        title: "OptiFine 与 Sodium 同时安装",
+        summary: "两者都重写了渲染管线，同时安装会互相覆盖，几乎必然崩溃。",
+        patterns: &["optifine"],
+        advice: &[
+            "只保留一个：要光影选 OptiFine，要性能选 Sodium（配 Iris）。",
+            "不要通过禁用其中一个的配置文件来强行共存。",
+            "移除后重启游戏，让渲染设置重新生成。",
+        ],
+        links: &[],
+        priority: 88,
+        category: "mod",
+    },
+    Rule {
+        id: "shadersmod-optifine",
+        title: "ShadersMod 与 OptiFine 冲突",
+        summary: "旧版 ShadersMod 已经包含在 OptiFine 中，两者同时安装会重复转换渲染类。",
+        patterns: &["shadersmod", "shaders mod"],
+        advice: &[
+            "删除 ShadersMod，光影功能直接用 OptiFine 自带的支持。",
+            "如果是旧整合包，确认没有把 ShadersMod 又手动放回 mods。",
+            "光影包放到 shaderpacks 目录，不要放进 mods。",
+        ],
+        links: &[],
+        priority: 86,
+        category: "mod",
+    },
+    Rule {
+        id: "rtss-sodium",
+        title: "RTSS 与 Sodium 不兼容",
+        summary: "RivaTuner（RTSS）的覆盖层与 Sodium 的渲染线程冲突。",
+        patterns: &["rtss"],
+        advice: &[
+            "关闭 RTSS 或把 java.exe 从 RTSS 的监控列表中移除。",
+            "关闭 MSI Afterburner 的屏幕显示功能。",
+            "如果不需帧数限制，直接退出 RTSS 后启动游戏。",
+        ],
+        links: &[],
+        priority: 82,
+        category: "mod",
+    },
+    Rule {
+        id: "missing-embeddium",
+        title: "Oculus 缺少 Embeddium",
+        summary: "Oculus 需要 Embeddium（或 Sodium 的对应分支）作为前置，缺失时渲染初始化失败。",
+        patterns: &["requires embeddium", "missing embeddium", "embeddium is required"],
+        advice: &[
+            "在「下载 → 模组」里安装与当前游戏版本匹配的 Embeddium。",
+            "不要同时安装 Rubidium 和 Embeddium。",
+            "装好后确认 Oculus 版本与 Embeddium 版本线一致。",
+        ],
+        links: &[],
+        priority: 88,
+        category: "mod",
+    },
+    Rule {
+        id: "ctov-lithostitched",
+        title: "CTOV 缺少 Lithostitched",
+        summary: "ChoiceTheorem's Overhauled Village 需要 Lithostitched 作为前置。",
+        patterns: &["ctov"],
+        advice: &[
+            "安装与当前游戏版本匹配的 Lithostitched。",
+            "确认 CTOV 与 Lithostitched 的版本线一致。",
+            "如果已安装仍报错，检查是否装成了 Fabric 分支。",
+        ],
+        links: &[],
+        priority: 84,
+        category: "mod",
+    },
+    Rule {
+        id: "legacy-too-many-ids",
+        title: "方块/物品 ID 超出上限",
+        summary: "1.12.2 等旧版本的 ID 上限被 Mod 撑满，加载器无法分配新 ID。",
+        patterns: &["legacytomanyids", "maximum id range exceeded"],
+        advice: &[
+            "安装 Just Enough IDs（JEID）后重试。",
+            "或减少同时安装的内容类 Mod。",
+            "JEID 只适用于 1.12.2 及更早版本，不要装到新版本。",
+        ],
+        links: &[(
+            "Just Enough IDs（CurseForge）",
+            "https://www.curseforge.com/minecraft/mc-mods/just-enough-ids",
+        )],
+        priority: 84,
+        category: "mod",
+    },
+    Rule {
+        id: "modernfix-watchdog",
+        title: "ModernFix 看门狗触发",
+        summary: "ModernFix 检测到启动或加载卡死并强制结束，日志里会出现 watchdog。",
+        patterns: &["modernfix watchdog", "watchdog thread"],
+        advice: &[
+            "先把 ModernFix 更新到最新版本。",
+            "如果只在大型整合包中出现，适当调大内存并减少同时加载的 Mod。",
+            "仍无法解决时暂时移除 ModernFix 验证。",
+        ],
+        links: &[],
+        priority: 82,
+        category: "mod",
+    },
+    Rule {
+        id: "connector-incompatible",
+        title: "Sinytra Connector 不兼容",
+        summary: "Connector 无法把某些 Fabric Mod 正确映射到 Forge/NeoForge，加载阶段直接报错。",
+        patterns: &[
+            "connectorincompatiblefabricmods",
+            "sinytra connector",
+        ],
+        advice: &[
+            "按日志里列出的 Mod，移除或换成 Forge 版本。",
+            "把 Connector 和 Forgified Fabric API 更新到最新。",
+            "Connector 不是万能的，渲染类 Fabric Mod 通常无法兼容。",
+        ],
+        links: &[],
+        priority: 84,
+        category: "mod",
+    },
+    Rule {
+        id: "resource-location",
+        title: "资源路径非法",
+        summary: "某个 Mod 注册了包含大写字母或非法字符的资源 ID，1.21 起会直接拒绝。",
+        patterns: &["resourcelocationexception"],
+        advice: &[
+            "按日志中的资源 ID 找到对应 Mod，更新到修复该问题的版本。",
+            "不要手动修改 Mod jar 内的资源路径。",
+            "如果是整合包，检查是否有旧版 Mod 混入。",
+        ],
+        links: &[],
+        priority: 82,
+        category: "mod",
+    },
 ];
 
 /// 没有命中任何具体规则、但明显是崩溃时的兜底条目。
@@ -662,7 +1438,30 @@ fn generic_match() -> CrashMatch {
             url: "https://minecraft.wiki/w/Crash_report".into(),
         }],
         priority: 10,
+        phase: 4,
+        confidence: "low".into(),
         category: "other".into(),
+        suspects: Vec::new(),
+    }
+}
+
+/// 日志几乎没有内容：通常是 Java 路径失效、被安全软件拦截，或 JVM 在初始化前就退出。
+fn short_output_match() -> CrashMatch {
+    CrashMatch {
+        id: "short-output".into(),
+        title: "启动输出过短，Java 没有真正运行".into(),
+        summary: "游戏没有留下正常日志，Java 进程在初始化阶段就退出了。".into(),
+        advice: vec![
+            "在「设置 → Java」里重新选择 java.exe，确认路径存在且能正常运行。".into(),
+            "检查杀毒软件是否拦截了 java.exe 或游戏目录。".into(),
+            "在版本设置里清空自定义 Java 参数后重试。".into(),
+        ],
+        evidence: Vec::new(),
+        links: Vec::new(),
+        priority: 90,
+        phase: 1,
+        confidence: "medium".into(),
+        category: "java".into(),
         suspects: Vec::new(),
     }
 }
@@ -761,7 +1560,7 @@ fn excerpt_from(text: &str, kind: &str) -> Vec<String> {
 
 fn evidence_for(text: &str, patterns: &[&str]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for line in text.lines() {
+    for (index, line) in text.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -770,9 +1569,11 @@ fn evidence_for(text: &str, patterns: &[&str]) -> Vec<String> {
         if !patterns.iter().any(|pattern| lowered.contains(pattern)) {
             continue;
         }
-        let clipped: String = trimmed.chars().take(240).collect();
-        if !out.contains(&clipped) {
-            out.push(clipped);
+        // 带上行号，崩溃窗口里可以直接定位到日志原文
+        let clipped: String = trimmed.chars().take(220).collect();
+        let entry = format!("第 {} 行：{}", index + 1, clipped);
+        if !out.contains(&entry) {
+            out.push(entry);
         }
         if out.len() >= 4 {
             break;
@@ -791,6 +1592,117 @@ fn description_of(text: &str) -> Option<String> {
     })
 }
 
+/// 规则分层：1 环境/安装 → 2 Mod 归因 → 3 兼容 → 4 兜底。
+fn phase_of(id: &str) -> u8 {
+    match id {
+        "java-version"
+        | "out-of-memory"
+        | "vm-options"
+        | "duplicate-classpath"
+        | "loader-incomplete"
+        | "corrupted-jar"
+        | "file-locked"
+        | "graphics"
+        | "jvm-fatal"
+        | "server-port"
+        | "auth"
+        | "authlib-login"
+        | "java-32bit-exact"
+        | "forge-java-incompatible"
+        | "mod-needs-java11"
+        | "forge-incomplete-more"
+        | "repeat-installation"
+        | "file-already-exists"
+        | "unsatisfied-link"
+        | "sha1-digest-error"
+        | "java-agent-failed"
+        | "fabric-loader-old"
+        | "process-conflict"
+        | "curseforge-corrupted"
+        | "intel-driver"
+        | "amd-driver"
+        | "nvidia-driver"
+        | "insufficient-memory-native" => 1,
+        "customskinloader-version-detect"
+        | "module-package-conflict"
+        | "missing-dependency"
+        | "mod-conflict"
+        | "confirmed-mod-crash"
+        | "mod-init-failed"
+        | "fabric-entrypoint-crash"
+        | "fabric-solution"
+        | "fabric-warnings"
+        | "duplicate-mod-files"
+        | "manual-debug-crash" => 2,
+        "mixin"
+        | "mod-version-mismatch"
+        | "class-loading"
+        | "optifine-world-load"
+        | "illegal-access"
+        | "module-resolution"
+        | "world-corrupt"
+        | "optifine-performant"
+        | "optifine-twilightforest"
+        | "optifine-jade"
+        | "optifine-neoforge"
+        | "optifine-forest"
+        | "optifine-sodium"
+        | "shadersmod-optifine"
+        | "rtss-sodium"
+        | "oculus-embeddium"
+        | "missing-indium"
+        | "ferritecore-neighbor"
+        | "geckolib-oculus"
+        | "ctov-lithostitched"
+        | "epicfight-addon"
+        | "feature-order-cycle"
+        | "modernfix-watchdog"
+        | "language-provider-mismatch"
+        | "legacy-too-many-ids"
+        | "resource-location"
+        | "server-config-corrupted"
+        | "connector-incompatible"
+        | "rubidium-deprecated"
+        | "missing-embeddium" => 3,
+        _ => 4,
+    }
+}
+
+fn confidence_of(phase: u8) -> &'static str {
+    match phase {
+        1 | 2 => "high",
+        3 => "medium",
+        _ => "low",
+    }
+}
+
+/// 组合规则需要多个关键词同时出现，避免单看一个通用词就误报。
+fn rule_context_ok(id: &str, lowered: &str) -> bool {
+    let required: &[&str] = match id {
+        "optifine-world-load"
+        | "optifine-performant"
+        | "optifine-twilightforest"
+        | "optifine-neoforge"
+        | "optifine-forest" => &["optifine"],
+        "optifine-jade" => &["optifine", "jade"],
+        "optifine-sodium" => &["optifine", "sodium"],
+        "shadersmod-optifine" => &["optifine"],
+        "rtss-sodium" => &["rtss", "sodium"],
+        "oculus-embeddium" => &["oculus"],
+        "missing-indium" => &["indium"],
+        "missing-embeddium" => &["embeddium"],
+        "ferritecore-neighbor" => &["ferritecore"],
+        "geckolib-oculus" => &["geckolib", "oculus"],
+        "ctov-lithostitched" => &["ctov", "lithostitched"],
+        "epicfight-addon" => &["epicfight"],
+        "modernfix-watchdog" => &["modernfix"],
+        "connector-incompatible" => &["connector"],
+        "rubidium-deprecated" => &["rubidium"],
+        _ => &[],
+    };
+    required.iter().all(|keyword| lowered.contains(keyword))
+}
+
 fn matches_in(text: &str) -> Vec<CrashMatch> {
     let lowered = text.to_lowercase();
     let mut result: Vec<CrashMatch> = Vec::new();
@@ -798,6 +1710,10 @@ fn matches_in(text: &str) -> Vec<CrashMatch> {
         if !rule.patterns.iter().any(|pattern| lowered.contains(pattern)) {
             continue;
         }
+        if !rule_context_ok(rule.id, &lowered) {
+            continue;
+        }
+        let phase = phase_of(rule.id);
         result.push(CrashMatch {
             id: rule.id.into(),
             title: rule.title.into(),
@@ -813,6 +1729,8 @@ fn matches_in(text: &str) -> Vec<CrashMatch> {
                 })
                 .collect(),
             priority: rule.priority,
+            phase,
+            confidence: confidence_of(phase).into(),
             category: rule.category.into(),
             suspects: Vec::new(),
         });
@@ -825,6 +1743,10 @@ fn matches_in(text: &str) -> Vec<CrashMatch> {
         if !rule_matches(&rule, &lowered) {
             continue;
         }
+        if !rule_context_ok(&rule.id, &lowered) {
+            continue;
+        }
+        let phase = rule.phase.unwrap_or_else(|| phase_of(&rule.id)).clamp(1, 4);
         let patterns: Vec<&str> = rule.patterns.iter().map(String::as_str).collect();
         result.push(CrashMatch {
             id: rule.id.clone(),
@@ -845,6 +1767,11 @@ fn matches_in(text: &str) -> Vec<CrashMatch> {
                 })
                 .collect(),
             priority: rule.priority,
+            phase,
+            confidence: rule
+                .confidence
+                .clone()
+                .unwrap_or_else(|| confidence_of(phase).to_string()),
             category: if rule.category.trim().is_empty() {
                 "other".into()
             } else {
@@ -859,26 +1786,49 @@ fn matches_in(text: &str) -> Vec<CrashMatch> {
         }
         return result;
     }
-    // 分级短路：只保留命中的最高一级，避免次要规则把主因淹没
-    let best_tier = result
+    refine_matches(&mut result, &lowered);
+    if result.is_empty() {
+        return result;
+    }
+    // 只展示最早一层的命中：环境问题优先于 Mod 归因，再优先于兼容性和兜底
+    let best_phase = result
         .iter()
-        .map(|item| tier_of(item.priority))
+        .map(|item| item.phase)
         .min()
-        .unwrap_or(0);
-    result.retain(|item| tier_of(item.priority) == best_tier);
+        .unwrap_or(4);
+    result.retain(|item| item.phase == best_phase);
     // 高优先级在前，同样优先级按规则表顺序
     result.sort_by(|a, b| b.priority.cmp(&a.priority));
     result
 }
 
-/// 规则分层：0 = 高优先（几乎可以断定原因），1 = 中等，2 = 兜底提示。
-fn tier_of(priority: u8) -> u8 {
-    if priority >= 86 {
-        0
-    } else if priority >= 70 {
-        1
-    } else {
-        2
+/// 命中多条规则时做互斥收敛，避免同一现象被重复归因。
+fn refine_matches(matches: &mut Vec<CrashMatch>, lowered: &str) {
+    let ids: Vec<String> = matches.iter().map(|item| item.id.clone()).collect();
+    let has = |id: &str| ids.iter().any(|value| value == id);
+    // 手动触发的调试崩溃没有修复价值，只保留这一条
+    if has("manual-debug-crash") {
+        matches.retain(|item| item.id == "manual-debug-crash");
+        return;
+    }
+    // 已经定位到具体显卡驱动时，不再重复报笼统的 JVM/显卡问题
+    if has("intel-driver") || has("amd-driver") || has("nvidia-driver") {
+        matches.retain(|item| item.id != "jvm-fatal" && item.id != "graphics");
+    }
+    // 32 位 Java 报出的“内存不足 / 参数无效”都是假象，真正的修法是换 64 位 Java
+    if has("java-32bit-exact") {
+        matches.retain(|item| item.id != "vm-options");
+        if !lowered.contains("java.lang.outofmemoryerror") && !lowered.contains("java heap space") {
+            matches.retain(|item| item.id != "out-of-memory");
+        }
+    }
+    // NightConfig 的报错只是配置损坏的表象，优先展示配置规则
+    if has("mod-config") {
+        matches.retain(|item| item.id != "nightconfig");
+    }
+    // OptiFine 世界加载失败已经点名，不再报笼统的存档损坏
+    if has("optifine-world-load") {
+        matches.retain(|item| item.id != "world-corrupt");
     }
 }
 
@@ -1551,8 +2501,283 @@ fn launcher_fatal(text: &str) -> bool {
     .any(|pattern| lowered.contains(pattern))
 }
 
+/// 成功启动后记录 mods 快照，崩溃时用它对比出“这次改了什么”。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SnapshotEntry {
+    file_name: String,
+    size: u64,
+    modified: u64,
+    /// 文件内容摘要；旧版快照没有这个字段，留空时退回按大小/时间判断
+    #[serde(default)]
+    sha256: String,
+}
+
+fn safe_version_id(version_id: &str) -> String {
+    version_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// 游戏目录短哈希：区分不同游戏文件夹下的同名版本，避免快照互相覆盖。
+fn short_path_hash(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let text = path.to_string_lossy().to_lowercase();
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+        .chars()
+        .take(8)
+        .collect()
+}
+
+fn snapshot_path(version_id: &str, mods_dir: &Path) -> PathBuf {
+    // 实例目录 = mods 的上级目录；不同游戏目录下同名版本必须分开存
+    let instance = mods_dir.parent().unwrap_or(mods_dir);
+    let key = format!(
+        "{}-{}",
+        safe_version_id(version_id),
+        short_path_hash(instance)
+    );
+    crate::config::data_dir()
+        .join("mod-snapshots")
+        .join(format!("{key}.json"))
+}
+
+fn scan_mod_entries(mods_dir: &Path) -> Vec<SnapshotEntry> {
+    let mut entries = Vec::new();
+    let Ok(dir) = fs::read_dir(mods_dir) else {
+        return entries;
+    };
+    for entry in dir.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("jar") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        entries.push(SnapshotEntry {
+            file_name: entry.file_name().to_string_lossy().to_string(),
+            size: meta.len(),
+            modified: meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0),
+            sha256: sha256_of(&path).unwrap_or_default(),
+        });
+    }
+    entries.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    entries
+}
+
+fn sha256_of(path: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let file = File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut reader, &mut hasher).ok()?;
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+/// 同一文件名下内容是否变化；旧快照没有摘要时退回大小与修改时间。
+fn snapshot_changed(old: &SnapshotEntry, now: &SnapshotEntry) -> bool {
+    if !old.sha256.is_empty() && !now.sha256.is_empty() {
+        return old.sha256 != now.sha256;
+    }
+    old.size != now.size || old.modified != now.modified
+}
+
+/// 成功退出（代码 0）后调用，覆盖上一份快照。
+pub fn save_mod_snapshot(version_id: &str, mods_dir: &Path) {
+    let entries = scan_mod_entries(mods_dir);
+    let path = snapshot_path(version_id, mods_dir);
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let Ok(bytes) = serde_json::to_vec_pretty(&entries) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    if fs::write(&tmp, bytes).is_ok() {
+        let _ = fs::rename(&tmp, &path);
+    }
+}
+
+/// 对比上一份成功快照与当前 mods，返回新增/删除/修改的文件。
+fn diff_mod_snapshot(version_id: &str, mods_dir: &Path) -> Vec<ModChange> {
+    let Ok(text) = fs::read_to_string(snapshot_path(version_id, mods_dir)) else {
+        return Vec::new();
+    };
+    let Ok(previous) = serde_json::from_str::<Vec<SnapshotEntry>>(&text) else {
+        return Vec::new();
+    };
+    if previous.is_empty() {
+        return Vec::new();
+    }
+    let current = scan_mod_entries(mods_dir);
+    let mut old: HashMap<String, SnapshotEntry> = HashMap::new();
+    for entry in previous {
+        old.insert(entry.file_name.clone(), entry);
+    }
+    let mut changes = Vec::new();
+    for entry in &current {
+        match old.remove(&entry.file_name) {
+            None => changes.push(ModChange {
+                kind: "added".into(),
+                file_name: entry.file_name.clone(),
+            }),
+            Some(previous) if snapshot_changed(&previous, entry) => changes.push(ModChange {
+                kind: "modified".into(),
+                file_name: entry.file_name.clone(),
+            }),
+            Some(_) => {}
+        }
+    }
+    for file_name in old.keys() {
+        changes.push(ModChange {
+            kind: "removed".into(),
+            file_name: file_name.clone(),
+        });
+    }
+    changes.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    changes
+}
+
+/// 撤销快照之后新增的 Mod：移到 mods-disabled 保留现场，返回被移走的文件名。
+pub fn undo_added_mods(version_id: &str, game_dir: &Path) -> Result<Vec<String>> {
+    let mods_dir = game_dir.join("mods");
+    let added: Vec<String> = diff_mod_snapshot(version_id, &mods_dir)
+        .into_iter()
+        .filter(|change| change.kind == "added")
+        .map(|change| change.file_name)
+        .collect();
+    if added.is_empty() {
+        return Ok(added);
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0);
+    let target = game_dir
+        .join("mods-disabled")
+        .join(format!("undo-{stamp}"));
+    fs::create_dir_all(&target)?;
+    let mut moved = Vec::new();
+    for name in added {
+        let source = mods_dir.join(&name);
+        if !source.is_file() {
+            continue;
+        }
+        if fs::rename(&source, target.join(&name)).is_ok() {
+            moved.push(name);
+        }
+    }
+    if moved.is_empty() {
+        bail!("新增的 Mod 已不在 mods 目录，或没有移动权限");
+    }
+    Ok(moved)
+}
+
+/// 读取崩溃前后 5 分钟的 Windows 应用日志。失败或超时都返回空，不影响分析。
+#[cfg(windows)]
+fn windows_crash_events(anchor: u64) -> Vec<WindowsCrashEvent> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+
+    if anchor == 0 {
+        return Vec::new();
+    }
+    let start = anchor.saturating_sub(300);
+    let end = anchor.saturating_add(300);
+    let command = format!(
+        "$start=[DateTimeOffset]::FromUnixTimeSeconds({start}).UtcDateTime; $end=[DateTimeOffset]::FromUnixTimeSeconds({end}).UtcDateTime; Get-WinEvent -FilterHashtable @{{LogName='Application'; Id=1000,1001,1002,1005; StartTime=$start; EndTime=$end}} -MaxEvents 20 | ForEach-Object {{ [PSCustomObject]@{{ EventId=$_.Id; Provider=$_.ProviderName; TimeCreated=$_.TimeCreated.ToUniversalTime().ToString('o'); Message=$_.Message }} }} | ConvertTo-Json -Compress"
+    );
+    let Ok(mut child) = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+        .creation_flags(0x0800_0000)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    // 管道缓冲只有约 4KB：必须边等边读，否则输出一多 PowerShell 就会写满阻塞，
+    // 4 秒后被当成卡死杀掉，结果永远为空
+    let reader = child.stdout.take().map(|mut out| {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = out.read_to_end(&mut buffer);
+            buffer
+        })
+    });
+    // PowerShell 偶尔会卡住，最多等 4 秒
+    let mut finished = false;
+    for _ in 0..40 {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            finished = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if !finished {
+        let _ = child.kill();
+    }
+    let status_ok = child.wait().map(|status| status.success()).unwrap_or(false);
+    let stdout = reader
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+    if !status_ok {
+        return Vec::new();
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&stdout) else {
+        return Vec::new();
+    };
+    let entries = match value {
+        serde_json::Value::Array(items) => items,
+        serde_json::Value::Object(_) => vec![value],
+        _ => return Vec::new(),
+    };
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            Some(WindowsCrashEvent {
+                event_id: entry.get("EventId")?.as_u64()? as u32,
+                provider: entry.get("Provider")?.as_str().unwrap_or_default().to_string(),
+                time_created: entry.get("TimeCreated")?.as_str()?.to_string(),
+                message: entry
+                    .get("Message")?
+                    .as_str()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(600)
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn windows_crash_events(_anchor: u64) -> Vec<WindowsCrashEvent> {
+    Vec::new()
+}
+
 pub fn analyze(cfg: &Config, version_id: &str, exit_code: Option<i32>) -> Result<CrashReport> {
     let game_dir = instance::game_dir(cfg, version_id);
+    // 与上一次成功启动的 mods 快照对比，直接圈出这次改动了哪些 Mod
+    let mod_changes = diff_mod_snapshot(version_id, &game_dir.join("mods"));
     let latest_log = game_dir.join("logs").join("latest.log");
     // latest.log 会被截断，debug.log 更完整；两者都读，堆栈更不容易丢
     let debug_log = game_dir.join("logs").join("debug.log");
@@ -1628,6 +2853,8 @@ pub fn analyze(cfg: &Config, version_id: &str, exit_code: Option<i32>) -> Result
             excerpt: Vec::new(),
             scanned,
             suspects: Vec::new(),
+            mod_changes: Vec::new(),
+            windows_events: Vec::new(),
             context,
         });
     };
@@ -1669,11 +2896,21 @@ pub fn analyze(cfg: &Config, version_id: &str, exit_code: Option<i32>) -> Result
     // 退出码闸门：正常退出（0）且没有新的崩溃报告时，
     // 日志里的异常只是历史残留，不应判成崩溃
     let clean_exit = exit_code == Some(0) && !crash_fresh && !hs_err_fresh && !launcher_failed;
+    // 崩溃后读一下 Windows 应用日志：识别“进程被系统结束”“应用未响应”等没有 Java 堆栈的情况
+    let windows_events = if clean_exit {
+        Vec::new()
+    } else {
+        windows_crash_events(modified_secs(&primary))
+    };
     let mut matches = if clean_exit {
         Vec::new()
     } else {
         matches_in(&combined)
     };
+    // 日志几乎没有内容时，给一个比“未匹配到已知原因”更具体的结论
+    if matches.is_empty() && !clean_exit && text.trim().chars().count() < 100 {
+        matches.push(short_output_match());
+    }
 
     // 可疑 Mod：堆栈包名优先，其次是模块冲突名，最后是崩溃报告自带的 Suspected Mods
     let packages = suspicious_packages(&combined);
@@ -1785,6 +3022,8 @@ pub fn analyze(cfg: &Config, version_id: &str, exit_code: Option<i32>) -> Result
         excerpt: excerpt_from(&text, source_kind),
         scanned,
         suspects,
+        mod_changes,
+        windows_events,
         context,
     })
 }
@@ -1886,6 +3125,116 @@ pub fn export(cfg: &Config, version_id: &str) -> Result<String> {
     export_to(cfg, version_id, &crate::config::data_dir().join("crash-exports"))
 }
 
+/// 导出误报反馈：用户标记为「不是这个原因」的规则 + 实例上下文，便于提交反馈。
+pub fn export_feedback(cfg: &Config, version_id: &str, rule_ids: &[String]) -> Result<String> {
+    let report = analyze(cfg, version_id, None)?;
+    let rules: Vec<serde_json::Value> = report
+        .matches
+        .iter()
+        .filter(|item| rule_ids.is_empty() || rule_ids.iter().any(|id| id == &item.id))
+        .map(|item| {
+            // 证据行来自原始日志，反馈会被用户转发，先隐藏含凭据的行
+            let evidence: Vec<String> = item
+                .evidence
+                .iter()
+                .map(|line| redact(line).0.trim_end().to_string())
+                .collect();
+            serde_json::json!({
+                "id": item.id,
+                "title": item.title,
+                "summary": item.summary,
+                "category": item.category,
+                "priority": item.priority,
+                "evidence": evidence,
+            })
+        })
+        .collect();
+    let payload = serde_json::json!({
+        "type": "false-positive-feedback",
+        "created": now_secs(),
+        "launcher_version": crate::appupdate::CURRENT_VERSION,
+        "os": std::env::consts::OS,
+        "version_id": version_id,
+        "source_kind": report.source_kind,
+        "game_version": report.context.game_version,
+        "loader": report.context.loader,
+        "java_major": report.context.java_major,
+        "mod_count": report.context.mod_count,
+        "rules": rules,
+    });
+    let dir = crate::config::data_dir().join("crash-feedback");
+    fs::create_dir_all(&dir)?;
+    let safe_id: String = version_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let path = dir.join(format!("DOCL-feedback-{safe_id}-{}.json", now_secs()));
+    fs::write(&path, serde_json::to_vec_pretty(&payload)?)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// 用户主动分享时，把脱敏后的分析结果与相关日志上传到 mclo.gs，返回链接。
+pub async fn share(
+    client: &reqwest::Client,
+    cfg: &Config,
+    version_id: &str,
+    report: &CrashReport,
+) -> Result<String> {
+    let game_dir = instance::game_dir(cfg, version_id);
+    let mut text = analysis_text(report);
+    let mut paths: Vec<PathBuf> = Vec::new();
+    if !report.source_path.is_empty() {
+        paths.push(PathBuf::from(&report.source_path));
+    }
+    paths.push(game_dir.join("logs").join("latest.log"));
+    if let Some(path) = newest_file(&game_dir, |name| {
+        name.starts_with("hs_err_pid") && name.ends_with(".log")
+    }) {
+        paths.push(path);
+    }
+    for path in paths {
+        if !path.is_file() {
+            continue;
+        }
+        text.push_str(&format!("\n\n===== {} =====\n", path.display()));
+        text.push_str(&read_text(&path));
+    }
+    // 上传到公开站点前，把用户目录替换掉
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        if !home.trim().is_empty() {
+            text = text.replace(&home, "%USERPROFILE%");
+        }
+    }
+    let (redacted, _) = redact(&text);
+    if redacted.len() > 9 * 1024 * 1024 {
+        bail!("日志超过 9 MB，mclo.gs 无法接收，请改用「导出报告」");
+    }
+    let response = client
+        .post("https://api.mclo.gs/1/log")
+        .form(&[("content", redacted)])
+        .send()
+        .await?;
+    let value: serde_json::Value = response.json().await?;
+    if value.get("success").and_then(|item| item.as_bool()) != Some(true) {
+        let reason = value
+            .get("error")
+            .and_then(|item| item.as_str())
+            .unwrap_or("mclo.gs 返回失败");
+        bail!("上传日志失败：{reason}");
+    }
+    value
+        .get("url")
+        .and_then(|item| item.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("mclo.gs 没有返回链接"))
+}
+
 fn export_to(cfg: &Config, version_id: &str, dir: &Path) -> Result<String> {
     // 导出是用户主动操作，拿不到本次退出码，按正常流程分析
     let report = analyze(cfg, version_id, None)?;
@@ -1961,6 +3310,17 @@ fn export_to(cfg: &Config, version_id: &str, dir: &Path) -> Result<String> {
     let context_json = serde_json::to_string_pretty(&report.context)?;
     add_text(&mut writer, "context.json", &context_json, &mut hidden_total)?;
 
+    // 附上当前 Mod 清单和与上次成功启动的差异，方便社区/作者定位
+    let mods_json = serde_json::to_string_pretty(&scan_mod_entries(&game_dir.join("mods")))?;
+    add_text(&mut writer, "mods.json", &mods_json, &mut hidden_total)?;
+    let changes_json = serde_json::to_string_pretty(&report.mod_changes)?;
+    add_text(
+        &mut writer,
+        "mod_changes.json",
+        &changes_json,
+        &mut hidden_total,
+    )?;
+
     // 记录隐藏了多少行，便于用户判断报告是否被裁剪
     writer.start_file("README.txt", options)?;
     writer.write_all(
@@ -2004,15 +3364,15 @@ mod tests {
         assert_eq!(report[0].id, "out-of-memory");
     }
 
-    /// 分级短路：低一级的规则不应该和高优先规则一起堆到结果里
+    /// 分层短路：低一层的原因不应该和高优先层一起堆到结果里
     #[test]
-    fn short_circuits_on_highest_tier() {
+    fn short_circuits_on_earliest_phase() {
         let text = "java.lang.OutOfMemoryError: Java heap space\nGLFW error 65543: Failed to create window";
         let report = matches_in(text);
-        assert!(report.iter().all(|item| item.id != "graphics"));
+        assert!(!report.is_empty());
         assert!(report
             .iter()
-            .all(|item| tier_of(item.priority) == tier_of(report[0].priority)));
+            .all(|item| item.phase == report[0].phase));
     }
 
     /// 包名对不上 jar 时，用堆栈里的类名 / 包名片段兜底定位 Mod
@@ -2316,6 +3676,8 @@ mod tests {
                 priority: 64,
                 category: "mod".into(),
                 match_mode: String::new(),
+                phase: None,
+                confidence: None,
             },
             RemoteRule {
                 id: "   ".into(),
@@ -2327,6 +3689,8 @@ mod tests {
                 priority: 1,
                 category: String::new(),
                 match_mode: "all".into(),
+                phase: None,
+                confidence: None,
             },
         ]);
         assert_eq!(rules.len(), 1);
@@ -2348,6 +3712,8 @@ mod tests {
             priority: 70,
             category: "mod".into(),
             match_mode: "all".into(),
+            phase: None,
+            confidence: None,
         };
         assert!(rule_matches(&rule, "alpha and beta"));
         assert!(!rule_matches(&rule, "alpha only"));
@@ -2357,5 +3723,147 @@ mod tests {
             ..rule.clone()
         };
         assert!(rule_matches(&any_rule, "alpha only"));
+    }
+
+    #[test]
+    fn local_rule_ids_are_unique() {
+        let mut ids: Vec<&str> = RULES.iter().map(|rule| rule.id).collect();
+        ids.sort_unstable();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(before, ids.len(), "内置规则 id 存在重复");
+    }
+
+    #[test]
+    fn detects_confirmed_mod_crash_with_evidence_line() {
+        let text = "java.lang.RuntimeException: boom\n\tCaught exception from coolmod (coolmod)\n\tat coolmod.Core.onLoad(Core.java:1)";
+        let report = matches_in(text);
+        let item = report
+            .iter()
+            .find(|item| item.id == "confirmed-mod-crash")
+            .expect("应命中确定 Mod 崩溃");
+        assert_eq!(item.phase, 2);
+        assert_eq!(item.confidence, "high");
+        assert!(item
+            .evidence
+            .iter()
+            .any(|line| line.contains("第 2 行") && line.contains("Caught exception")));
+    }
+
+    #[test]
+    fn java_32bit_suppresses_memory_and_vm_rules() {
+        let text = "Error occurred during initialization of VM\nInvalid maximum heap size: -Xmx4096M\nCould not reserve enough space for 1048576KB object heap";
+        let report = matches_in(text);
+        let ids: Vec<&str> = report.iter().map(|item| item.id.as_str()).collect();
+        assert!(ids.contains(&"java-32bit-exact"));
+        assert!(!ids.contains(&"out-of-memory"));
+        assert!(!ids.contains(&"vm-options"));
+    }
+
+    #[test]
+    fn optifine_world_rule_requires_optifine_and_wins_over_world_corrupt() {
+        let without = matches_in("ChunkManager$ProxyTicketManager.shouldForceTicks boom");
+        assert!(without
+            .iter()
+            .all(|item| item.id != "optifine-world-load"));
+
+        let with = matches_in(
+            "OptiFine\nChunkManager$ProxyTicketManager.shouldForceTicks\nFailed to load world",
+        );
+        let ids: Vec<&str> = with.iter().map(|item| item.id.as_str()).collect();
+        assert!(ids.contains(&"optifine-world-load"));
+        assert!(!ids.contains(&"world-corrupt"));
+    }
+
+    #[test]
+    fn manual_debug_crash_short_circuits_other_rules() {
+        let report = matches_in("Manually triggered debug crash\njava.lang.OutOfMemoryError");
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].id, "manual-debug-crash");
+    }
+
+    #[test]
+    fn detects_duplicate_mod_installation() {
+        let report = matches_in("java.lang.RuntimeException: Found a duplicate mod coolmod at /mods/coolmod-1.0.jar");
+        assert!(report
+            .iter()
+            .any(|item| item.id == "duplicate-mod-files"));
+    }
+
+    /// 同名文件内容不同时必须算改动，不能只看大小和时间
+    #[test]
+    fn snapshot_uses_sha256_when_available() {
+        let base = SnapshotEntry {
+            file_name: "coolmod-1.0.jar".into(),
+            size: 100,
+            modified: 1000,
+            sha256: "aaa".into(),
+        };
+        let same = SnapshotEntry {
+            sha256: "aaa".into(),
+            ..base.clone()
+        };
+        let replaced = SnapshotEntry {
+            sha256: "bbb".into(),
+            ..base.clone()
+        };
+        assert!(!snapshot_changed(&base, &same));
+        assert!(snapshot_changed(&base, &replaced));
+    }
+
+    /// 旧快照没有摘要，退回按大小/修改时间判断
+    #[test]
+    fn snapshot_falls_back_without_sha256() {
+        let old = SnapshotEntry {
+            file_name: "coolmod-1.0.jar".into(),
+            size: 100,
+            modified: 1000,
+            sha256: String::new(),
+        };
+        let same = SnapshotEntry {
+            sha256: String::new(),
+            ..old.clone()
+        };
+        let touched = SnapshotEntry {
+            modified: 2000,
+            sha256: String::new(),
+            ..old.clone()
+        };
+        assert!(!snapshot_changed(&old, &same));
+        assert!(snapshot_changed(&old, &touched));
+    }
+
+    /// 规则回滚要把上一版换回来，并且可以再点一次回到刚才的版本
+    #[test]
+    fn rollback_swaps_rule_files() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("docl-rules-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = dir.join("crash-rules.json");
+        let prev = dir.join("crash-rules.prev.json");
+        let old = r#"{"rules":[{"id":"old-rule","title":"旧规则","patterns":["boom"]}]}"#;
+        let new = r#"{"rules":[{"id":"new-rule","title":"新规则","patterns":["bang"]}]}"#;
+        std::fs::write(&cache, new).unwrap();
+        std::fs::write(&prev, old).unwrap();
+
+        let (rules, bytes) = swap_rule_files(&cache, &prev).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].id, "old-rule");
+        assert_eq!(bytes, old.as_bytes());
+        assert_eq!(std::fs::read_to_string(&cache).unwrap(), old);
+        assert_eq!(std::fs::read_to_string(&prev).unwrap(), new);
+
+        // 再回滚一次回到新规则
+        let (rules, _) = swap_rule_files(&cache, &prev).unwrap();
+        assert_eq!(rules[0].id, "new-rule");
+
+        // 没有上一版时明确报错
+        std::fs::remove_file(&prev).unwrap();
+        assert!(swap_rule_files(&cache, &prev).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

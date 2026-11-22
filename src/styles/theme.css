@@ -517,7 +517,7 @@ a {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.24em;
-  color: #ad9a83;
+  color: var(--muted);
   padding: 0 12px 6px;
   text-transform: uppercase;
 }

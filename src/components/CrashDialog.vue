@@ -1,5 +1,6 @@
-﻿<script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import {
   api,
   openExternal,
@@ -7,6 +8,8 @@ import {
   revealFile,
   type CrashMatch,
   type CrashReport,
+  type CrashRuleStatus,
+  type RepairPreview,
 } from "../api";
 import { notify, openInstance, repairInstance, store } from "../store";
 import AppIcon from "./AppIcon.vue";
@@ -16,15 +19,96 @@ import WoodModal from "./WoodModal.vue";
 const report = ref<CrashReport | null>(null);
 const loading = ref(false);
 const exporting = ref(false);
+const sharing = ref(false);
+const shareConfirmOpen = ref(false);
 const repairing = ref(false);
 const error = ref("");
 
-/// 按优先级分组：高优先级是「最可能的原因」，其余作为补充线索
+/// 用户反馈「不是这个原因」的规则，按 id 记在本地，下次不再展示
+const IGNORED_RULES_KEY = "docl.crash.ignoredRules";
+const ignoredRules = ref<string[]>([]);
+try {
+  const stored = JSON.parse(localStorage.getItem(IGNORED_RULES_KEY) ?? "[]");
+  if (Array.isArray(stored)) {
+    ignoredRules.value = stored.filter((item): item is string => typeof item === "string");
+  }
+} catch {
+  ignoredRules.value = [];
+}
+
+const visibleMatches = computed(() =>
+  (report.value?.matches ?? []).filter((item) => !ignoredRules.value.includes(item.id))
+);
+const hiddenMatches = computed(() =>
+  (report.value?.matches ?? []).filter((item) => ignoredRules.value.includes(item.id))
+);
+
+function ignoreMatch(item: CrashMatch) {
+  if (ignoredRules.value.includes(item.id)) return;
+  ignoredRules.value = [...ignoredRules.value, item.id];
+  localStorage.setItem(IGNORED_RULES_KEY, JSON.stringify(ignoredRules.value));
+  notify(`已忽略「${item.title}」，下次不再显示`);
+}
+
+/// 规则库状态：远端规则误报太多时可以回滚到上一版
+const ruleStatus = ref<CrashRuleStatus | null>(null);
+const rollingBack = ref(false);
+
+async function loadRuleStatus() {
+  try {
+    ruleStatus.value = await api.crashRuleStatus();
+  } catch {
+    ruleStatus.value = null;
+  }
+}
+
+async function rollbackRules() {
+  if (rollingBack.value) return;
+  rollingBack.value = true;
+  try {
+    const count = await api.crashRuleRollback();
+    notify(`已回滚到上一版规则（${count} 条），重新分析后生效`);
+    await loadRuleStatus();
+    await load();
+  } catch (err) {
+    notify(`回滚规则失败：${String(err)}`, "err");
+  } finally {
+    rollingBack.value = false;
+  }
+}
+
+function restoreIgnored() {
+  ignoredRules.value = [];
+  localStorage.removeItem(IGNORED_RULES_KEY);
+}
+
+/// 导出被标记为误报的规则，方便反馈给规则维护者
+const exportingFeedback = ref(false);
+async function exportFeedback() {
+  const versionId = store.crashVersionId;
+  if (!versionId || exportingFeedback.value || !hiddenMatches.value.length) return;
+  exportingFeedback.value = true;
+  try {
+    const path = await api.crashExportFeedback(
+      versionId,
+      hiddenMatches.value.map((item) => item.id)
+    );
+    const name = path.split(/[\\/]/).pop() ?? path;
+    notify(`已导出误报反馈：${name}`);
+    await revealFile(path);
+  } catch (err) {
+    notify(`导出误报反馈失败：${String(err)}`, "err");
+  } finally {
+    exportingFeedback.value = false;
+  }
+}
+
+/// 按原因层分组：环境/Mod 归因是最可能的原因，兼容性和兜底作为补充线索
 const matchGroups = computed(() => {
-  const list = report.value?.matches ?? [];
+  const list = visibleMatches.value;
   const groups: { title: string; items: CrashMatch[] }[] = [];
-  const primary = list.filter((item) => item.priority >= 70);
-  const others = list.filter((item) => item.priority < 70);
+  const primary = list.filter((item) => item.phase <= 2);
+  const others = list.filter((item) => item.phase > 2);
   if (primary.length) groups.push({ title: "最可能的原因", items: primary });
   if (others.length) {
     groups.push({
@@ -34,6 +118,63 @@ const matchGroups = computed(() => {
   }
   return groups;
 });
+
+function confidenceLabel(item: CrashMatch): string {
+  if (item.confidence === "high") return "高置信";
+  if (item.confidence === "medium") return "中等";
+  return "参考";
+}
+
+/// Windows 应用日志里与崩溃时间接近的条目
+const windowsEventsText = computed(() =>
+  (report.value?.windows_events ?? [])
+    .map(
+      (event) =>
+        `${event.time_created} · ${event.provider} · 事件 ${event.event_id}\n${event.message}`
+    )
+    .join("\n\n")
+);
+
+/// 与上一次成功启动对比出的 Mod 变化
+const modChangeGroups = computed(() => {
+  const list = report.value?.mod_changes ?? [];
+  const labels: Record<string, string> = { added: "新增", removed: "移除", modified: "改动" };
+  return (["added", "removed", "modified"] as const)
+    .map((kind) => ({
+      kind,
+      label: labels[kind],
+      items: list.filter((item) => item.kind === kind),
+    }))
+    .filter((group) => group.items.length);
+});
+
+/// 上一次成功启动后新增的 Mod，可以整体撤销
+const addedMods = computed(() =>
+  (report.value?.mod_changes ?? []).filter((item) => item.kind === "added")
+);
+const undoingMods = ref(false);
+
+async function undoAddedMods() {
+  const versionId = store.crashVersionId;
+  if (!versionId || undoingMods.value || !addedMods.value.length) return;
+  const ok = await confirm(
+    `会把新增的 ${addedMods.value.length} 个 Mod 移到 mods-disabled（不删除），然后重新分析。继续吗？`,
+    { title: "撤销新增的 Mod", kind: "warning" }
+  );
+  if (!ok) return;
+  undoingMods.value = true;
+  try {
+    const moved = await api.crashUndoAddedMods(versionId);
+    notify(
+      moved.length ? `已撤销 ${moved.length} 个新增 Mod，重新启动后生效` : "没有找到可以撤销的新增 Mod"
+    );
+    await load();
+  } catch (err) {
+    notify(`撤销新增 Mod 失败：${String(err)}`, "err");
+  } finally {
+    undoingMods.value = false;
+  }
+}
 
 const sourceLabel = computed(() => {
   switch (report.value?.source_kind) {
@@ -73,6 +214,7 @@ async function load() {
   }
   loading.value = true;
   error.value = "";
+  void loadRuleStatus();
   try {
     report.value = await api.crashAnalyze(versionId, store.crashExitCode);
   } catch (err) {
@@ -107,15 +249,160 @@ async function exportReport() {
   }
 }
 
+/// 上传脱敏后的日志到 mclo.gs，并复制链接
+async function shareLog() {
+  const versionId = store.crashVersionId;
+  if (!versionId || sharing.value) return;
+  shareConfirmOpen.value = false;
+  sharing.value = true;
+  try {
+    const url = await api.crashShare(versionId);
+    try {
+      await navigator.clipboard.writeText(url);
+      notify(`分享链接已复制：${url}`);
+    } catch {
+      notify(`分享链接：${url}`);
+    }
+  } catch (err) {
+    notify(`分享失败：${String(err)}`, "err");
+  } finally {
+    sharing.value = false;
+  }
+}
+
 /// 一键修复：修清单、补文件、禁用重复与已知不兼容的模组
+const planOpen = ref(false);
+const planOptions = reactive({
+  install_deps: false,
+  reset_graphics: false,
+  repair_assets: false,
+  reinstall_loader: false,
+});
+
+interface RepairPlanItem {
+  title: string;
+  detail: string;
+  risk: "低" | "中";
+}
+
+/// 根据命中的规则生成修复计划，让用户在动手前先看清会改什么
+const repairPlan = computed<RepairPlanItem[]>(() => {
+  const list = report.value?.matches ?? [];
+  const ids = new Set(list.map((item) => item.id));
+  const has = (...keys: string[]) => keys.some((key) => ids.has(key));
+  const items: RepairPlanItem[] = [
+    {
+      title: "校验版本清单与游戏文件",
+      detail: "修复损坏的 json、补回缺失的 libraries 与资源，不会删除存档。",
+      risk: "低",
+    },
+  ];
+  if (has("duplicate-mod-files", "mod-conflict", "confirmed-mod-crash", "mod-init-failed")) {
+    items.push({
+      title: "禁用重复或命中的 Mod",
+      detail: "把冲突的 jar 改名为 .disabled 并备份，不会直接删除。",
+      risk: "中",
+    });
+  }
+  if (
+    has(
+      "java-version",
+      "vm-options",
+      "java-32bit-exact",
+      "forge-java-incompatible",
+      "mod-needs-java11",
+      "java-agent-failed"
+    )
+  ) {
+    items.push({
+      title: "切换到匹配的 Java",
+      detail: "按游戏版本选择 8 / 11 / 17 / 21，并排除 32 位 Java。",
+      risk: "低",
+    });
+  }
+  if (has("optifine-sodium", "optifine-performant", "shadersmod-optifine", "optifine-world-load")) {
+    items.push({
+      title: "处理 OptiFine / 渲染冲突",
+      detail: "禁用冲突的渲染 Mod，保留 OptiFine 或 Sodium 其中一个。",
+      risk: "中",
+    });
+  }
+  if (has("mod-config", "night-config-bug", "mod-config-corrupt")) {
+    items.push({
+      title: "重置损坏的 Mod 配置",
+      detail: "先备份 config，再让游戏重新生成。",
+      risk: "中",
+    });
+  }
+  return items;
+});
+
+function openRepairPlan() {
+  if (!report.value?.found || repairing.value) return;
+  planOpen.value = true;
+  void loadPlanPreview();
+}
+
+/// 命中的规则与证据，修复前用它预览会改动哪些文件。
+/// 已标记为「不是这个原因」的规则不再参与修复，否则和忽略操作自相矛盾。
+function repairScope() {
+  const matches = visibleMatches.value;
+  return {
+    rules: matches.map((item) => item.id),
+    evidence: matches.flatMap((item) => item.evidence),
+  };
+}
+
+const planPreview = ref<RepairPreview | null>(null);
+const planPreviewing = ref(false);
+/// 连续切换勾选项时只认最后一次请求
+let planPreviewToken = 0;
+let planPreviewTimer: ReturnType<typeof setTimeout> | undefined;
+
+onUnmounted(() => {
+  if (planPreviewTimer) clearTimeout(planPreviewTimer);
+});
+
+async function loadPlanPreview() {
+  const versionId = store.crashVersionId;
+  if (!versionId) return;
+  const token = ++planPreviewToken;
+  planPreviewing.value = true;
+  try {
+    const result = await api.previewRepair(versionId, {
+      ...repairScope(),
+      ...planOptions,
+    });
+    if (token === planPreviewToken) planPreview.value = result;
+  } catch {
+    if (token === planPreviewToken) planPreview.value = null;
+  } finally {
+    if (token === planPreviewToken) planPreviewing.value = false;
+  }
+}
+
+watch(
+  planOptions,
+  () => {
+    if (!planOpen.value) return;
+    if (planPreviewTimer) clearTimeout(planPreviewTimer);
+    planPreviewTimer = setTimeout(() => void loadPlanPreview(), 250);
+  },
+  { deep: true }
+);
+
 async function runRepair() {
   const versionId = store.crashVersionId;
   if (!versionId || repairing.value) return;
+  planOpen.value = false;
   repairing.value = true;
   try {
-    // 把命中的规则带进去，修复才能针对具体原因下手
-    const rules = (report.value?.matches ?? []).map((item) => item.id);
-    const result = await repairInstance(versionId, { rules });
+    // 把命中的规则与证据带进去，修复才能针对具体原因和配置文件下手；
+    // 用户已忽略的规则不再参与修复
+    const matches = visibleMatches.value;
+    const rules = matches.map((item) => item.id);
+    const evidence = matches.flatMap((item) => item.evidence);
+    const result = await repairInstance(versionId, { rules, evidence, ...planOptions });
     if (!result) return;
     close();
     const parts: string[] = [];
@@ -131,12 +418,23 @@ async function runRepair() {
     if (result.loader_reinstalled) parts.push("重装加载器");
     if (result.deps_installed.length)
       parts.push(`补装 ${result.deps_installed.length} 个前置`);
+    if (result.quarantined_mods.length)
+      parts.push(`隔离 ${result.quarantined_mods.length} 个解压残留`);
+    if (result.renamed_mods.length)
+      parts.push(`重命名 ${result.renamed_mods.length} 个 Mod`);
+    if (result.installed_fixes.length)
+      parts.push(`安装 ${result.installed_fixes.length} 个修复 Mod`);
+    if (result.removed_paths.length)
+      parts.push(`清理 ${result.removed_paths.length} 个冲突文件`);
+    if (result.removed_java_agents.length)
+      parts.push(`移除 ${result.removed_java_agents.length} 个无效 -javaagent`);
     const pending = result.issues.length + result.files_failed.length;
+    const undoHint = result.backup_dir ? "，可在版本设置里还原" : "";
     if (parts.length) {
       notify(
         `一键修复完成：${parts.join("、")}${
           pending ? `，仍有 ${pending} 项需要手动处理` : ""
-        }`
+        }${undoHint}`
       );
     } else if (pending) {
       notify(`一键修复未能解决全部问题，仍有 ${pending} 项需要处理`, "err");
@@ -252,13 +550,36 @@ onMounted(() => {
           </div>
         </div>
 
+        <div v-if="report.mod_changes.length" class="crash-mod-changes">
+          <div class="crash-group__title">自上次成功启动以来的 Mod 变化</div>
+          <div v-for="group in modChangeGroups" :key="group.kind" class="crash-mod-group">
+            <span class="tag">{{ group.label }} {{ group.items.length }}</span>
+            <ul>
+              <li v-for="item in group.items" :key="item.file_name" class="mono">
+                {{ item.file_name }}
+              </li>
+            </ul>
+          </div>
+          <WoodButton
+            v-if="addedMods.length"
+            variant="ghost"
+            size="sm"
+            :disabled="undoingMods"
+            @click="undoAddedMods"
+          >
+            {{ undoingMods ? "撤销中…" : `撤销新增的 ${addedMods.length} 个 Mod` }}
+          </WoodButton>
+        </div>
+
         <div class="crash-matches">
           <div v-for="group in matchGroups" :key="group.title" class="crash-group">
             <div class="crash-group__title">{{ group.title }}</div>
             <article v-for="item in group.items" :key="item.id" class="crash-match">
               <header class="crash-match__head">
                 <strong>{{ item.title }}</strong>
+                <span class="tag">{{ confidenceLabel(item) }}</span>
                 <span class="tag">{{ item.id }}</span>
+                <button class="crash-ignore" @click="ignoreMatch(item)">不是这个原因</button>
               </header>
               <p class="crash-match__summary">{{ item.summary }}</p>
               <ul class="crash-advice">
@@ -280,7 +601,32 @@ onMounted(() => {
             </article>
           </div>
         </div>
+
+        <div v-if="hiddenMatches.length" class="crash-ignored">
+          已忽略 {{ hiddenMatches.length }} 条原因
+          <button @click="restoreIgnored">恢复显示</button>
+          <button :disabled="exportingFeedback" @click="exportFeedback">
+            {{ exportingFeedback ? "导出中…" : "导出误报反馈" }}
+          </button>
+        </div>
+
+        <div v-if="ruleStatus" class="crash-ignored">
+          规则库：{{ ruleStatus.source === "cache" ? "远端更新" : "内置" }} ·
+          {{ ruleStatus.count }} 条
+          <button
+            v-if="ruleStatus.has_previous"
+            :disabled="rollingBack"
+            @click="rollbackRules"
+          >
+            {{ rollingBack ? "回滚中…" : "回滚上一版规则" }}
+          </button>
+        </div>
       </template>
+
+      <details v-if="report.windows_events.length" class="crash-excerpt">
+        <summary>Windows 应用日志（{{ report.windows_events.length }}）</summary>
+        <pre class="mono">{{ windowsEventsText }}</pre>
+      </details>
 
       <details v-if="report.excerpt.length" class="crash-excerpt">
         <summary>日志摘录（{{ report.source }}）</summary>
@@ -303,6 +649,16 @@ onMounted(() => {
         v-if="report?.found"
         variant="ghost"
         size="sm"
+        :disabled="sharing"
+        @click="shareConfirmOpen = true"
+      >
+        <AppIcon name="external" :size="13" />
+        {{ sharing ? "上传中…" : "分享日志" }}
+      </WoodButton>
+      <WoodButton
+        v-if="report?.found"
+        variant="ghost"
+        size="sm"
         @click="openLogDir"
       >
         <AppIcon name="folder" :size="13" />
@@ -313,7 +669,7 @@ onMounted(() => {
         variant="soft"
         size="sm"
         :disabled="repairing || loading"
-        @click="runRepair"
+        @click="openRepairPlan"
       >
         <AppIcon name="wrench" :size="13" />
         {{ repairing ? "修复中…" : "一键修复" }}
@@ -325,9 +681,278 @@ onMounted(() => {
       <WoodButton variant="primary" size="sm" @click="close">关闭</WoodButton>
     </template>
   </WoodModal>
+
+  <WoodModal
+    v-if="planOpen"
+    title="修复计划"
+    :width="560"
+    :z-index="120"
+    @close="planOpen = false"
+  >
+    <p class="crash-note">
+      下面是根据本次崩溃分析生成的操作。带「中」风险的项目会改动 Mod 文件或配置，执行前会自动备份，可在版本设置里还原。
+    </p>
+    <ul class="repair-plan">
+      <li v-for="(item, index) in repairPlan" :key="index">
+        <div class="repair-plan__head">
+          <strong>{{ item.title }}</strong>
+          <span class="tag" :class="{ 'repair-plan__risk': item.risk === '中' }">
+            {{ item.risk }}风险
+          </span>
+        </div>
+        <p>{{ item.detail }}</p>
+      </li>
+    </ul>
+
+    <div class="repair-plan__options">
+      <label>
+        <input v-model="planOptions.install_deps" type="checkbox" />
+        补装缺失前置（联网下载）
+      </label>
+      <label>
+        <input v-model="planOptions.repair_assets" type="checkbox" />
+        校验并补全资源文件（可能下载较多）
+      </label>
+      <label>
+        <input v-model="planOptions.reset_graphics" type="checkbox" />
+        调低画质相关设置（会改 options.txt）
+      </label>
+      <label>
+        <input v-model="planOptions.reinstall_loader" type="checkbox" />
+        必要时重装加载器（联网下载）
+      </label>
+    </div>
+
+    <div class="repair-plan__files">
+      <p class="repair-plan__files-title">将改动的文件</p>
+      <p v-if="planPreviewing" class="muted small">正在扫描现有文件…</p>
+      <template v-else-if="planPreview">
+        <p v-if="!planPreview.actions.length" class="muted small">
+          没有需要改动的内容。
+        </p>
+        <div
+          v-for="action in planPreview.actions"
+          :key="action.id"
+          class="repair-plan__group"
+        >
+          <div class="repair-plan__group-head">
+            <strong>{{ action.title }}</strong>
+            <span class="muted small">
+              {{ action.count ? `${action.count} 个文件` : "自动选择" }}
+            </span>
+          </div>
+          <ul v-if="action.files.length" class="repair-plan__file-list">
+            <li v-for="file in action.files" :key="file">{{ file }}</li>
+          </ul>
+          <p v-if="action.count > action.files.length" class="muted small">
+            仅列出前 {{ action.files.length }} 项，其余
+            {{ action.count - action.files.length }} 项会在执行时一并处理。
+          </p>
+        </div>
+        <p
+          v-for="issue in planPreview.issues"
+          :key="issue"
+          class="muted small"
+        >
+          {{ issue }}
+        </p>
+      </template>
+    </div>
+
+    <template #footer>
+      <WoodButton variant="ghost" size="sm" @click="planOpen = false">取消</WoodButton>
+      <WoodButton variant="primary" size="sm" :disabled="repairing" @click="runRepair">
+        <AppIcon name="wrench" :size="13" />
+        {{ repairing ? "修复中…" : "开始修复" }}
+      </WoodButton>
+    </template>
+  </WoodModal>
+
+  <WoodModal
+    v-if="shareConfirmOpen"
+    title="分享崩溃日志"
+    :width="500"
+    :z-index="130"
+    @close="shareConfirmOpen = false"
+  >
+    <p class="crash-note">
+      将把脱敏后的分析结果和相关日志上传到 mclo.gs（公开站点），并复制链接。上传前会隐藏账号令牌和本机用户目录。
+    </p>
+    <template #footer>
+      <WoodButton variant="ghost" size="sm" @click="shareConfirmOpen = false">取消</WoodButton>
+      <WoodButton variant="primary" size="sm" :disabled="sharing" @click="shareLog">
+        {{ sharing ? "上传中…" : "上传并复制链接" }}
+      </WoodButton>
+    </template>
+  </WoodModal>
 </template>
 
 <style scoped>
+.crash-mod-changes {
+  margin: 12px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.crash-mod-changes :deep(button) {
+  margin-top: 8px;
+}
+
+.crash-mod-group {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 7px;
+  font-size: 11.5px;
+}
+
+.crash-mod-group ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.crash-mod-group li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crash-ignore {
+  margin-left: auto;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.crash-ignore:hover {
+  color: var(--danger);
+  text-decoration: underline;
+}
+
+.crash-ignored {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.crash-ignored button {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--accent, var(--muted));
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.repair-plan {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.repair-plan li {
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.repair-plan__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.repair-plan li p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.repair-plan__risk {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.repair-plan__options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.repair-plan__options label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.repair-plan__files {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.repair-plan__files-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.repair-plan__group {
+  margin-top: 9px;
+}
+
+.repair-plan__group:first-of-type {
+  margin-top: 0;
+}
+
+.repair-plan__group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.repair-plan__group p {
+  margin: 2px 0 0;
+}
+
+.repair-plan__file-list {
+  margin: 3px 0 0;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted);
+  word-break: break-all;
+}
+
 .crash-loading {
   display: flex;
   align-items: center;

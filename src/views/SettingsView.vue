@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+﻿﻿﻿﻿﻿﻿<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -43,6 +43,7 @@ import {
   startupUpdate,
   store,
 } from "../store";
+import { formatBytes } from "../utils";
 
 const form = reactive<Config>({
   game_dir: "",
@@ -1047,10 +1048,38 @@ async function installRuntime() {
 
 const backupBusy = ref(false);
 const pclBusy = ref(false);
+const hmclBusy = ref(false);
+const cleaningJunk = ref(false);
+
+/// 清理启动器缓存与各版本的游戏日志、崩溃报告；存档与 Mod 不受影响
+async function cleanJunk() {
+  if (cleaningJunk.value) return;
+  const ok = await confirm(
+    "会删除启动器的临时文件与旧缓存，以及所有版本的游戏日志、崩溃报告。存档、Mod、配置和修复备份都不会动。继续吗？",
+    { title: "清理游戏垃圾", kind: "warning" }
+  );
+  if (!ok) return;
+  cleaningJunk.value = true;
+  try {
+    const result = await api.cleanJunk();
+    if (result.files > 0) {
+      notify(`已清理 ${result.files} 个文件，释放 ${formatBytes(result.freed)}`);
+    } else {
+      notify("没有找到需要清理的垃圾文件");
+    }
+    if (result.failed) {
+      notify(`有 ${result.failed} 项删除失败，可能正被占用`, "err");
+    }
+  } catch (err) {
+    notify(`清理失败：${String(err)}`, "err");
+  } finally {
+    cleaningJunk.value = false;
+  }
+}
 
 /// 从 PCL 目录读取设置并迁移；账号缓存是加密的，只能重新登录
 async function importFromPcl() {
-  if (pclBusy.value) return;
+  if (pclBusy.value || hmclBusy.value) return;
   const dir = await pickDirectory("选择 PCL 所在文件夹");
   if (!dir) return;
   pclBusy.value = true;
@@ -1071,6 +1100,32 @@ async function importFromPcl() {
     notify(`导入 PCL 设置失败：${String(err)}`, "err");
   } finally {
     pclBusy.value = false;
+  }
+}
+
+/// 从 HMCL 目录读取设置并迁移；同样只读不写，账号需要重新登录
+async function importFromHmcl() {
+  if (pclBusy.value || hmclBusy.value) return;
+  const dir = await pickDirectory("选择 HMCL 所在文件夹（含 hmcl.json）");
+  if (!dir) return;
+  hmclBusy.value = true;
+  window.clearTimeout(autoTimer);
+  autoPending = false;
+  try {
+    const preview = await api.hmclImportPreview(dir);
+    const ok = await confirm(
+      `将从 ${preview.root} 导入以下设置：\n\n${preview.findings.join("\n")}\n\n只覆盖读到的项，其余保持现状。`,
+      { title: "从 HMCL 迁移", kind: "info" }
+    );
+    if (!ok) return;
+    const config = await api.hmclImportApply(dir);
+    await adoptConfig(config);
+    await loadBackground();
+    notify("已导入 HMCL 设置");
+  } catch (err) {
+    notify(`导入 HMCL 设置失败：${String(err)}`, "err");
+  } finally {
+    hmclBusy.value = false;
   }
 }
 
@@ -1261,16 +1316,28 @@ async function removeJava(path: string) {
       <div class="setting">
         <div class="setting__label">
           <strong>从 PCL 迁移</strong>
-          <span>选择 PCL 所在文件夹，读取内存、Java、窗口与下载设置，并接管它的 .minecraft；账号需重新登录</span>
+          <span>选择 PCL 所在文件夹，读取内存、Java、窗口与下载设置，并接管它的全部游戏文件夹；账号需重新登录</span>
         </div>
         <div class="setting__control">
-          <WoodButton variant="ghost" size="sm" :disabled="pclBusy" @click="importFromPcl">
+          <WoodButton variant="ghost" size="sm" :disabled="pclBusy || hmclBusy" @click="importFromPcl">
             <AppIcon name="package" :size="14" />
             {{ pclBusy ? "读取中…" : "选择 PCL 文件夹" }}
           </WoodButton>
         </div>
       </div>
-      <div class="setting setting--last">
+      <div class="setting">
+        <div class="setting__label">
+          <strong>从 HMCL 迁移</strong>
+          <span>选择 HMCL 所在文件夹，读取启动配置、游戏目录、内存、Java 与窗口设置；账号需重新登录</span>
+        </div>
+        <div class="setting__control">
+          <WoodButton variant="ghost" size="sm" :disabled="pclBusy || hmclBusy" @click="importFromHmcl">
+            <AppIcon name="package" :size="14" />
+            {{ hmclBusy ? "读取中…" : "选择 HMCL 文件夹" }}
+          </WoodButton>
+        </div>
+      </div>
+      <div class="setting">
         <div class="setting__label">
           <strong>配置备份</strong>
           <span>导出为 JSON 文件，可在另一台电脑导入；不含账号、皮肤与存档</span>
@@ -1284,6 +1351,18 @@ async function removeJava(path: string) {
               导入设置
             </WoodButton>
           </div>
+        </div>
+      </div>
+      <div class="setting setting--last">
+        <div class="setting__label">
+          <strong>清理游戏垃圾</strong>
+          <span>清理启动器的临时文件与旧缓存，以及所有版本的日志、崩溃报告等可再生成的内容</span>
+        </div>
+        <div class="setting__control">
+          <WoodButton variant="soft" size="sm" :disabled="cleaningJunk" @click="cleanJunk">
+            <AppIcon name="trash" :size="14" />
+            {{ cleaningJunk ? "清理中…" : "清理游戏垃圾" }}
+          </WoodButton>
         </div>
       </div>
     </section>
@@ -2353,7 +2432,7 @@ async function removeJava(path: string) {
 }
 
 .settings-side__item .icon {
-  color: #b3a189;
+  color: var(--muted);
   transition: color var(--dur-1) ease;
 }
 

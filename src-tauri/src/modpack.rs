@@ -6,7 +6,9 @@ use crate::instance::{self, InstanceMeta};
 use anyhow::{anyhow, bail, Context, Result};
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde_json::Value;
+use sha1::{Digest, Sha1};
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -24,7 +26,7 @@ pub struct PackFilePreview {
     pub required: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct PackPreview {
     pub format: String,
     pub name: String,
@@ -68,6 +70,692 @@ pub struct ImportResult {
     pub display_name: String,
     pub installed_files: u32,
     pub failed: Vec<String>,
+}
+
+/* ---------- 用新版整合包文件更新实例 ---------- */
+
+/// 更新预览里展示的单个文件。
+#[derive(Debug, Clone, Serialize)]
+pub struct PackUpdateFile {
+    pub path: String,
+    /// added / changed / removed
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PackUpdatePreview {
+    pub format: String,
+    pub name: String,
+    /// 旧清单里的版本，找不到时为空
+    pub old_version: String,
+    pub new_version: String,
+    pub game_version: String,
+    pub loader: String,
+    pub loader_version: Option<String>,
+    pub added: u32,
+    pub changed: u32,
+    pub removed: u32,
+    /// 覆盖文件数量（overrides / client-overrides）
+    pub overrides: u32,
+    pub download_bytes: u64,
+    /// 文件示例，最多 40 条
+    pub files: Vec<PackUpdateFile>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PackUpdateResult {
+    pub downloaded: u32,
+    pub removed: u32,
+    /// 解压覆盖的文件数
+    pub overrides: u32,
+    /// 下载失败的文件，可在下载面板重试
+    pub failed: Vec<String>,
+    /// 解析/准备阶段的跳过项（如 CurseForge 文件信息取不到），没有重试入口
+    pub warnings: Vec<String>,
+    /// 更新前的文件备份目录，None 表示没有覆盖任何旧文件
+    pub backup_dir: Option<String>,
+}
+
+/// 旧版整合包清单：用于判断哪些文件已经从新版里移除。
+#[derive(Debug, Default)]
+struct OldPack {
+    name: String,
+    version: String,
+    paths: HashSet<String>,
+}
+
+fn text_field(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn read_json_file(path: &Path) -> Option<Value> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn collect_paths(list: &[Value], paths: &mut HashSet<String>) {
+    for item in list {
+        if let Some(path) = item.get("path").and_then(Value::as_str) {
+            if !path.trim().is_empty() {
+                paths.insert(path.to_string());
+            }
+        }
+    }
+}
+
+/// 依次尝试 DOCL 记录、Modrinth 清单、HMCL 的 modpack.cfg。
+fn old_pack_manifest(root: &Path) -> Option<OldPack> {
+    let mut pack = OldPack::default();
+    let mut found = false;
+
+    if let Some(value) = read_json_file(&root.join(".docl-pack.json")) {
+        pack.name = text_field(&value, "name");
+        pack.version = text_field(&value, "version");
+        if let Some(list) = value.get("files").and_then(Value::as_array) {
+            collect_paths(list, &mut pack.paths);
+            found = true;
+        }
+    }
+    if let Some(value) = read_json_file(&root.join("modrinth.index.json")) {
+        if pack.name.is_empty() {
+            pack.name = text_field(&value, "name");
+        }
+        if pack.version.is_empty() {
+            pack.version = text_field(&value, "versionId");
+        }
+        if let Some(list) = value.get("files").and_then(Value::as_array) {
+            collect_paths(list, &mut pack.paths);
+            found = true;
+        }
+    }
+    if let Some(value) = read_json_file(&root.join("modpack.cfg")) {
+        if pack.name.is_empty() {
+            pack.name = text_field(&value, "name");
+        }
+        if pack.version.is_empty() {
+            pack.version = text_field(&value, "version");
+        }
+        if let Some(list) = value
+            .get("manifest")
+            .and_then(|manifest| manifest.get("files"))
+            .and_then(Value::as_array)
+        {
+            collect_paths(list, &mut pack.paths);
+            found = true;
+        }
+    }
+    found.then_some(pack)
+}
+
+/// 写实例内的整合包清单，供下次更新判断「已移除的文件」。
+fn write_pack_record(
+    root: &Path,
+    preview: &PackPreview,
+    game_version: &str,
+    loader: &str,
+    loader_version: Option<&str>,
+    paths: &[String],
+) -> Result<()> {
+    let mut paths = paths.to_vec();
+    paths.sort();
+    paths.dedup();
+    let record = serde_json::json!({
+        "format": preview.format,
+        "name": preview.name,
+        "version": preview.version,
+        "game_version": game_version,
+        "loader": loader,
+        "loader_version": loader_version.unwrap_or_default(),
+        "files": paths
+            .iter()
+            .map(|path| serde_json::json!({ "path": path }))
+            .collect::<Vec<_>>(),
+    });
+    std::fs::write(
+        root.join(".docl-pack.json"),
+        serde_json::to_vec_pretty(&record)?,
+    )?;
+    Ok(())
+}
+
+fn sha1_file(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut hasher = Sha1::new();
+    std::io::copy(&mut reader, &mut hasher).ok()?;
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+const UPDATE_SAMPLE_LIMIT: usize = 40;
+
+/// 新版清单里的单个文件：(路径, 下载地址, SHA-1, 大小, 是否可选)。
+type UpdateFile = (String, String, Option<String>, u64, bool);
+
+struct UpdatePlan {
+    tasks: Vec<FileTask>,
+    added: u32,
+    changed: u32,
+    removed: Vec<String>,
+    download_bytes: u64,
+    sample: Vec<PackUpdateFile>,
+    /// 新版清单里的全部路径，用于判断旧文件是否已被移除
+    paths: HashSet<String>,
+}
+
+/// 对比「磁盘现状」与「新版清单」，只把确实需要的文件放进下载任务。
+fn plan_update(
+    root: &Path,
+    files: &[UpdateFile],
+    old: Option<&OldPack>,
+    install_optional: bool,
+) -> UpdatePlan {
+    let mut plan = UpdatePlan {
+        tasks: Vec::new(),
+        added: 0,
+        changed: 0,
+        removed: Vec::new(),
+        download_bytes: 0,
+        sample: Vec::new(),
+        paths: HashSet::new(),
+    };
+    for (path, url, sha1, size, optional) in files {
+        // 可选文件也记入清单，避免下次更新时被当成「已移除」
+        plan.paths.insert(path.clone());
+        if *optional && !install_optional {
+            continue;
+        }
+        let Some(relative) = safe_relative(path) else {
+            continue;
+        };
+        let dest = root.join(&relative);
+        let exists = dest.is_file();
+        let stale = match sha1 {
+            Some(hash) => sha1_file(&dest)
+                .map(|actual| !actual.eq_ignore_ascii_case(hash))
+                .unwrap_or(true),
+            None => {
+                !exists
+                    || std::fs::metadata(&dest)
+                        .map(|meta| meta.len() != *size)
+                        .unwrap_or(true)
+            }
+        };
+        if !stale {
+            continue;
+        }
+        plan.download_bytes += *size;
+        if exists {
+            plan.changed += 1;
+        } else {
+            plan.added += 1;
+        }
+        if plan.sample.len() < UPDATE_SAMPLE_LIMIT {
+            plan.sample.push(PackUpdateFile {
+                path: path.clone(),
+                kind: if exists { "changed" } else { "added" }.into(),
+            });
+        }
+        if url.is_empty() {
+            continue;
+        }
+        plan.tasks.push(FileTask {
+            url: url.clone(),
+            dest,
+            sha1: sha1.clone(),
+            size: *size,
+            label: path.clone(),
+        });
+    }
+    if let Some(old) = old {
+        for path in &old.paths {
+            if plan.paths.contains(path) {
+                continue;
+            }
+            let Some(relative) = safe_relative(path) else {
+                continue;
+            };
+            if !root.join(&relative).is_file() {
+                continue;
+            }
+            plan.removed.push(path.clone());
+            if plan.sample.len() < UPDATE_SAMPLE_LIMIT {
+                plan.sample.push(PackUpdateFile {
+                    path: path.clone(),
+                    kind: "removed".into(),
+                });
+            }
+        }
+    }
+    plan
+}
+
+/// 压缩包里的覆盖文件条目；prefixes 需带结尾 `/`（CurseForge 的 overrides 目录名可自定义）。
+fn override_entries(path: &str, prefixes: &[String]) -> Result<Vec<String>> {
+    let mut archive = open_zip(path)?;
+    let mut out = Vec::new();
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index)?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().to_string();
+        let Some(rest) = prefixes
+            .iter()
+            .find_map(|prefix| name.strip_prefix(prefix.as_str()))
+        else {
+            continue;
+        };
+        if rest.is_empty() || safe_relative(rest).is_none() {
+            continue;
+        }
+        out.push(rest.to_string());
+    }
+    Ok(out)
+}
+
+/// 更新前把会被覆盖/删除的文件备份到数据目录。
+struct PackBackup {
+    root: PathBuf,
+    game_root: PathBuf,
+    saved: usize,
+}
+
+impl PackBackup {
+    fn new(game_root: &Path, version_id: &str) -> Self {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_secs())
+            .unwrap_or(0);
+        Self {
+            root: crate::config::data_dir()
+                .join("backups")
+                .join(format!("pack-{}-{stamp}", slugify(version_id))),
+            game_root: game_root.to_path_buf(),
+            saved: 0,
+        }
+    }
+
+    fn save(&mut self, path: &Path) -> Result<()> {
+        if !path.is_file() {
+            return Ok(());
+        }
+        let relative = path
+            .strip_prefix(&self.game_root)
+            .context("备份文件不在实例目录内")?;
+        let dest = self.root.join(relative);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(path, dest)?;
+        self.saved += 1;
+        Ok(())
+    }
+
+    fn path(&self) -> Option<String> {
+        (self.saved > 0).then(|| self.root.to_string_lossy().to_string())
+    }
+}
+
+/// 更新只允许在隔离实例上做：否则会改到同目录其他版本的 Mod 与配置。
+fn ensure_isolated(cfg: &Config, version_id: &str) -> Result<()> {
+    let isolated = instance::get(cfg, version_id)
+        .isolated
+        .unwrap_or(cfg.version_isolation);
+    if !isolated {
+        bail!("该实例未启用版本隔离，更新会写入共享的游戏目录；请先在实例设置里开启版本隔离");
+    }
+    Ok(())
+}
+
+/// 新版整合包解析出的统一更新来源。
+struct UpdateSource {
+    game_version: String,
+    loader: String,
+    loader_version: Option<String>,
+    files: Vec<UpdateFile>,
+    /// 覆盖文件目录前缀（带结尾 `/`）
+    prefixes: Vec<String>,
+    /// 解析阶段的问题，提示给用户
+    warnings: Vec<String>,
+    /// 是否拿到了完整文件清单；不完整时不能按清单判断「已移除」
+    complete: bool,
+}
+
+/// CurseForge 的 overrides 目录名可自定义，统一成安全相对路径 + 结尾 `/`。
+fn normalize_prefix(value: &str) -> String {
+    let normalised = value.trim().replace('\\', "/");
+    let trimmed = normalised.trim_matches('/');
+    if trimmed.is_empty() || safe_relative(trimmed).is_none() {
+        "overrides/".into()
+    } else {
+        format!("{trimmed}/")
+    }
+}
+
+fn download_file_name(file: &curseforge::FileDownload) -> String {
+    let from_name = Path::new(&file.name)
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if !from_name.trim().is_empty() {
+        return from_name;
+    }
+    file.url
+        .split('?')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("mod.jar")
+        .to_string()
+}
+
+/// 把新版整合包解析成统一的更新文件清单：
+/// Modrinth 清单自带路径与直链，CurseForge 需要联网把 projectID/fileID 换成文件名与直链。
+async fn resolve_update_source(
+    client: &reqwest::Client,
+    cfg: &Config,
+    parsed: &ParsedPack,
+) -> Result<UpdateSource> {
+    match &parsed.source {
+        SourceData::Modrinth {
+            game_version,
+            loader,
+            loader_version,
+            files,
+        } => Ok(UpdateSource {
+            game_version: game_version.clone(),
+            loader: loader.clone(),
+            loader_version: loader_version.clone(),
+            files: files.clone(),
+            prefixes: vec!["overrides/".into(), "client-overrides/".into()],
+            warnings: Vec::new(),
+            complete: true,
+        }),
+        SourceData::Curse {
+            game_version,
+            loader,
+            loader_version,
+            overrides,
+            files,
+        } => {
+            let prefer_mirror = cfg.use_mirror();
+            let specs = files.clone();
+            let mut stream = stream::iter(specs.into_iter().map(|(project_id, file_id, required)| {
+                let client = client.clone();
+                async move {
+                    let outcome =
+                        curseforge::file_download(&client, project_id, file_id, prefer_mirror).await;
+                    (project_id, file_id, required, outcome)
+                }
+            }))
+            .buffer_unordered(8);
+            let mut resolved: Vec<UpdateFile> = Vec::new();
+            let mut warnings = Vec::new();
+            while let Some((project_id, file_id, required, outcome)) = stream.next().await {
+                match outcome {
+                    Ok(file) => resolved.push((
+                        format!("mods/{}", download_file_name(&file)),
+                        file.url,
+                        file.sha1,
+                        file.size,
+                        !required,
+                    )),
+                    Err(err) => warnings
+                        .push(format!("无法获取 CurseForge 文件 {project_id}/{file_id}：{err}")),
+                }
+            }
+            if resolved.is_empty() && !warnings.is_empty() {
+                bail!("{}", warnings.remove(0));
+            }
+            // 有文件没解析出来时，清单是不完整的：不能据此删除旧文件，
+            // 否则同名且已安装的文件会被误判为「已移除」直接删掉
+            let mut complete = warnings.is_empty();
+            if resolved.is_empty() {
+                // 空清单多半是包损坏或下载不完整，同样不做删除
+                complete = false;
+                warnings.push("新版整合包清单里没有可更新的文件，本次不会删除旧文件".into());
+            }
+            if !warnings.is_empty() {
+                // 失败项太多时只列前几条，避免预览弹窗被刷屏
+                warnings.truncate(5);
+                warnings.push("部分文件取不到下载信息，更新时会跳过；开启代理后重试可补齐".into());
+            }
+            Ok(UpdateSource {
+                game_version: game_version.clone(),
+                loader: loader.clone(),
+                loader_version: loader_version.clone(),
+                files: resolved,
+                prefixes: vec![normalize_prefix(overrides)],
+                warnings,
+                complete,
+            })
+        }
+        SourceData::Generic { .. } => bail!(
+            "通用压缩包没有文件清单，无法用来更新；请使用整合包原始文件（.mrpack 或 CurseForge 压缩包）"
+        ),
+    }
+}
+
+/// 预览：只做对比，不下载、不修改任何文件。CurseForge 包需要联网解析文件名。
+pub async fn update_preview(
+    client: &reqwest::Client,
+    cfg: &Config,
+    version_id: &str,
+    path: &str,
+) -> Result<PackUpdatePreview> {
+    let parsed = {
+        let path = path.to_string();
+        // 解压包可能很大，放到阻塞线程池
+        tokio::task::spawn_blocking(move || parse_pack(&path, false)).await??
+    };
+    let source = resolve_update_source(client, cfg, &parsed).await?;
+    let root = instance::game_dir(cfg, version_id);
+    if !root.is_dir() {
+        bail!("实例目录不存在：{}", root.display());
+    }
+    ensure_isolated(cfg, version_id)?;
+    let old = old_pack_manifest(&root);
+    let has_old = old.is_some();
+    let old_version = old
+        .as_ref()
+        .map(|pack| pack.version.clone())
+        .unwrap_or_default();
+    let files = source.files;
+    let prefixes = source.prefixes;
+    let archive = path.to_string();
+    let game_version = source.game_version;
+    let loader = source.loader;
+    let loader_version = source.loader_version;
+    let complete = source.complete;
+    let mut warnings = source.warnings;
+    // 清单不完整时不按「已移除」处理，避免把没解析出来的文件误删
+    let plan_old = if complete {
+        old
+    } else {
+        warnings.push("新版整合包有文件没能解析，本次不会删除任何旧文件".into());
+        None
+    };
+    let plan_root = root.clone();
+    let (plan, overrides) = tokio::task::spawn_blocking(move || {
+        let overrides = override_entries(&archive, &prefixes)
+            .map(|list| list.len())
+            .unwrap_or(0) as u32;
+        (
+            plan_update(&plan_root, &files, plan_old.as_ref(), false),
+            overrides,
+        )
+    })
+    .await?;
+
+    if !has_old {
+        warnings.push("没有找到旧版整合包清单，本次不会删除已从整合包移除的文件".into());
+    }
+    let (current_game, current_loader) = install::instance_context(cfg, version_id)
+        .unwrap_or_else(|_| (String::new(), String::new()));
+    if !current_game.is_empty() && !game_version.is_empty() && current_game != game_version {
+        warnings.push(format!(
+            "新版整合包要求游戏 {game_version}，当前实例是 {current_game}；更新只替换文件，不会切换游戏版本"
+        ));
+    }
+    if !loader.is_empty()
+        && !current_loader.is_empty()
+        && !current_loader.eq_ignore_ascii_case(&loader)
+    {
+        warnings.push(format!(
+            "新版整合包使用 {loader}，当前实例是 {current_loader}；需要先换成对应加载器再更新"
+        ));
+    }
+    if plan.tasks.iter().any(|task| task.url.is_empty()) {
+        warnings.push("有文件缺少下载地址，更新时会跳过".into());
+    }
+
+    Ok(PackUpdatePreview {
+        format: parsed.preview.format,
+        name: parsed.preview.name,
+        old_version,
+        new_version: parsed.preview.version,
+        game_version,
+        loader,
+        loader_version,
+        added: plan.added,
+        changed: plan.changed,
+        removed: plan.removed.len() as u32,
+        overrides,
+        download_bytes: plan.download_bytes,
+        files: plan.sample,
+        warnings,
+    })
+}
+
+/// 应用更新：备份 → 删除旧文件 → 下载变更 → 解压覆盖 → 写新清单。
+pub async fn update_apply(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &Config,
+    version_id: &str,
+    path: &str,
+    install_optional: bool,
+    progress: Arc<ProgressState>,
+) -> Result<PackUpdateResult> {
+    download::begin_stage(app, &progress, "正在解析新版整合包…");
+    let parsed = {
+        let path = path.to_string();
+        tokio::task::spawn_blocking(move || parse_pack(&path, false)).await??
+    };
+    let source = resolve_update_source(client, cfg, &parsed).await?;
+    let root = instance::game_dir(cfg, version_id);
+    if !root.is_dir() {
+        bail!("实例目录不存在：{}", root.display());
+    }
+    ensure_isolated(cfg, version_id)?;
+    let old = old_pack_manifest(&root);
+    let mut warnings = source.warnings;
+    // 清单不完整时不按「已移除」处理，避免把没解析出来的文件误删
+    let plan_old = if source.complete {
+        old
+    } else {
+        warnings.push("新版整合包有文件没能解析，本次不会删除任何旧文件".into());
+        None
+    };
+    let plan = plan_update(&root, &source.files, plan_old.as_ref(), install_optional);
+
+    // 先备份所有会被覆盖或删除的文件，再动手
+    let mut backup = PackBackup::new(&root, version_id);
+    for task in &plan.tasks {
+        backup.save(&task.dest)?;
+    }
+    for relative in &plan.removed {
+        if let Some(rel) = safe_relative(relative) {
+            backup.save(&root.join(rel))?;
+        }
+    }
+    let override_list = override_entries(path, &source.prefixes).unwrap_or_default();
+    for relative in &override_list {
+        if let Some(rel) = safe_relative(relative) {
+            backup.save(&root.join(rel))?;
+        }
+    }
+
+    // CurseForge 里个别文件取不到直链时只跳过，不影响其余文件更新
+    let mut failed = Vec::new();
+    let mut failed_count = 0u32;
+    let task_count = plan.tasks.len() as u32;
+    if !plan.tasks.is_empty() {
+        download::begin_stage(
+            app,
+            &progress,
+            format!("正在下载 {} 个更新文件…", plan.tasks.len()),
+        );
+        let outcome = download::run_tasks_reporting(
+            app,
+            client,
+            plan.tasks.clone(),
+            (cfg.concurrency as usize).clamp(1, download::MAX_CONCURRENCY),
+            cfg.use_mirror(),
+            progress.clone(),
+        )
+        .await?;
+        failed_count = outcome.failed.len() as u32;
+        failed.extend(outcome.failed.into_iter().map(|(label, reason)| format!("{label}：{reason}")));
+    }
+
+    // 覆盖文件：overrides 里的配置、资源包等
+    download::begin_stage(app, &progress, "正在解压整合包覆盖文件…");
+    let path_owned = path.to_string();
+    let prefixes = source.prefixes.clone();
+    let dest = root.clone();
+    let progress_clone = progress.clone();
+    let written = tokio::task::spawn_blocking(move || {
+        let mut count = 0u32;
+        for prefix in &prefixes {
+            count += extract_entries(&path_owned, prefix, &dest, false, &progress_clone)?;
+        }
+        Ok::<u32, anyhow::Error>(count)
+    })
+    .await??;
+
+    // 删除旧版清单里已被移除的文件放到下载之后，避免下载失败时先丢文件
+    let mut removed = 0u32;
+    for relative in &plan.removed {
+        let Some(rel) = safe_relative(relative) else {
+            continue;
+        };
+        let dest = root.join(rel);
+        if std::fs::remove_file(&dest).is_ok() {
+            removed += 1;
+        }
+    }
+
+    // 记录本次清单，下次更新时用来判断「已移除的文件」；
+    // 文件已经改完，写清单失败只提示，不应把整次更新判为失败
+    let inventory: Vec<String> = plan.paths.into_iter().collect();
+    if let Err(err) = write_pack_record(
+        &root,
+        &parsed.preview,
+        &source.game_version,
+        &source.loader,
+        source.loader_version.as_deref(),
+        &inventory,
+    ) {
+        warnings.push(format!("写入整合包清单失败：{err}"));
+    }
+
+    Ok(PackUpdateResult {
+        downloaded: task_count.saturating_sub(failed_count),
+        removed,
+        overrides: written,
+        failed,
+        warnings,
+        backup_dir: backup.path(),
+    })
 }
 
 /* ---------- CurseForge manifest ---------- */
@@ -1170,6 +1858,198 @@ fn extra_dir_entry(root: &Path, relative: &str) -> Option<ExportEntry> {
     })
 }
 
+const MR_BASE: &str = "https://api.modrinth.com/v2";
+/// Modrinth 批量查询单次最多接受的哈希数量
+const MR_HASH_BATCH: usize = 100;
+
+#[derive(Debug, Deserialize)]
+struct MrVersionFile {
+    #[serde(default)]
+    hashes: HashMap<String, String>,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    size: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MrVersionEntry {
+    #[serde(default)]
+    project_id: String,
+    #[serde(default)]
+    files: Vec<MrVersionFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MrProjectSide {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    client_side: String,
+    #[serde(default)]
+    server_side: String,
+}
+
+/// 只有内容目录顶层的文件才写进 files[]，其余（存档、配置等）继续放 overrides。
+fn mrpack_candidate(path: &str) -> bool {
+    let mut parts = path.split('/');
+    let Some(dir) = parts.next() else {
+        return false;
+    };
+    if !matches!(dir, "mods" | "resourcepacks" | "shaderpacks" | "datapacks") {
+        return false;
+    }
+    let Some(file) = parts.next() else {
+        return false;
+    };
+    !file.trim().is_empty() && parts.next().is_none()
+}
+
+async fn fetch_project_sides(
+    client: &reqwest::Client,
+    ids: &[String],
+) -> HashMap<String, MrProjectSide> {
+    let mut sides = HashMap::new();
+    for chunk in ids.chunks(MR_HASH_BATCH) {
+        let Ok(ids_param) = serde_json::to_string(chunk) else {
+            continue;
+        };
+        let Ok(url) = reqwest::Url::parse_with_params(
+            &format!("{MR_BASE}/projects"),
+            &[("ids", ids_param.as_str())],
+        ) else {
+            continue;
+        };
+        let Ok(list) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            download::get_json::<Vec<MrProjectSide>>(client, url.as_str(), false),
+        )
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("Modrinth 项目信息超时")))
+        else {
+            continue;
+        };
+        for side in list {
+            if !side.id.is_empty() {
+                sides.insert(side.id.clone(), side);
+            }
+        }
+    }
+    sides
+}
+
+/// 把实例里的内容文件按 SHA-1 反查 Modrinth，命中的写进 mrpack 的 files[]，
+/// 这样别人用 Modrinth 生态打开时能识别出对应项目并继续更新。
+/// 返回 (files 数组, 已归档的相对路径集合)；查询失败时整体回退到 overrides。
+async fn modrinth_index_files(
+    client: &reqwest::Client,
+    files: &[(PathBuf, PathBuf)],
+) -> (Vec<Value>, HashSet<String>) {
+    // 计算 SHA-1 要完整读一遍文件，整合包动辄几个 GB，放阻塞线程池
+    let owned = files.to_vec();
+    let candidates = tokio::task::spawn_blocking(move || {
+        let mut out: Vec<(String, String, u64)> = Vec::new();
+        for (path, rel) in owned {
+            let relative = sanitize_entry(&rel.to_string_lossy());
+            if !mrpack_candidate(&relative) {
+                continue;
+            }
+            let Some(hash) = sha1_file(&path) else {
+                continue;
+            };
+            let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+            out.push((hash, relative, size));
+        }
+        out
+    })
+    .await
+    .unwrap_or_default();
+    if candidates.is_empty() {
+        return (Vec::new(), HashSet::new());
+    }
+
+    let mut versions: HashMap<String, MrVersionEntry> = HashMap::new();
+    for chunk in candidates.chunks(MR_HASH_BATCH) {
+        let hashes: Vec<String> = chunk.iter().map(|(hash, _, _)| hash.clone()).collect();
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            client
+                .post(format!("{MR_BASE}/version_files"))
+                .json(&serde_json::json!({ "hashes": hashes, "algorithm": "sha1" }))
+                .send(),
+        )
+        .await;
+        // 匹配失败时降级为全部放 overrides，不影响导出本身
+        let Ok(Ok(response)) = response else {
+            return (Vec::new(), HashSet::new());
+        };
+        if !response.status().is_success() {
+            return (Vec::new(), HashSet::new());
+        }
+        match response.json::<HashMap<String, MrVersionEntry>>().await {
+            Ok(batch) => versions.extend(batch),
+            Err(_) => return (Vec::new(), HashSet::new()),
+        }
+    }
+
+    // 项目侧的 client/server 标记用于生成 env；取不到就不写，按双端必需处理
+    let mut ids: Vec<String> = versions
+        .values()
+        .map(|version| version.project_id.clone())
+        .filter(|id| !id.is_empty())
+        .collect();
+    // 同一项目可能有多个文件版本，去重减少请求体
+    ids.sort();
+    ids.dedup();
+    let sides = fetch_project_sides(client, &ids).await;
+
+    let mut entries = Vec::new();
+    let mut matched = HashSet::new();
+    for (hash, relative, local_size) in candidates {
+        let Some(version) = versions.get(&hash) else {
+            continue;
+        };
+        let file = version
+            .files
+            .iter()
+            .find(|file| {
+                file.hashes
+                    .get("sha1")
+                    .map(|value| value.eq_ignore_ascii_case(&hash))
+                    .unwrap_or(false)
+            })
+            .or_else(|| version.files.first());
+        let Some(file) = file else {
+            continue;
+        };
+        if file.url.is_empty() {
+            continue;
+        }
+        let mut hashes_json = serde_json::Map::new();
+        hashes_json.insert("sha1".into(), Value::String(hash.clone()));
+        if let Some(sha512) = file.hashes.get("sha512").filter(|value| !value.is_empty()) {
+            hashes_json.insert("sha512".into(), Value::String(sha512.clone()));
+        }
+        let mut entry = serde_json::json!({
+            "path": relative.clone(),
+            "hashes": hashes_json,
+            "downloads": [file.url],
+            "fileSize": if file.size > 0 { file.size } else { local_size },
+        });
+        if let Some(side) = sides.get(&version.project_id) {
+            if !side.client_side.is_empty() && !side.server_side.is_empty() {
+                entry["env"] = serde_json::json!({
+                    "client": side.client_side,
+                    "server": side.server_side,
+                });
+            }
+        }
+        entries.push(entry);
+        matched.insert(relative);
+    }
+    (entries, matched)
+}
+
 fn loader_key(loader: &str) -> Option<&'static str> {
     match loader {
         "fabric" => Some("fabric-loader"),
@@ -1278,6 +2158,7 @@ fn sanitize_entry(path: &str) -> String {
 
 pub async fn export(
     app: &AppHandle,
+    client: &reqwest::Client,
     cfg: &Config,
     version_id: &str,
     options: &ExportOptions,
@@ -1337,6 +2218,16 @@ pub async fn export(
         .iter()
         .map(|(path, _)| std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0))
         .sum();
+    // .mrpack 需要完整的 files[]：按 SHA-1 反查 Modrinth，命中的交给生态管理，
+    // 未命中的（自改 Mod、存档、配置等）仍作为 overrides 打包
+    let mut mr_files: Vec<Value> = Vec::new();
+    let mut mr_matched: HashSet<String> = HashSet::new();
+    if format == "mrpack" {
+        progress.set_message("正在匹配 Modrinth 文件…");
+        let (entries, matched) = modrinth_index_files(client, &files).await;
+        mr_files = entries;
+        mr_matched = matched;
+    }
     progress.set_message("正在打包整合包…");
     progress.files_total.store(files.len() as u64, Ordering::Relaxed);
     progress.files_done.store(0, Ordering::Relaxed);
@@ -1376,7 +2267,7 @@ pub async fn export(
                 "versionId": version,
                 "name": name,
                 "summary": "",
-                "files": [],
+                "files": mr_files,
                 "dependencies": dependencies,
             });
             zip.start_file("modrinth.index.json", entry_options)?;
@@ -1403,6 +2294,13 @@ pub async fn export(
                 bail!("导出已取消");
             }
             let relative = sanitize_entry(&rel.to_string_lossy());
+            if mr_matched.contains(&relative) {
+                // 已写进 files[]，安装器会自己下载，不能再重复塞进 overrides
+                let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+                progress.files_done.fetch_add(1, Ordering::Relaxed);
+                progress.bytes_done.fetch_add(size, Ordering::Relaxed);
+                continue;
+            }
             let archive_path = if format == "mrpack" {
                 format!("overrides/{relative}")
             } else {
@@ -1583,13 +2481,13 @@ pub async fn import(
             let root = instance::game_dir(cfg, &instance_id);
             let mods_dir = root.join("mods");
             std::fs::create_dir_all(&mods_dir)?;
+            let mut pack_paths: Vec<String> = Vec::new();
             for result in results {
                 match result {
                     Ok(Some(file)) => {
-                        let file_name = Path::new(&file.name)
-                            .file_name()
-                            .map(|value| value.to_string_lossy().to_string())
-                            .unwrap_or_else(|| "mod.jar".into());
+                        // 与更新路径保持一致：文件名为空时用下载直链里的文件名
+                        let file_name = download_file_name(&file);
+                        pack_paths.push(format!("mods/{file_name}"));
                         tasks.push(FileTask {
                             dest: mods_dir.join(file_name),
                             url: file.url,
@@ -1627,19 +2525,31 @@ pub async fn import(
 
             download::begin_stage(app, &progress, "正在解压整合包覆盖文件…");
             let path_owned = path.to_string();
-            let overrides_owned = overrides.clone();
+            let overrides_prefix = normalize_prefix(overrides);
             let dest = root.clone();
             let progress_clone = progress.clone();
             tokio::task::spawn_blocking(move || {
                 extract_entries(
                     &path_owned,
-                    &format!("{overrides_owned}/"),
+                    &overrides_prefix,
                     &dest,
                     false,
                     &progress_clone,
                 )
             })
             .await??;
+
+            // 记录清单，导入后也能用新版整合包继续更新；失败只提示，不影响已导入的文件
+            if let Err(error) = write_pack_record(
+                &root,
+                &parsed.preview,
+                game_version,
+                loader,
+                requested.as_deref(),
+                &pack_paths,
+            ) {
+                failed.push(format!("写入整合包清单失败：{error}"));
+            }
 
             (parent, game_version.clone(), loader.clone())
         }
@@ -1691,7 +2601,10 @@ pub async fn import(
 
             let root = instance::game_dir(cfg, &instance_id);
             let mut tasks = Vec::new();
+            let mut pack_paths = Vec::new();
             for (file_path, url, sha1, size, optional) in files {
+                // 可选文件也记入清单，避免下次更新时被当成「已移除」
+                pack_paths.push(file_path.clone());
                 if url.is_empty() {
                     if !optional || options.install_optional {
                         failed.push(format!("缺少下载地址：{file_path}"));
@@ -1747,6 +2660,18 @@ pub async fn import(
                     extract_entries(&path_clone, &prefix_owned, &dest_clone, false, &progress_clone)
                 })
                 .await??;
+            }
+
+            // 记录清单，导入后也能用新版整合包继续更新；失败只提示，不影响已导入的文件
+            if let Err(error) = write_pack_record(
+                &root,
+                &parsed.preview,
+                game_version,
+                loader,
+                requested.as_deref(),
+                &pack_paths,
+            ) {
+                failed.push(format!("写入整合包清单失败：{error}"));
             }
 
             (parent, game_version.clone(), loader.clone())
@@ -1841,7 +2766,10 @@ pub async fn import(
 
 #[cfg(test)]
 mod tests {
-    use super::broken_jars;
+    use super::{
+        broken_jars, mrpack_candidate, old_pack_manifest, plan_update, sha1_file, write_pack_record,
+        UpdateFile,
+    };
     use std::io::Write;
     use std::path::PathBuf;
 
@@ -1883,5 +2811,151 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 只更新内容变化的文件；旧清单里已被移除的文件要单独列出
+    #[test]
+    fn plans_pack_update_from_disk_state() {
+        let root = temp_dir("update-plan");
+        std::fs::create_dir_all(root.join("mods")).unwrap();
+        std::fs::write(root.join("mods").join("keep.jar"), b"keep").unwrap();
+        std::fs::write(root.join("mods").join("old.jar"), b"old").unwrap();
+        std::fs::write(root.join("mods").join("gone.jar"), b"gone").unwrap();
+
+        let keep_sha = sha1_file(&root.join("mods").join("keep.jar")).unwrap();
+        let files: Vec<UpdateFile> = vec![
+            (
+                "mods/keep.jar".into(),
+                "https://example.com/keep.jar".into(),
+                Some(keep_sha),
+                4,
+                false,
+            ),
+            (
+                "mods/old.jar".into(),
+                "https://example.com/old.jar".into(),
+                Some("0000000000000000000000000000000000000000".into()),
+                10,
+                false,
+            ),
+            (
+                "mods/new.jar".into(),
+                "https://example.com/new.jar".into(),
+                Some("1111111111111111111111111111111111111111".into()),
+                20,
+                false,
+            ),
+            // 可选文件默认不下载，但要记入清单，避免被当成「已移除」
+            (
+                "mods/optional.jar".into(),
+                "https://example.com/optional.jar".into(),
+                None,
+                5,
+                true,
+            ),
+        ];
+        let mut old_paths = std::collections::HashSet::new();
+        for path in ["mods/keep.jar", "mods/old.jar", "mods/gone.jar"] {
+            old_paths.insert(path.to_string());
+        }
+        let old = super::OldPack {
+            name: "测试包".into(),
+            version: "1.0".into(),
+            paths: old_paths,
+        };
+
+        let plan = plan_update(&root, &files, Some(&old), false);
+        assert_eq!(plan.added, 1);
+        assert_eq!(plan.changed, 1);
+        assert_eq!(plan.removed, vec!["mods/gone.jar".to_string()]);
+        // 可选文件被跳过，不产生下载任务
+        assert_eq!(plan.tasks.len(), 2);
+        assert!(plan.paths.contains("mods/optional.jar"));
+        assert_eq!(plan.download_bytes, 10 + 20);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// HMCL 的 modpack.cfg 也能作为旧清单来源
+    #[test]
+    fn reads_old_manifest_from_hmcl_pack_cfg() {
+        let root = temp_dir("old-manifest");
+        std::fs::write(
+            root.join("modpack.cfg"),
+            serde_json::json!({
+                "type": "Modrinth",
+                "name": "Fabulously Optimized",
+                "version": "14.1.2",
+                "manifest": {
+                    "files": [
+                        { "path": "mods/a.jar" },
+                        { "path": "mods/b.jar" }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let pack = old_pack_manifest(&root).unwrap();
+        assert_eq!(pack.name, "Fabulously Optimized");
+        assert_eq!(pack.version, "14.1.2");
+        assert!(pack.paths.contains("mods/a.jar"));
+        assert!(pack.paths.contains("mods/b.jar"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 只有内容目录顶层的文件适合交给 Modrinth 生态，其余留在 overrides
+    #[test]
+    fn only_top_level_content_files_go_to_modrinth_index() {
+        for path in [
+            "mods/sodium.jar",
+            "resourcepacks/pack.zip",
+            "shaderpacks/bsl.zip",
+            "datapacks/data.zip",
+        ] {
+            assert!(mrpack_candidate(path), "{path} 应该写进 files[]");
+        }
+        for path in [
+            "config/a.toml",
+            "saves/world/level.dat",
+            "mods/sub/nested.jar",
+            "mods/",
+        ] {
+            assert!(!mrpack_candidate(path), "{path} 不应写进 files[]");
+        }
+    }
+
+    /// 导入后写下的清单要能被下次更新识别（名称、版本、文件路径）
+    #[test]
+    fn writes_pack_record_for_next_update() {
+        let root = temp_dir("pack-record");
+        let paths = vec![
+            "mods/b.jar".to_string(),
+            "mods/a.jar".to_string(),
+            "mods/a.jar".to_string(),
+        ];
+        write_pack_record(
+            &root,
+            &super::PackPreview {
+                format: "curseforge".into(),
+                name: "测试包".into(),
+                version: "2.0".into(),
+                ..Default::default()
+            },
+            "1.20.1",
+            "forge",
+            Some("47.2.0"),
+            &paths,
+        )
+        .unwrap();
+
+        let pack = old_pack_manifest(&root).unwrap();
+        assert_eq!(pack.name, "测试包");
+        assert_eq!(pack.version, "2.0");
+        assert_eq!(pack.paths.len(), 2);
+        assert!(pack.paths.contains("mods/a.jar"));
+        assert!(pack.paths.contains("mods/b.jar"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

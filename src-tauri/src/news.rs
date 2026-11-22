@@ -597,12 +597,16 @@ async fn wiki_extract(client: &reqwest::Client, title: &str) -> Option<String> {
                 Err(err) => {
                     #[cfg(debug_assertions)]
                     eprintln!("[news] 中文 Wiki 响应解析失败（第 {} 次）: {err}", attempt + 1);
+                    #[cfg(not(debug_assertions))]
+                    let _ = &err;
                     None
                 }
             },
             Err(err) => {
                 #[cfg(debug_assertions)]
                 eprintln!("[news] 中文 Wiki 请求失败（第 {} 次）: {err}", attempt + 1);
+                #[cfg(not(debug_assertions))]
+                let _ = &err;
                 None
             }
         };

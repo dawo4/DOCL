@@ -960,6 +960,25 @@ export async function exportModpack(
   );
 }
 
+/// 用新版整合包更新实例：走任务队列，才能显示进度、暂停与取消
+export async function updateModpack(
+  versionId: string,
+  path: string,
+  installOptional = false
+) {
+  return (
+    (await enqueueJob({
+      title: "更新整合包",
+      stage: "modpack-update",
+      message: "准备更新整合包…",
+      errorPrefix: "更新整合包失败",
+      key: `pack-update:${versionId}:${path}`,
+      run: async (jobId) =>
+        api.modpackUpdateApply(versionId, path, installOptional, jobId),
+    })) ?? null
+  );
+}
+
 export async function installJava(major: number, source = "mojang") {
   const result = await enqueueJob<import("./api").JavaInfo>({
     title: `Java ${major}`,

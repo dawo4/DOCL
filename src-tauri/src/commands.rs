@@ -9,6 +9,7 @@ use crate::crash;
 use crate::curseforge;
 use crate::download::{self, ProgressState};
 use crate::hall;
+use crate::hmclimport;
 use crate::install::{self, InstalledVersion, LoaderOption};
 use crate::instance::{
     self, InstanceFile, InstanceInfo, InstanceMeta, InstancePaths, WorldSeed, WorldSummary,
@@ -203,6 +204,24 @@ pub fn import_settings(state: State<'_, AppState>, path: String) -> CmdResult<Co
     Ok(config)
 }
 
+/// 清理启动器缓存与各版本的游戏日志、崩溃报告等可再生成文件。
+#[tauri::command]
+pub async fn clean_junk(state: State<'_, AppState>) -> CmdResult<crate::cleanup::JunkReport> {
+    // 下载/安装任务正在写临时目录，清理会把正在用的文件删掉
+    let busy = state
+        .progress
+        .lock()
+        .map(|jobs| jobs.values().any(|job| job.active.load(Ordering::Relaxed)))
+        .unwrap_or(false);
+    if busy {
+        return Err("还有下载或安装任务在进行，完成后再清理".into());
+    }
+    let cfg = state.config.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || crate::cleanup::clean(&cfg))
+        .await
+        .map_err(err)
+}
+
 #[tauri::command]
 pub fn app_version() -> String {
     appupdate::CURRENT_VERSION.to_string()
@@ -216,15 +235,57 @@ pub fn app_portable() -> bool {
 
 /// 读取 PCL 目录里的设置并返回预览，不写入任何内容。
 #[tauri::command]
-pub fn pcl_import_preview(path: String) -> CmdResult<pclimport::PclPreview> {
-    pclimport::inspect(&path).map_err(err)
+pub async fn pcl_import_preview(path: String) -> CmdResult<pclimport::PclPreview> {
+    // 会遍历所有游戏文件夹统计版本与隔离，放阻塞线程池避免卡界面
+    tokio::task::spawn_blocking(move || pclimport::inspect(&path))
+        .await
+        .map_err(err)?
+        .map_err(err)
 }
 
 /// 应用 PCL 设置；只覆盖确实读到的字段。
 #[tauri::command]
-pub fn pcl_import_apply(state: State<'_, AppState>, path: String) -> CmdResult<Config> {
-    let mut next = state.config.lock().unwrap().clone();
-    pclimport::apply(&mut next, &path).map_err(err)?;
+pub async fn pcl_import_apply(
+    state: State<'_, AppState>,
+    path: String,
+) -> CmdResult<Config> {
+    let current = state.config.lock().unwrap().clone();
+    let next = tokio::task::spawn_blocking(move || {
+        let mut next = current;
+        pclimport::apply(&mut next, &path).map(|_| next)
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?;
+    config::save(&next).map_err(err)?;
+    *state.config.lock().unwrap() = next.clone();
+    Ok(next)
+}
+
+/// 读取 HMCL 目录里的设置并返回预览，不写入任何内容。
+#[tauri::command]
+pub async fn hmcl_import_preview(path: String) -> CmdResult<hmclimport::HmclPreview> {
+    // 会遍历每个游戏目录判断隔离，放阻塞线程池避免卡界面
+    tokio::task::spawn_blocking(move || hmclimport::inspect(&path))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}
+
+/// 应用 HMCL 设置；只覆盖确实读到的字段。
+#[tauri::command]
+pub async fn hmcl_import_apply(
+    state: State<'_, AppState>,
+    path: String,
+) -> CmdResult<Config> {
+    let current = state.config.lock().unwrap().clone();
+    let next = tokio::task::spawn_blocking(move || {
+        let mut next = current;
+        hmclimport::apply(&mut next, &path).map(|_| next)
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?;
     config::save(&next).map_err(err)?;
     *state.config.lock().unwrap() = next.clone();
     Ok(next)
@@ -927,6 +988,68 @@ pub async fn crash_export(
         .map_err(err)
 }
 
+/// 当前崩溃规则的来源与条数。
+#[tauri::command]
+pub fn crash_rule_status() -> crash::RuleStatus {
+    crash::rules_status()
+}
+
+/// 回滚到上一版崩溃规则。
+#[tauri::command]
+pub fn crash_rule_rollback() -> CmdResult<usize> {
+    crash::rollback_rules().map_err(err)
+}
+
+/// 导出误报反馈 JSON（被标记的规则 + 实例上下文）。
+#[tauri::command]
+pub async fn crash_export_feedback(
+    state: State<'_, AppState>,
+    version_id: String,
+    rule_ids: Vec<String>,
+) -> CmdResult<String> {
+    let cfg = state.config.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || crash::export_feedback(&cfg, &version_id, &rule_ids))
+        .await
+        .map_err(|error| format!("导出误报反馈失败：{error}"))?
+        .map_err(err)
+}
+
+/// 撤销快照之后新增的 Mod：移到 mods-disabled，返回被移走的文件名。
+#[tauri::command]
+pub async fn crash_undo_added_mods(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> CmdResult<Vec<String>> {
+    let cfg = state.config.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || {
+        let game_dir = instance::game_dir(&cfg, &version_id);
+        crash::undo_added_mods(&version_id, &game_dir)
+    })
+    .await
+    .map_err(|error| format!("撤销新增 Mod 失败：{error}"))?
+    .map_err(err)
+}
+
+/// 上传脱敏后的崩溃日志到 mclo.gs，返回分享链接。
+#[tauri::command]
+pub async fn crash_share(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> CmdResult<String> {
+    let cfg = state.config.lock().unwrap().clone();
+    let report = {
+        let cfg = cfg.clone();
+        let version_id = version_id.clone();
+        tokio::task::spawn_blocking(move || crash::analyze(&cfg, &version_id, None))
+            .await
+            .map_err(|error| format!("分析崩溃日志失败：{error}"))?
+            .map_err(err)?
+    };
+    crash::share(&crate::http::client(), &cfg, &version_id, &report)
+        .await
+        .map_err(err)
+}
+
 /// 进房前的 Mod / 版本一致性校验：房间广播了 mod 列表或版本时才对比。
 #[derive(serde::Serialize)]
 pub struct RoomModCheck {
@@ -1199,7 +1322,55 @@ pub async fn modpack_export(
     let cfg = state.config.lock().unwrap().clone();
     let progress = begin_job(&state, job_id, "install", "准备导出整合包…");
 
-    let result = modpack::export(&app, &cfg, &version_id, &options, progress.clone()).await;
+    let result = modpack::export(&app, &state.client, &cfg, &version_id, &options, progress.clone()).await;
+
+    finish_job(&state, &app, &progress);
+
+    result.map_err(err)
+}
+
+/// 预览「用新版整合包文件更新实例」会做哪些改动，不下载、不修改文件。
+#[tauri::command]
+pub async fn modpack_update_preview(
+    state: State<'_, AppState>,
+    version_id: String,
+    path: String,
+) -> CmdResult<modpack::PackUpdatePreview> {
+    let cfg = state.config.lock().unwrap().clone();
+    modpack::update_preview(&state.client, &cfg, &version_id, &path)
+        .await
+        .map_err(err)
+}
+
+/// 用新版整合包文件更新实例：只改动整合包清单里的文件，覆盖前自动备份。
+#[tauri::command]
+pub async fn modpack_update_apply(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    version_id: String,
+    path: String,
+    install_optional: Option<bool>,
+    job_id: Option<String>,
+) -> CmdResult<modpack::PackUpdateResult> {
+    let cfg = state.config.lock().unwrap().clone();
+    let progress = begin_job(
+        &state,
+        job_id,
+        "modpack-update",
+        format!("正在更新 {version_id}…"),
+    );
+    download::reset_failed_batch(&progress.job);
+
+    let result = modpack::update_apply(
+        &app,
+        &state.client,
+        &cfg,
+        &version_id,
+        &path,
+        install_optional.unwrap_or(false),
+        progress.clone(),
+    )
+    .await;
 
     finish_job(&state, &app, &progress);
 
@@ -1276,11 +1447,53 @@ pub async fn repair_instance(
     result.map_err(err)
 }
 
+/// 预览一键修复会改动的具体文件，不修改任何内容。
+#[tauri::command]
+pub async fn repair_preview(
+    state: State<'_, AppState>,
+    version_id: String,
+    options: Option<repair::RepairOptions>,
+) -> CmdResult<repair::RepairPreview> {
+    let cfg = state.config.lock().unwrap().clone();
+    let options = options.unwrap_or_default();
+    // 扫描 mods 里的 jar 可能较慢，放阻塞线程池避免卡住 UI
+    tokio::task::spawn_blocking(move || repair::preview(&cfg, &version_id, &options))
+        .await
+        .map_err(err)
+}
+
 /// 还原最近一次一键修复前的备份文件。
 #[tauri::command]
 pub fn repair_restore(state: State<'_, AppState>, version_id: String) -> CmdResult<usize> {
     let cfg = state.config.lock().unwrap().clone();
     repair::restore(&cfg, &version_id).map_err(err)
+}
+
+/// 列出该实例的全部修复备份，新的在前。
+#[tauri::command]
+pub async fn repair_backups(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> CmdResult<Vec<repair::BackupEntry>> {
+    let cfg = state.config.lock().unwrap().clone();
+    // 统计备份里的文件数要遍历目录，放阻塞线程池避免卡 UI
+    Ok(tokio::task::spawn_blocking(move || repair::backups(&cfg, &version_id))
+        .await
+        .unwrap_or_default())
+}
+
+/// 还原指定一次的修复备份。
+#[tauri::command]
+pub async fn repair_restore_at(
+    state: State<'_, AppState>,
+    version_id: String,
+    backup_id: String,
+) -> CmdResult<usize> {
+    let cfg = state.config.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || repair::restore_at(&cfg, &version_id, &backup_id))
+        .await
+        .map_err(err)?
+        .map_err(err)
 }
 
 /// 检查实例有没有装光影加载器，没有就给出推荐
@@ -1790,13 +2003,17 @@ pub fn export_skin_to_customskinloader(
             .ok_or_else(|| "该账号还没有本地皮肤，请先在皮肤编辑器保存".to_string())?,
     };
 
-    let dir = crate::instance::game_dir(&cfg, &version_id)
+    let instance_dir = crate::instance::game_dir(&cfg, &version_id);
+    let dir = instance_dir
         .join("CustomSkinLoader")
         .join("LocalSkin")
         .join("skins");
     std::fs::create_dir_all(&dir).map_err(err)?;
     let file = dir.join(format!("{}.png", csl_file_name(&account.name)));
     std::fs::write(&file, bytes).map_err(err)?;
+    // 只写图片不够：CSL 默认把本地皮肤排在后面且会缓存「未找到」，
+    // 不调整顺序并清缓存的话，游戏里仍会显示默认皮肤
+    skins::prepare_customskinloader(&instance_dir, &cfg.game_root().join("assets"));
     Ok(CslSkinExport {
         path: file.to_string_lossy().to_string(),
     })

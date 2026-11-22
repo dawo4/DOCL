@@ -10,6 +10,7 @@ import {
   savePackDialog,
   type ExportPreview,
   type GameOptionsPreset,
+  type PackUpdatePreview,
   type InstanceCheck,
   type InstanceFile,
   type InstanceInfo,
@@ -17,6 +18,8 @@ import {
   type InstanceModMeta,
   type InstancePaths,
   type RepairReport,
+  type RepairPreview,
+  type RepairBackup,
   type ModUpdate,
   type ModUpdateReport,
   type WorldSeed,
@@ -44,6 +47,7 @@ import {
   repairInstance,
   restoreRepairBackup,
   store,
+  updateModpack,
 } from "../store";
 import { ICON_PRESETS, formatBytes, formatDate, kindLabel } from "../utils";
 
@@ -118,6 +122,17 @@ const updatingKey = ref("");
 const showExport = ref(false);
 const exportPreview = ref<ExportPreview | null>(null);
 const exportBusy = ref(false);
+/// 用新版整合包文件更新实例
+const packUpdateOpen = ref(false);
+const packUpdateBusy = ref(false);
+const packUpdating = ref(false);
+const packUpdatePath = ref("");
+const packUpdatePreview = ref<PackUpdatePreview | null>(null);
+const packUpdateKindLabel: Record<string, string> = {
+  added: "新增",
+  changed: "更新",
+  removed: "移除",
+};
 const exportForm = reactive({
   name: "",
   version: "1.0.0",
@@ -808,6 +823,43 @@ const repairOptions = ref({
   repair_assets: false,
   reinstall_loader: false,
 });
+/// 修复计划：会改动的具体文件，勾选项变化后重新扫描
+const repairPreview = ref<RepairPreview | null>(null);
+const repairPreviewing = ref(false);
+/// 连续切换勾选项时只认最后一次请求，避免旧结果覆盖新选择
+let previewToken = 0;
+let previewTimer: ReturnType<typeof setTimeout> | undefined;
+
+async function loadRepairPreview() {
+  const versionId = store.instanceId;
+  if (!versionId) return;
+  const token = ++previewToken;
+  repairPreviewing.value = true;
+  try {
+    const result = await api.previewRepair(versionId, repairOptions.value);
+    if (token === previewToken) repairPreview.value = result;
+  } catch {
+    if (token === previewToken) repairPreview.value = null;
+  } finally {
+    if (token === previewToken) repairPreviewing.value = false;
+  }
+}
+
+function openRepairOptions() {
+  repairOptionsOpen.value = true;
+  void loadRepairPreview();
+}
+
+watch(
+  repairOptions,
+  () => {
+    if (!repairOptionsOpen.value) return;
+    // 扫描 mods 目录可能较慢，连着勾选时合并成一次
+    if (previewTimer) clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => void loadRepairPreview(), 250);
+  },
+  { deep: true }
+);
 
 /// 只对标准加载器实例显示重装入口，整合包重装会破坏包内清单
 const canReinstallLoader = computed(() => {
@@ -887,7 +939,27 @@ const repairLines = computed(() => {
   if (result.graphics_reset) lines.push("画质相关选项已调低（渲染距离 / 阴影 / 粒子）");
   if (result.assets_restored)
     lines.push(`补全了 ${result.assets_restored} 个资源文件`);
-  if (result.config_reset) lines.push("已备份并清空 config 目录，Mod 会重新生成配置");
+  if (result.config_reset) lines.push("已备份并清理损坏的 config，Mod 会重新生成配置");
+  if (result.quarantined_mods?.length)
+    lines.push(
+      `隔离了 ${result.quarantined_mods.length} 个解压残留：${result.quarantined_mods
+        .slice(0, 4)
+        .join("、")}`
+    );
+  if (result.renamed_mods?.length)
+    lines.push(`修正了 ${result.renamed_mods.length} 个非法的 Mod 文件名`);
+  if (result.installed_fixes?.length)
+    lines.push(`已安装修复类 Mod：${result.installed_fixes.join("、")}`);
+  if (result.removed_paths?.length)
+    lines.push(
+      `已清理 ${result.removed_paths.length} 个被占用的文件：${result.removed_paths
+        .slice(0, 4)
+        .join("、")}`
+    );
+  if (result.removed_java_agents?.length)
+    lines.push(
+      `已移除 ${result.removed_java_agents.length} 个无效的 -javaagent 参数`
+    );
   if (result.loader_reinstalled) lines.push("已重装加载器（mods 与存档保留）");
   return lines;
 });
@@ -916,6 +988,60 @@ const repairProblems = computed(() => {
   if (!result) return [];
   return [...result.issues, ...result.files_failed];
 });
+
+/// 修复历史：每次修复前的备份，可按次还原
+const historyOpen = ref(false);
+const history = ref<RepairBackup[]>([]);
+const historyLoading = ref(false);
+const restoringBackupId = ref("");
+
+async function openRepairHistory() {
+  const versionId = store.instanceId;
+  if (!versionId) return;
+  historyOpen.value = true;
+  historyLoading.value = true;
+  try {
+    history.value = await api.repairBackups(versionId);
+  } catch (err) {
+    history.value = [];
+    notify(`读取修复历史失败：${String(err)}`, "err");
+  } finally {
+    historyLoading.value = false;
+  }
+}
+
+function formatBackupTime(seconds: number) {
+  if (!seconds) return "时间未知";
+  return new Date(seconds * 1000).toLocaleString("zh-CN", { hour12: false });
+}
+
+async function restoreBackupAt(entry: RepairBackup) {
+  const versionId = store.instanceId;
+  if (!versionId || restoringBackupId.value) return;
+  // 先占位再等确认，避免连点触发两次还原
+  restoringBackupId.value = entry.id;
+  try {
+    const ok = await confirm(
+      `会把 ${entry.files} 个文件还原到 ${formatBackupTime(entry.created)} 的状态，之后修复产生的改动会被覆盖。继续吗？`,
+      { title: "还原这次修复", kind: "warning" }
+    );
+    if (!ok) return;
+    const count = await api.restoreRepairBackupAt(versionId, entry.id);
+    if (count > 0) {
+      historyOpen.value = false;
+      repairOpen.value = false;
+      repairOptionsOpen.value = false;
+      await refreshFiles();
+      notify(`已还原 ${count} 个文件，重新启动后生效`);
+    } else {
+      notify("这次备份里没有可还原的文件");
+    }
+  } catch (err) {
+    notify(`还原失败：${String(err)}`, "err");
+  } finally {
+    restoringBackupId.value = "";
+  }
+}
 
 /// 扫描 mods / 资源包 / 光影里打不开的压缩包。
 /// FML 初始化时遇到损坏的 jar 会直接退出，这个入口用来给已装好的实例排查。
@@ -1344,6 +1470,57 @@ async function startExport() {
   }
 }
 
+/// 选择一个新版整合包，先比对再更新
+async function openPackUpdate() {
+  const value = info.value;
+  if (!value || packUpdateBusy.value) return;
+  const picked = await openDialog({
+    multiple: false,
+    filters: [{ name: "整合包", extensions: ["mrpack", "zip"] }],
+  });
+  const path = typeof picked === "string" ? picked : null;
+  if (!path) return;
+  packUpdateBusy.value = true;
+  try {
+    const preview = await api.modpackUpdatePreview(value.id, path);
+    packUpdatePath.value = path;
+    packUpdatePreview.value = preview;
+    packUpdateOpen.value = true;
+  } catch (err) {
+    notify(`读取新版整合包失败：${String(err)}`, "err");
+  } finally {
+    packUpdateBusy.value = false;
+  }
+}
+
+async function applyPackUpdate() {
+  const value = info.value;
+  if (!value || packUpdating.value || !packUpdatePath.value) return;
+  packUpdating.value = true;
+  try {
+    // 走任务队列：下载面板里能看到进度并取消
+    const result = await updateModpack(value.id, packUpdatePath.value);
+    packUpdateOpen.value = false;
+    if (!result) return;
+    await refreshFiles();
+    const parts: string[] = [];
+    if (result.downloaded) parts.push(`更新 ${result.downloaded} 个文件`);
+    if (result.removed) parts.push(`删除 ${result.removed} 个旧文件`);
+    if (result.overrides) parts.push(`覆盖 ${result.overrides} 个配置`);
+    notify(parts.length ? `整合包已更新：${parts.join("、")}` : "整合包已是最新");
+    if (result.failed.length) {
+      notify(`有 ${result.failed.length} 个文件失败，可在下载面板重试`, "err");
+    }
+    if (result.warnings.length) {
+      notify(result.warnings[0], "err");
+    }
+  } catch (err) {
+    notify(`更新整合包失败：${String(err)}`, "err");
+  } finally {
+    packUpdating.value = false;
+  }
+}
+
 function launch() {
   if (info.value) launchVersion(info.value.id);
 }
@@ -1395,7 +1572,7 @@ function launch() {
           variant="soft"
           :size="34"
           :disabled="repairing"
-          @click="repairOptionsOpen = true"
+          @click="openRepairOptions"
         />
         <IconButton
           icon="search"
@@ -1564,9 +1741,13 @@ function launch() {
                 <AppIcon name="folder" :size="15" />
                 截图文件夹
               </WoodButton>
-              <WoodButton variant="soft" :disabled="exportBusy" @click="openExport">
+              <WoodButton variant="soft" :disabled="exportBusy || packUpdateBusy" @click="openExport">
                 <AppIcon name="download" :size="15" />
                 导出整合包
+              </WoodButton>
+              <WoodButton variant="soft" :disabled="packUpdateBusy" @click="openPackUpdate">
+                <AppIcon name="refresh" :size="15" />
+                {{ packUpdateBusy ? "读取中…" : "更新整合包" }}
               </WoodButton>
               <WoodButton variant="soft" @click="openCrashDialog(info.id)">
                 <AppIcon name="alert" :size="15" />
@@ -2395,8 +2576,50 @@ function launch() {
             <em>只清加载器产物，mods 与存档保留；会重新下载依赖</em>
           </span>
         </label>
+
+        <div class="repair-plan">
+          <p class="repair-plan__title">将改动的内容</p>
+          <p v-if="repairPreviewing" class="muted small">正在扫描现有文件…</p>
+          <template v-else-if="repairPreview">
+            <p v-if="!repairPreview.actions.length" class="muted small">
+              没有需要改动的内容。
+            </p>
+            <div
+              v-for="action in repairPreview.actions"
+              :key="action.id"
+              class="repair-plan__item"
+            >
+              <div class="repair-plan__head">
+                <strong>{{ action.title }}</strong>
+                <span class="muted small">
+                  {{ action.count ? `${action.count} 个文件` : "自动选择" }}
+                </span>
+              </div>
+              <p class="muted small">{{ action.detail }}</p>
+              <ul v-if="action.files.length" class="repair-plan__files">
+                <li v-for="file in action.files" :key="file">{{ file }}</li>
+              </ul>
+              <p
+                v-if="action.count > action.files.length"
+                class="muted small"
+              >
+                仅列出前 {{ action.files.length }} 项，其余 {{ action.count - action.files.length }} 项会在执行时一并处理。
+              </p>
+            </div>
+            <p
+              v-for="issue in repairPreview.issues"
+              :key="issue"
+              class="muted small"
+            >
+              {{ issue }}
+            </p>
+          </template>
+        </div>
       </div>
       <template #footer>
+        <WoodButton variant="ghost" size="sm" @click="openRepairHistory">
+          修复历史
+        </WoodButton>
         <WoodButton variant="ghost" size="sm" @click="repairOptionsOpen = false">取消</WoodButton>
         <WoodButton
           variant="primary"
@@ -2457,10 +2680,122 @@ function launch() {
         >
           {{ restoring ? "还原中…" : "还原修复前状态" }}
         </WoodButton>
+        <WoodButton variant="ghost" size="sm" @click="openRepairHistory">
+          修复历史
+        </WoodButton>
         <WoodButton variant="ghost" size="sm" @click="repairOpen = false">关闭</WoodButton>
         <WoodButton variant="soft" size="sm" @click="openVersionFolder">
           <AppIcon name="folder" :size="13" />
           打开版本目录
+        </WoodButton>
+      </template>
+    </WoodModal>
+
+    <WoodModal
+      v-if="historyOpen"
+      title="修复历史"
+      :width="540"
+      @close="historyOpen = false"
+    >
+      <div class="check-body">
+        <p v-if="historyLoading" class="muted small">正在读取备份…</p>
+        <p v-else-if="!history.length" class="check-ok">
+          还没有修复备份，执行一次一键修复后会自动记录。
+        </p>
+        <ul v-else class="check-list">
+          <li v-for="entry in history" :key="entry.id" class="history-item">
+            <div class="history-item__head">
+              <strong>{{ formatBackupTime(entry.created) }}</strong>
+              <span class="muted small">{{ entry.files }} 个文件</span>
+            </div>
+            <p v-if="entry.samples.length" class="muted small history-item__files">
+              {{ entry.samples.join("、") }}{{ entry.files > entry.samples.length ? "…" : "" }}
+            </p>
+            <WoodButton
+              variant="ghost"
+              size="sm"
+              :disabled="!!restoringBackupId"
+              @click="restoreBackupAt(entry)"
+            >
+              {{ restoringBackupId === entry.id ? "还原中…" : "还原到这次修复前" }}
+            </WoodButton>
+          </li>
+        </ul>
+      </div>
+      <template #footer>
+        <WoodButton variant="ghost" size="sm" @click="historyOpen = false">关闭</WoodButton>
+      </template>
+    </WoodModal>
+
+    <WoodModal
+      v-if="packUpdateOpen && packUpdatePreview"
+      title="更新整合包"
+      :width="560"
+      @close="packUpdateOpen = false"
+    >
+      <div class="check-body">
+        <p class="muted small">
+          {{ packUpdatePreview.name }}
+          <template v-if="packUpdatePreview.old_version">
+            · {{ packUpdatePreview.old_version }}
+          </template>
+          → {{ packUpdatePreview.new_version }}
+        </p>
+        <p class="muted small">
+          {{ packUpdatePreview.game_version }} · {{ packUpdatePreview.loader }}
+          <template v-if="packUpdatePreview.loader_version">
+            {{ packUpdatePreview.loader_version }}
+          </template>
+        </p>
+        <ul class="check-list">
+          <li class="check-item">
+            <span>
+              新增 {{ packUpdatePreview.added }} · 更新 {{ packUpdatePreview.changed }} ·
+              移除 {{ packUpdatePreview.removed }} · 覆盖 {{ packUpdatePreview.overrides }} 个配置
+            </span>
+          </li>
+          <li class="check-item">
+            <span>需要下载 {{ formatBytes(packUpdatePreview.download_bytes) }}</span>
+          </li>
+        </ul>
+
+        <p
+          v-for="warning in packUpdatePreview.warnings"
+          :key="warning"
+          class="repair-err-title"
+        >
+          <AppIcon name="alert" :size="13" />
+          {{ warning }}
+        </p>
+
+        <div v-if="packUpdatePreview.files.length" class="pack-update-list">
+          <p class="repair-plan__title">文件变动（前 {{ packUpdatePreview.files.length }} 项）</p>
+          <ul class="check-list">
+            <li
+              v-for="file in packUpdatePreview.files"
+              :key="`${file.kind}:${file.path}`"
+              class="pack-update-item"
+            >
+              <span class="tag">{{ packUpdateKindLabel[file.kind] ?? file.kind }}</span>
+              <span class="mono">{{ file.path }}</span>
+            </li>
+          </ul>
+        </div>
+        <p class="muted small">
+          只会改动整合包清单里的文件，你自己添加的 Mod、存档与截图都会保留；被覆盖或删除的文件会先备份。
+        </p>
+      </div>
+      <template #footer>
+        <WoodButton variant="ghost" size="sm" @click="packUpdateOpen = false">
+          {{ packUpdating ? "后台运行" : "取消" }}
+        </WoodButton>
+        <WoodButton
+          variant="primary"
+          size="sm"
+          :disabled="packUpdating"
+          @click="applyPackUpdate"
+        >
+          {{ packUpdating ? "更新中…" : "开始更新" }}
         </WoodButton>
       </template>
     </WoodModal>
@@ -2499,7 +2834,8 @@ function launch() {
                 <span class="pack-field__label">导出格式</span>
                 <WoodSelect v-model="exportForm.format" :options="exportFormats" />
                 <span class="pack-field__hint muted">
-                  两种格式都会把所选内容直接打包进整合包，导入时无需联网下载。
+                  通用 ZIP 直接把所选内容打包；.mrpack 会按 SHA-1 匹配 Modrinth 项目写入 files[]，
+                  匹配不到的文件仍打包进 overrides。
                 </span>
               </label>
 
@@ -2721,7 +3057,7 @@ function launch() {
 }
 
 .ins-side__item .icon {
-  color: #b3a189;
+  color: var(--muted);
   transition: color var(--dur-1) ease;
 }
 
@@ -3244,6 +3580,94 @@ function launch() {
   font-size: 11px;
   line-height: 1.6;
   color: var(--muted);
+}
+
+.repair-plan {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.repair-plan__title {
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  color: var(--walnut-deep);
+}
+
+.repair-plan__item {
+  margin-top: 10px;
+}
+
+.repair-plan__item:first-of-type {
+  margin-top: 0;
+}
+
+.repair-plan__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.repair-plan__head strong {
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.repair-plan__item p {
+  margin: 2px 0 0;
+  line-height: 1.6;
+}
+
+.repair-plan__files {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.history-item__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.history-item__head strong {
+  font-size: 12.5px;
+  color: var(--walnut-deep);
+}
+
+.history-item__files {
+  margin: 0;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.pack-update-list {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.pack-update-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  word-break: break-all;
 }
 
 .check-item {

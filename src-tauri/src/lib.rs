@@ -1,6 +1,7 @@
 mod auth;
 mod authlib;
 mod appupdate;
+mod cleanup;
 mod commands;
 mod config;
 mod crash;
@@ -11,12 +12,14 @@ mod dropzone;
 mod forge_native;
 mod gameopts;
 mod hall;
+mod hmclimport;
 mod http;
 mod install;
 mod instance;
 mod java;
 mod lan;
 mod lang;
+mod launcher_layout;
 mod launch;
 mod littleskin;
 mod mirror;
@@ -169,10 +172,13 @@ pub fn run() {
             commands::save_config,
             commands::export_settings,
             commands::import_settings,
+            commands::clean_junk,
             commands::app_version,
             commands::app_portable,
             commands::pcl_import_preview,
             commands::pcl_import_apply,
+            commands::hmcl_import_preview,
+            commands::hmcl_import_apply,
             commands::update_check,
             commands::update_download,
             commands::update_install,
@@ -231,10 +237,15 @@ pub fn run() {
             commands::modpack_import,
             commands::modpack_export_preview,
             commands::modpack_export,
+            commands::modpack_update_preview,
+            commands::modpack_update_apply,
             commands::instance_context,
             commands::check_instance_files,
             commands::repair_instance,
+            commands::repair_preview,
             commands::repair_restore,
+            commands::repair_backups,
+            commands::repair_restore_at,
             commands::shader_support,
             commands::install_shader_loader,
             gameopts::game_options_presets,
@@ -246,6 +257,11 @@ pub fn run() {
             commands::play_stats,
             commands::crash_analyze,
             commands::crash_export,
+            commands::crash_export_feedback,
+            commands::crash_rule_status,
+            commands::crash_rule_rollback,
+            commands::crash_undo_added_mods,
+            commands::crash_share,
             commands::mod_updates,
             commands::mod_update_install,
             commands::cf_search,

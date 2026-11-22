@@ -999,6 +999,64 @@ pub async fn set_cape(
     bail!(message)
 }
 
+/// CustomSkinLoader 默认把 LocalSkin 排在 loadlist 靠后位置，还会缓存
+/// 「没找到皮肤」的结果。只写图片不改配置、不清缓存，游戏里会继续显示默认皮肤，
+/// 所以这里把 LocalSkin 提到首位并清掉相关缓存。
+pub fn prepare_customskinloader(instance_dir: &std::path::Path, assets_root: &std::path::Path) {
+    let data_dir = instance_dir.join("CustomSkinLoader");
+    let _ = std::fs::create_dir_all(&data_dir);
+
+    let config_path = data_dir.join("CustomSkinLoader.json");
+    if let Ok(text) = std::fs::read_to_string(&config_path) {
+        if let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&text) {
+            let mut changed = false;
+            // 关掉贴图缓存，避免上一次「未找到皮肤」的结果继续生效
+            if config.get("forceDisableCache").and_then(|v| v.as_bool()) != Some(true) {
+                config["forceDisableCache"] = serde_json::Value::Bool(true);
+                changed = true;
+            }
+            let local_entry = serde_json::json!({
+                "name": "LocalSkin",
+                "type": "Legacy",
+                "checkPNG": false,
+                "skin": "LocalSkin/skins/{USERNAME}.png",
+                "model": "auto",
+                "cape": "LocalSkin/capes/{USERNAME}.png",
+                "elytra": "LocalSkin/elytras/{USERNAME}.png"
+            });
+            let mut list = config
+                .get("loadlist")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            // 已有的 LocalSkin 条目（无论在第几位）先摘出来，再放回最前面
+            let existing = list
+                .iter()
+                .position(|item| item.get("name").and_then(|v| v.as_str()) == Some("LocalSkin"));
+            let entry = match existing {
+                Some(index) => list.remove(index),
+                None => local_entry,
+            };
+            let misplaced = existing != Some(0);
+            list.insert(0, entry);
+            if misplaced || config.get("loadlist").is_none() {
+                config["loadlist"] = serde_json::Value::Array(list);
+                changed = true;
+            }
+            if changed {
+                // 保留原文件里的其他字段（version / buildNumber 等），只改这两项
+                if let Ok(pretty) = serde_json::to_string_pretty(&config) {
+                    let _ = std::fs::write(&config_path, pretty);
+                }
+            }
+        }
+    }
+
+    // 清掉 CSL 自己的请求缓存，以及游戏侧的皮肤贴图缓存
+    let _ = std::fs::remove_dir_all(data_dir.join("caches"));
+    let _ = std::fs::remove_dir_all(assets_root.join("skins"));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1080,5 +1138,89 @@ mod tests {
         println!("皮肤 {} 字节，模型 {model}", bytes.len());
         assert!(!bytes.is_empty());
         assert_eq!(model, "classic");
+    }
+
+    /// LocalSkin 必须被提到 loadlist 首位，否则本地皮肤会被前面的来源遮住
+    #[test]
+    fn customskinloader_puts_local_skin_first() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_nanos())
+            .unwrap_or(0);
+        let base = std::env::temp_dir().join(format!("docl-csl-config-{stamp}"));
+        let data_dir = base.join("CustomSkinLoader");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            data_dir.join("CustomSkinLoader.json"),
+            r#"{
+  "version": "15.1",
+  "buildNumber": 41,
+  "loadlist": [
+    { "name": "GameProfile", "type": "GameProfile" },
+    { "name": "LocalSkin", "type": "Legacy", "checkPNG": false, "skin": "LocalSkin/skins/{USERNAME}.png", "model": "slim" },
+    { "name": "Mojang", "type": "MojangAPI" }
+  ],
+  "forceDisableCache": false
+}"#,
+        )
+        .unwrap();
+
+        prepare_customskinloader(&base, &base.join("assets"));
+        let text = std::fs::read_to_string(data_dir.join("CustomSkinLoader.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["loadlist"][0]["name"], "LocalSkin");
+        // 用户原来的 LocalSkin 参数（比如 slim 模型）要保留，不能被默认值覆盖
+        assert_eq!(value["loadlist"][0]["model"], "slim");
+        assert_eq!(value["loadlist"].as_array().unwrap().len(), 3);
+        assert_eq!(value["forceDisableCache"], true);
+        assert_eq!(value["version"], "15.1");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 配置里没有 LocalSkin 时补一个默认条目到首位
+    #[test]
+    fn customskinloader_adds_missing_local_skin() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_nanos())
+            .unwrap_or(0);
+        let base = std::env::temp_dir().join(format!("docl-csl-add-{stamp}"));
+        let data_dir = base.join("CustomSkinLoader");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            data_dir.join("CustomSkinLoader.json"),
+            r#"{"loadlist":[{"name":"Mojang","type":"MojangAPI"}]}"#,
+        )
+        .unwrap();
+
+        prepare_customskinloader(&base, &base.join("assets"));
+        let text = std::fs::read_to_string(data_dir.join("CustomSkinLoader.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["loadlist"][0]["name"], "LocalSkin");
+        assert_eq!(value["loadlist"][0]["skin"], "LocalSkin/skins/{USERNAME}.png");
+        assert_eq!(value["loadlist"].as_array().unwrap().len(), 2);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 写入皮肤后，CSL 缓存和游戏皮肤缓存都要清掉
+    #[test]
+    fn customskinloader_clears_stale_caches() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_nanos())
+            .unwrap_or(0);
+        let base = std::env::temp_dir().join(format!("docl-csl-cache-{stamp}"));
+        let csl_caches = base.join("CustomSkinLoader").join("caches");
+        let game_skins = base.join("assets").join("skins").join("17");
+        std::fs::create_dir_all(&csl_caches).unwrap();
+        std::fs::create_dir_all(&game_skins).unwrap();
+
+        prepare_customskinloader(&base, &base.join("assets"));
+        assert!(!csl_caches.exists());
+        assert!(!base.join("assets").join("skins").exists());
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

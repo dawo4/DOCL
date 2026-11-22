@@ -633,6 +633,8 @@ pub fn spawn(
 ) -> Result<u32> {
     let merged = install::resolve_detail(cfg, version_id)?;
     let game_dir = crate::instance::game_dir(cfg, version_id);
+    let mods_dir = game_dir.join("mods");
+    let snapshot_version = version_id.to_string();
     let (java_path, args, _) = build(cfg, &merged, version_id, account, server)?;
 
     let _ = app.emit(
@@ -764,6 +766,11 @@ pub fn spawn(
             .unwrap_or(started_at);
         crate::stats::record(&stats_version, started_at, ended.saturating_sub(started_at));
         let _ = app.emit("game-exit", GameExit { code, pid });
+        // 正常退出说明这组 Mod 能跑起来，记下快照，下次崩溃时用来对比改动。
+        // 放在通知之后：大整合包算 SHA-256 要几秒，不能拖慢退出刷新。
+        if code == Some(0) {
+            crate::crash::save_mod_snapshot(&snapshot_version, &mods_dir);
+        }
     });
 
     Ok(pid)

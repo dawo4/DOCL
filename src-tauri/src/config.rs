@@ -311,6 +311,23 @@ impl Config {
         self.sync_game_dirs();
     }
 
+    /// 把一个目录加入列表（已存在则跳过），不切换当前目录。
+    /// 返回是否真的新增，方便调用方统计。
+    pub fn add_dir(&mut self, path: &str) -> bool {
+        let path = path.trim();
+        if path.is_empty() {
+            return false;
+        }
+        if self.game_dirs.iter().any(|entry| same_path(&entry.path, path)) {
+            return false;
+        }
+        self.game_dirs.push(GameDirEntry {
+            name: dir_label(path),
+            path: path.to_string(),
+        });
+        true
+    }
+
     pub fn use_mirror(&self) -> bool {
         self.download_source != "official"
     }

@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+﻿﻿<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
@@ -1533,7 +1533,7 @@ onBeforeUnmount(() => {
 }
 
 .mp-nav > svg {
-  color: #b3a189;
+  color: var(--muted);
   flex-shrink: 0;
   transition: color var(--dur-1) ease;
 }

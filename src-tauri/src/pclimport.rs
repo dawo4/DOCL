@@ -1,5 +1,6 @@
 use crate::config::Config;
-use crate::{install, java};
+use crate::launcher_layout::VersionIsolation;
+use crate::{install, instance, java};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use serde_json::Value;
@@ -7,6 +8,18 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
 use winreg::RegKey;
+
+/// 一个 PCL 游戏文件夹（.minecraft 目录）。
+#[derive(Debug, Clone, Serialize)]
+pub struct PclGameDirInfo {
+    pub path: String,
+    /// 是否为 PCL 当前选中的文件夹
+    pub active: bool,
+    /// 清单齐全的版本数
+    pub version_count: usize,
+    /// 各版本导入后应使用的隔离状态
+    pub isolation: Vec<VersionIsolation>,
+}
 
 /// 从 PCL 读到的可迁移项；未找到的字段为 None，不会覆盖现有设置。
 #[derive(Debug, Default, Serialize)]
@@ -22,6 +35,8 @@ pub struct PclPreview {
     pub download_source: Option<String>,
     /// PCL 上次启动的版本（对应 .minecraft\versions 下的目录名）
     pub selected_version: Option<String>,
+    /// PCL 里配置的全部游戏文件夹，第一个是当前选中的
+    pub game_dirs: Vec<PclGameDirInfo>,
     pub findings: Vec<String>,
 }
 
@@ -112,8 +127,24 @@ fn ini_has_setting(root: &Path, key: &str) -> bool {
         .any(|text| parse_ini(&text).contains_key(key))
 }
 
+/// `LaunchFolders` 是「显示名>路径」的列表，用换行或 `|` 分隔。
+fn parse_folder_list(raw: &str) -> Vec<String> {
+    raw.split(['\n', '\r', '|'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            part.split_once('>')
+                .map(|(_, path)| path.trim())
+                .unwrap_or(part)
+                .to_string()
+        })
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
 /// `$.minecraft\` 里的 `$` 表示 PCL 目录。
-fn resolve_game_dir(root: &Path, settings: &HashMap<String, String>) -> Option<PathBuf> {
+/// 返回 PCL 配置的全部游戏文件夹，第一个是当前选中的那个。
+fn resolve_game_dirs(root: &Path, settings: &HashMap<String, String>) -> Vec<PathBuf> {
     // 优先级：当前 PCL 目录里明确配置的文件夹 > 当前目录自带的 .minecraft > 全局注册表里的其他文件夹
     let mut candidates: Vec<(u8, PathBuf)> = Vec::new();
     let mut push_raw = |priority: u8, raw: &str| {
@@ -149,13 +180,8 @@ fn resolve_game_dir(root: &Path, settings: &HashMap<String, String>) -> Option<P
     // 只有 Setup.ini 里的列表才代表当前这个 PCL；全局注册表里的列表可能属于另一个 PCL。
     if let Some(raw) = settings.get("LaunchFolders") {
         let priority = if ini_has_setting(root, "LaunchFolders") { 4 } else { 1 };
-        for part in raw.split(['\n', '\r', '|']) {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-            let path = part.split_once('>').map(|(_, path)| path.trim()).unwrap_or(part);
-            push_raw(priority, path);
+        for part in parse_folder_list(raw) {
+            push_raw(priority, &part);
         }
     }
     let fallback = root.join(".minecraft");
@@ -163,19 +189,47 @@ fn resolve_game_dir(root: &Path, settings: &HashMap<String, String>) -> Option<P
         candidates.push((3, fallback));
     }
 
-    candidates
+    // Windows 路径不区分大小写，同一目录只保留优先级最高的一条
+    let mut unique: Vec<(u8, PathBuf)> = Vec::new();
+    for (priority, path) in candidates {
+        let key = path_key(&path);
+        match unique
+            .iter()
+            .position(|(_, item)| path_key(item) == key)
+        {
+            Some(index) => {
+                if priority > unique[index].0 {
+                    unique[index] = (priority, path);
+                }
+            }
+            None => unique.push((priority, path)),
+        }
+    }
+
+    // 优先级高的在前；同优先级时，有「上次启动版本」的在前，保证当前文件夹排第一。
+    // 排序前先把分数算好，避免比较函数里反复读盘。
+    let mut scored: Vec<(u8, u8, PathBuf)> = unique
         .into_iter()
-        .max_by_key(|(priority, path)| {
-            let score = if read_selected_version(path).is_some() {
+        .map(|(priority, path)| {
+            let score = if read_selected_version(&path).is_some() {
                 2
             } else if path.join("versions").is_dir() {
                 1
             } else {
                 0
             };
-            (*priority, score)
+            (priority, score, path)
         })
-        .map(|(_, path)| path)
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    scored.into_iter().map(|(_, _, path)| path).collect()
+}
+
+/// 去重用的路径键：忽略大小写与结尾的分隔符。
+fn path_key(path: &Path) -> String {
+    path.to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .to_lowercase()
 }
 
 /// PCL 的 Java 设置一般指向 bin 目录，这里统一换算成 java.exe。
@@ -264,6 +318,71 @@ fn read_selected_version(game_dir: &Path) -> Option<String> {
         return None;
     }
     Some(version)
+}
+
+/// PCL 的每个版本会在 `versions/<版本>/PCL/Setup.ini` 里记录是否隔离。
+/// false / 0 表示不隔离：mods、资源包、存档都放在 .minecraft 根目录。
+fn parse_isolation_flag(raw: &str) -> Option<bool> {
+    match raw.trim().trim_matches('"').to_ascii_lowercase().as_str() {
+        "true" | "1" | "2" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+fn read_version_isolation(game_dir: &Path, version: &str) -> Option<bool> {
+    let candidates = [
+        game_dir
+            .join("versions")
+            .join(version)
+            .join("PCL")
+            .join("Setup.ini"),
+        game_dir
+            .join("versions")
+            .join(version)
+            .join("PCL")
+            .join("Version.ini"),
+        game_dir.join("PCL").join("Versions").join(version).join("Setup.ini"),
+        game_dir.join("PCL").join("Versions").join(version).join("Version.ini"),
+    ];
+    for path in candidates {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let settings = parse_ini(&text);
+        for key in ["VersionArgumentIndieV2", "VersionArgumentIndie"] {
+            if let Some(value) = settings
+                .get(key)
+                .and_then(|raw| parse_isolation_flag(raw))
+            {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// 导入后每个版本应该使用的隔离状态。
+fn planned_isolation(game_dir: &Path) -> Vec<VersionIsolation> {
+    let mut list = Vec::new();
+    // 根目录内容只需扫一次，避免每个版本重复读盘
+    let root_has = crate::launcher_layout::root_has_content(game_dir);
+    for id in crate::launcher_layout::version_ids(game_dir) {
+        // PCL 自己的记录最可靠；没有记录时看文件实际放在哪
+        let (isolated, source) = match read_version_isolation(game_dir, &id) {
+            Some(value) => (value, "pcl"),
+            None => match crate::launcher_layout::detect_with_root(game_dir, &id, root_has) {
+                Some(value) => (value, "content"),
+                None => continue,
+            },
+        };
+        list.push(VersionIsolation {
+            version_id: id,
+            isolated,
+            source: source.to_string(),
+        });
+    }
+    list
 }
 
 fn update_mode_label(mode: &str) -> &'static str {
@@ -432,7 +551,7 @@ pub fn inspect(raw_root: &str) -> Result<PclPreview> {
     }
 
     let settings = read_settings(&root);
-    let game_dir = resolve_game_dir(&root, &settings);
+    let dirs = resolve_game_dirs(&root, &settings);
     let java_candidate = resolve_java(&root, &settings);
     // PCL 记录的 Java 路径可能已被移动或删除，先实际运行一次再决定是否导入
     let java = java_candidate
@@ -442,15 +561,47 @@ pub fn inspect(raw_root: &str) -> Result<PclPreview> {
     let (window_width, window_height) = read_window(&settings);
     let update_mode = read_update_mode(&settings);
     let download_source = read_download_source(&settings);
-    let selected_version = game_dir.as_deref().and_then(read_selected_version);
-    let (version_total, duplicate_versions) = game_dir
-        .as_deref()
-        .map(scan_version_libraries)
-        .unwrap_or((0, Vec::new()));
+    // 第一个文件夹就是 PCL 当前选中的那个
+    let selected_version = dirs.first().and_then(|dir| read_selected_version(dir));
+
+    // 每个游戏文件夹单独统计版本与隔离状态
+    let mut game_dirs: Vec<PclGameDirInfo> = Vec::new();
+    let mut duplicate_versions: Vec<String> = Vec::new();
+    for (index, dir) in dirs.iter().enumerate() {
+        let (version_count, duplicates) = scan_version_libraries(dir);
+        duplicate_versions.extend(duplicates);
+        game_dirs.push(PclGameDirInfo {
+            path: dir.to_string_lossy().to_string(),
+            active: index == 0,
+            version_count,
+            isolation: planned_isolation(dir),
+        });
+    }
 
     let mut findings = Vec::new();
-    if let Some(dir) = &game_dir {
-        findings.push(format!("游戏目录：{}", dir.display()));
+    if game_dirs.len() > 1 {
+        findings.push(format!("游戏文件夹：共 {} 个，会全部加入目录列表", game_dirs.len()));
+    }
+    for info in &game_dirs {
+        let marker = if info.active { "（当前）" } else { "" };
+        findings.push(format!(
+            "游戏目录{marker}：{}（{} 个版本）",
+            info.path, info.version_count
+        ));
+        // 隔离状态必须跟 PCL 一致，否则导入后模组/资源包会「消失」
+        let shared: Vec<&str> = info
+            .isolation
+            .iter()
+            .filter(|item| !item.isolated)
+            .map(|item| item.version_id.as_str())
+            .collect();
+        if !shared.is_empty() {
+            let names = shared.iter().take(3).copied().collect::<Vec<_>>().join("、");
+            let suffix = if shared.len() > 3 { " 等" } else { "" };
+            findings.push(format!(
+                "　版本隔离：{names}{suffix} 在 PCL 中未隔离，会共用根目录的 mods / 资源包 / 光影 / 存档"
+            ));
+        }
     }
     if memory_auto == Some(true) {
         findings.push("内存：自动分配".to_string());
@@ -477,7 +628,7 @@ pub fn inspect(raw_root: &str) -> Result<PclPreview> {
     if let Some(version) = &selected_version {
         findings.push(format!("上次启动版本：{version}"));
     }
-    if version_total > 0 && !duplicate_versions.is_empty() {
+    if !duplicate_versions.is_empty() {
         let names = duplicate_versions
             .iter()
             .take(3)
@@ -486,7 +637,7 @@ pub fn inspect(raw_root: &str) -> Result<PclPreview> {
             .join("、");
         let suffix = if duplicate_versions.len() > 3 { " 等" } else { "" };
         findings.push(format!(
-            "版本清单：{version_total} 个版本，其中 {} 个含重复依赖（{names}{suffix}），导入时会自动清理",
+            "版本清单：{} 个版本含重复依赖（{names}{suffix}），导入时会自动清理",
             duplicate_versions.len()
         ));
     }
@@ -494,7 +645,7 @@ pub fn inspect(raw_root: &str) -> Result<PclPreview> {
 
     Ok(PclPreview {
         root: root.to_string_lossy().to_string(),
-        game_dir: game_dir.map(|path| path.to_string_lossy().to_string()),
+        game_dir: dirs.first().map(|path| path.to_string_lossy().to_string()),
         java_path: java.map(|info| info.path),
         memory_auto,
         memory_mb,
@@ -503,6 +654,7 @@ pub fn inspect(raw_root: &str) -> Result<PclPreview> {
         update_mode,
         download_source,
         selected_version,
+        game_dirs,
         findings,
     })
 }
@@ -510,7 +662,12 @@ pub fn inspect(raw_root: &str) -> Result<PclPreview> {
 /// 只写入确实找到的字段，其余保持启动器当前设置。
 pub fn apply(cfg: &mut Config, raw_root: &str) -> Result<PclPreview> {
     let mut preview = inspect(raw_root)?;
-    if let Some(dir) = &preview.game_dir {
+    // PCL 可能配置了多个游戏文件夹：全部登记，当前选中的那个设为活动目录
+    let active = preview.game_dir.clone();
+    for info in &preview.game_dirs {
+        cfg.add_dir(&info.path);
+    }
+    if let Some(dir) = &active {
         cfg.game_dir = dir.clone();
     }
     if let Some(java) = &preview.java_path {
@@ -535,12 +692,32 @@ pub fn apply(cfg: &mut Config, raw_root: &str) -> Result<PclPreview> {
     if let Some(version) = &preview.selected_version {
         cfg.selected_version = Some(version.clone());
     }
-    // 修正 PCL 清单里的重复依赖（asm 9.6/9.8 这类），避免导入后 Fabric 启动失败
-    let (cleaned_versions, cleaned_entries) = preview
-        .game_dir
-        .as_deref()
-        .map(|dir| normalize_version_jsons(Path::new(dir)))
-        .unwrap_or((0, 0));
+    // 隔离状态必须一起迁移：PCL 里未隔离的版本，mods、资源包、光影和存档都在
+    // .minecraft 根目录。若沿用启动器默认的「开启隔离」，这些内容会全部读不到。
+    // 实例元数据按「游戏目录 + 版本」存储，所以每个文件夹要用自己的 cfg 写入。
+    let mut cleaned_versions = 0usize;
+    let mut cleaned_entries = 0usize;
+    for info in &preview.game_dirs {
+        let mut dir_cfg = cfg.clone();
+        dir_cfg.game_dir = info.path.clone();
+        for entry in &info.isolation {
+            let mut meta = instance::get(&dir_cfg, &entry.version_id);
+            if meta.isolated == Some(entry.isolated) {
+                continue;
+            }
+            meta.isolated = Some(entry.isolated);
+            if let Err(err) = instance::save(&dir_cfg, &entry.version_id, &meta) {
+                preview.findings.push(format!(
+                    "无法为 {} 写入版本隔离设置：{err}",
+                    entry.version_id
+                ));
+            }
+        }
+        // 修正 PCL 清单里的重复依赖（asm 9.6/9.8 这类），避免导入后 Fabric 启动失败
+        let (versions, entries) = normalize_version_jsons(Path::new(&info.path));
+        cleaned_versions += versions;
+        cleaned_entries += entries;
+    }
     if cleaned_entries > 0 {
         preview.findings.push(format!(
             "已清理 {cleaned_versions} 个版本清单中的 {cleaned_entries} 条重复依赖（已保留 .pcl-import.bak 备份）"
@@ -552,8 +729,123 @@ pub fn apply(cfg: &mut Config, raw_root: &str) -> Result<PclPreview> {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_library_versions, has_duplicate_library_versions};
+    use super::{
+        clean_library_versions, has_duplicate_library_versions, parse_folder_list,
+        parse_isolation_flag, planned_isolation, read_version_isolation,
+    };
+    use crate::launcher_layout::{detect_with_root, root_has_content};
     use serde_json::json;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// 测试里按内容判断隔离，等价于旧版 detect_isolation。
+    fn detect_isolation(dir: &Path, version: &str) -> Option<bool> {
+        detect_with_root(dir, version, root_has_content(dir))
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("docl-pcl-{tag}-{stamp}"))
+    }
+
+    #[test]
+    fn parses_isolation_flags() {
+        assert_eq!(parse_isolation_flag("False"), Some(false));
+        assert_eq!(parse_isolation_flag("0"), Some(false));
+        assert_eq!(parse_isolation_flag("True"), Some(true));
+        assert_eq!(parse_isolation_flag("1"), Some(true));
+        assert_eq!(parse_isolation_flag("2"), Some(true));
+        assert_eq!(parse_isolation_flag("maybe"), None);
+    }
+
+    /// LaunchFolders 支持「显示名>路径」、换行与 | 分隔
+    #[test]
+    fn parses_multiple_folder_entries() {
+        let raw = "主目录>D:\\mc\\.minecraft\r\n整合包>E:\\packs\\.minecraft|D:\\mc\\.minecraft";
+        let list = parse_folder_list(raw);
+        assert_eq!(
+            list,
+            vec![
+                "D:\\mc\\.minecraft".to_string(),
+                "E:\\packs\\.minecraft".to_string(),
+                "D:\\mc\\.minecraft".to_string(),
+            ]
+        );
+        assert!(parse_folder_list("").is_empty());
+    }
+
+    /// PCL 版本级 Setup.ini 记录的隔离状态优先于按文件位置推断
+    #[test]
+    fn reads_isolation_from_version_setup() {
+        let dir = temp_dir("isolation");
+        let version_dir = dir.join("versions").join("1.21.8-Fabric 0.17.2");
+        std::fs::create_dir_all(version_dir.join("PCL")).unwrap();
+        std::fs::write(
+            version_dir.join("PCL").join("Setup.ini"),
+            "State:9\nVersionArgumentIndieV2:False\n",
+        )
+        .unwrap();
+        // 根目录有 mods，版本目录里的是空壳
+        std::fs::create_dir_all(dir.join("mods")).unwrap();
+        std::fs::write(dir.join("mods").join("a.jar"), b"x").unwrap();
+        std::fs::create_dir_all(version_dir.join("mods")).unwrap();
+
+        assert_eq!(read_version_isolation(&dir, "1.21.8-Fabric 0.17.2"), Some(false));
+        assert_eq!(detect_isolation(&dir, "1.21.8-Fabric 0.17.2"), Some(false));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 没有 PCL 记录时，按内容实际位置判断：只在根目录 → 不隔离
+    #[test]
+    fn detects_isolation_by_content_location() {
+        let dir = temp_dir("content");
+        let version_dir = dir.join("versions").join("pack");
+        std::fs::create_dir_all(version_dir.join("mods")).unwrap();
+        std::fs::create_dir_all(dir.join("resourcepacks")).unwrap();
+        std::fs::write(dir.join("resourcepacks").join("pack.zip"), b"x").unwrap();
+
+        assert_eq!(detect_isolation(&dir, "pack"), Some(false));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 隔离版本自己的 mods 有内容时判定为隔离
+    #[test]
+    fn detects_isolated_version() {
+        let dir = temp_dir("isolated");
+        let version_dir = dir.join("versions").join("pack");
+        std::fs::create_dir_all(version_dir.join("mods")).unwrap();
+        std::fs::write(version_dir.join("mods").join("a.jar"), b"x").unwrap();
+        std::fs::create_dir_all(dir.join("mods")).unwrap();
+
+        assert_eq!(detect_isolation(&dir, "pack"), Some(true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 扫描版本目录时带上判定来源，缺少 json 的目录跳过
+    #[test]
+    fn plans_isolation_for_installed_versions() {
+        let dir = temp_dir("plan");
+        let version_dir = dir.join("versions").join("fabric");
+        std::fs::create_dir_all(version_dir.join("PCL")).unwrap();
+        std::fs::write(version_dir.join("fabric.json"), "{}").unwrap();
+        std::fs::write(
+            version_dir.join("PCL").join("Setup.ini"),
+            "VersionArgumentIndieV2:False\n",
+        )
+        .unwrap();
+        // 只有目录、没有清单的版本应被跳过
+        std::fs::create_dir_all(dir.join("versions").join("broken")).unwrap();
+
+        let list = planned_isolation(&dir);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].version_id, "fabric");
+        assert!(!list[0].isolated);
+        assert_eq!(list[0].source, "pcl");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn cleans_duplicate_library_versions() {

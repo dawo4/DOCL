@@ -389,6 +389,22 @@
       "links": [],
       "priority": 40,
       "category": "other"
+    },
+    {
+      "id": "file-already-exists",
+      "title": "配置文件写入冲突",
+      "summary": "Mod 创建或写入文件时发现同名文件已存在（FileAlreadyExistsException），通常是上次运行留下的目录或占位文件挡住了。",
+      "patterns": [
+        "java.nio.file.FileAlreadyExistsException",
+        "FileAlreadyExistsException:"
+      ],
+      "advice": [
+        "按日志里的路径删除或移走已存在的文件/目录，再启动游戏。",
+        "一键修复只会清理日志点名的那个路径，其他文件不受影响。"
+      ],
+      "links": [],
+      "priority": 80,
+      "category": "file"
     }
   ]
 }

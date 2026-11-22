@@ -937,6 +937,41 @@ pub async fn install_shader_loader(
     Ok(item.name)
 }
 
+/// 安装一个已知的修复类 Mod：按实例的加载器与游戏版本匹配最新构建。
+pub async fn install_project(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &Config,
+    instance_id: &str,
+    slug: &str,
+    label: &str,
+    progress: Arc<ProgressState>,
+) -> anyhow::Result<String> {
+    let (loader, game_version) = instance_env(cfg, instance_id);
+    if loader.is_empty() {
+        anyhow::bail!("实例加载器未知，无法自动安装 {label}");
+    }
+    let Some(item) = resolve(client, slug, &loader, &game_version).await else {
+        anyhow::bail!("没找到与 {game_version} {loader} 匹配的 {label}");
+    };
+    let mods_dir = instance::content_dir(cfg, instance_id, "mods")?;
+    let dest = mods_dir.join(&item.file_name);
+    if dest.exists() {
+        return Ok(item.name);
+    }
+    progress.set_message(format!("正在安装 {label}…"));
+    download::emit_now(app, &progress);
+    let task = FileTask {
+        url: item.url,
+        dest,
+        sha1: None,
+        size: item.size,
+        label: item.file_name.clone(),
+    };
+    download::run_tasks(app, client, vec![task], 1, cfg.use_mirror(), progress.clone()).await?;
+    Ok(item.name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

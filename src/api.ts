@@ -327,6 +327,17 @@ export interface InstanceCheck {
   broken: BrokenFile[];
 }
 
+/// 崩溃规则的来源与版本信息
+export interface CrashRuleStatus {
+  /// bundled（内置）/ cache（缓存副本）
+  source: string;
+  count: number;
+  /// 缓存更新时间（Unix 秒），0 表示使用内置规则
+  updated: number;
+  /// 是否可以回滚到上一版
+  has_previous: boolean;
+}
+
 /// 一键自愈的结果
 export interface RepairReport {
   version_json: boolean;
@@ -355,6 +366,16 @@ export interface RepairReport {
   assets_failed: number;
   /// 是否清空过 config 目录
   config_reset: boolean;
+  /// 从 mods 移到 mods-disabled 的解压残留目录
+  quarantined_mods: string[];
+  /// 因文件名非法而重命名的 Mod
+  renamed_mods: string[];
+  /// 自动安装的修复类 Mod
+  installed_fixes: string[];
+  /// 因文件已存在冲突而被定点清理的路径
+  removed_paths: string[];
+  /// 被移除的无效 -javaagent 参数
+  removed_java_agents: string[];
   /// 是否重装过加载器
   loader_reinstalled: boolean;
 }
@@ -378,6 +399,49 @@ export interface RepairOptions {
   reinstall_loader?: boolean;
   /// 崩溃分析命中的规则 id，用于针对性修复
   rules?: string[];
+  /// 崩溃证据行，用于定位具体配置文件
+  evidence?: string[];
+}
+
+/// 修复计划里的一项动作，files 是相对游戏根目录的路径
+export interface RepairPreviewAction {
+  id: string;
+  title: string;
+  detail: string;
+  files: string[];
+  /// 会改动的文件总数，files 可能被截断
+  count: number;
+  risk: "低" | "中";
+}
+
+export interface RepairPreview {
+  actions: RepairPreviewAction[];
+  /// 不会改动文件但需要提醒的问题
+  issues: string[];
+}
+
+/// 一次修复留下的备份
+export interface RepairBackup {
+  /// 备份目录名，按次还原时使用
+  id: string;
+  /// 创建时间（Unix 秒）
+  created: number;
+  /// 备份的文件数
+  files: number;
+  /// 改动过的文件示例
+  samples: string[];
+}
+
+/// 清理游戏垃圾的结果
+export interface JunkReport {
+  /// 删除的文件数
+  files: number;
+  /// 释放的字节数
+  freed: number;
+  /// 删除失败的项数（通常正被占用）
+  failed: number;
+  /// 失败示例
+  failed_samples: string[];
 }
 
 /// 启动前自检发现的单个问题
@@ -475,8 +539,24 @@ export interface CrashMatch {
   links: CrashLink[];
   /// 90 高 / 70 中 / 50 低
   priority: number;
+  /// 1 环境/安装、2 Mod 归因、3 兼容、4 兜底
+  phase: number;
+  /// high / medium / low
+  confidence: string;
   category: string;
   suspects: CrashSuspect[];
+}
+
+export interface WindowsCrashEvent {
+  event_id: number;
+  provider: string;
+  time_created: string;
+  message: string;
+}
+
+export interface ModChange {
+  kind: string;
+  file_name: string;
 }
 
 export interface CrashReport {
@@ -492,6 +572,8 @@ export interface CrashReport {
   excerpt: string[];
   scanned: string[];
   suspects: CrashSuspect[];
+  mod_changes: ModChange[];
+  windows_events: WindowsCrashEvent[];
   context: CrashContext;
 }
 
@@ -659,6 +741,26 @@ export interface UpdateInfo {
   notes: string;
 }
 
+/// 某个版本导入后是否使用独立目录
+export interface PclIsolation {
+  version_id: string;
+  /// true 表示隔离（mods 等在该版本目录里），false 表示与根目录共用
+  isolated: boolean;
+  /// 判定依据：pcl（PCL 设置） / content（按文件位置推断）
+  source: string;
+}
+
+/// 一个 PCL 游戏文件夹
+export interface PclGameDirInfo {
+  path: string;
+  /// 是否为 PCL 当前选中的文件夹
+  active: boolean;
+  /// 清单齐全的版本数
+  version_count: number;
+  /// 各版本导入后应使用的隔离状态
+  isolation: PclIsolation[];
+}
+
 export interface PclPreview {
   root: string;
   game_dir: string | null;
@@ -669,6 +771,40 @@ export interface PclPreview {
   window_height: number | null;
   update_mode: string | null;
   download_source: string | null;
+  selected_version: string | null;
+  /// PCL 里配置的全部游戏文件夹，第一个是当前选中的
+  game_dirs: PclGameDirInfo[];
+  findings: string[];
+}
+
+/// HMCL 里的一个启动配置（对应一个游戏文件夹）
+export interface HmclGameDirInfo {
+  path: string;
+  /// HMCL 的启动配置名称
+  name: string;
+  /// 是否为 HMCL 上次使用的配置
+  active: boolean;
+  /// 清单齐全的版本数
+  version_count: number;
+  /// 各版本导入后应使用的隔离状态
+  isolation: PclIsolation[];
+}
+
+export interface HmclPreview {
+  root: string;
+  config_path: string | null;
+  game_dir: string | null;
+  game_dirs: HmclGameDirInfo[];
+  java_path: string | null;
+  memory_auto: boolean | null;
+  memory_mb: number | null;
+  window_width: number | null;
+  window_height: number | null;
+  fullscreen: boolean | null;
+  download_source: string | null;
+  java_args: string | null;
+  game_args: string | null;
+  pre_launch: string | null;
   selected_version: string | null;
   findings: string[];
 }
@@ -683,6 +819,43 @@ export interface PackFilePreview {
   size: number;
   url: string | null;
   required: boolean;
+}
+
+/// 用新版整合包文件更新实例时的单个文件
+export interface PackUpdateFile {
+  path: string;
+  /// added / changed / removed
+  kind: string;
+}
+
+export interface PackUpdatePreview {
+  format: string;
+  name: string;
+  /// 旧清单里的版本，找不到时为空
+  old_version: string;
+  new_version: string;
+  game_version: string;
+  loader: string;
+  loader_version: string | null;
+  added: number;
+  changed: number;
+  removed: number;
+  /// 覆盖文件数量（overrides / client-overrides）
+  overrides: number;
+  download_bytes: number;
+  files: PackUpdateFile[];
+  warnings: string[];
+}
+
+export interface PackUpdateResult {
+  downloaded: number;
+  removed: number;
+  overrides: number;
+  failed: string[];
+  /// 解析/准备阶段跳过的问题，没有重试入口
+  warnings: string[];
+  /// 更新前的文件备份目录，null 表示没有覆盖旧文件
+  backup_dir: string | null;
 }
 
 export interface PackPreview {
@@ -980,6 +1153,12 @@ export const api = {
     invoke<InstanceCheck>("check_instance_files", { versionId }),
   repairInstance: (versionId: string, options?: RepairOptions, jobId?: string) =>
     invoke<RepairReport>("repair_instance", { versionId, options: options ?? null, jobId }),
+  previewRepair: (versionId: string, options?: RepairOptions) =>
+    invoke<RepairPreview>("repair_preview", { versionId, options: options ?? null }),
+  repairBackups: (versionId: string) =>
+    invoke<RepairBackup[]>("repair_backups", { versionId }),
+  restoreRepairBackupAt: (versionId: string, backupId: string) =>
+    invoke<number>("repair_restore_at", { versionId, backupId }),
   repairRestore: (versionId: string) =>
     invoke<number>("repair_restore", { versionId }),
   shaderSupport: (versionId: string) =>
@@ -1062,6 +1241,9 @@ export const api = {
   pclImportPreview: (path: string) =>
     invoke<PclPreview>("pcl_import_preview", { path }),
   pclImportApply: (path: string) => invoke<Config>("pcl_import_apply", { path }),
+  hmclImportPreview: (path: string) =>
+    invoke<HmclPreview>("hmcl_import_preview", { path }),
+  hmclImportApply: (path: string) => invoke<Config>("hmcl_import_apply", { path }),
   probeDownloadSources: () => invoke<SourceProbe[]>("probe_download_sources"),
   retryFailedDownloads: (sourceJob?: string, jobId?: string) =>
     invoke<RetryDownloads>("retry_failed_downloads", { sourceJob, jobId }),
@@ -1074,10 +1256,19 @@ export const api = {
     invoke<void>("portable_update_install", { path }),
   exportSettings: (path: string) => invoke<void>("export_settings", { path }),
   importSettings: (path: string) => invoke<Config>("import_settings", { path }),
+  cleanJunk: () => invoke<JunkReport>("clean_junk"),
   crashAnalyze: (versionId: string, exitCode?: number | null) =>
     invoke<CrashReport>("crash_analyze", { versionId, exitCode: exitCode ?? null }),
   crashExport: (versionId: string) =>
     invoke<string>("crash_export", { versionId }),
+  crashUndoAddedMods: (versionId: string) =>
+    invoke<string[]>("crash_undo_added_mods", { versionId }),
+  crashExportFeedback: (versionId: string, ruleIds: string[]) =>
+    invoke<string>("crash_export_feedback", { versionId, ruleIds }),
+  crashRuleStatus: () => invoke<CrashRuleStatus>("crash_rule_status"),
+  crashRuleRollback: () => invoke<number>("crash_rule_rollback"),
+  crashShare: (versionId: string) =>
+    invoke<string>("crash_share", { versionId }),
   modUpdates: (versionId: string) =>
     invoke<ModUpdateReport>("mod_updates", { versionId }),
   modUpdateInstall: (
@@ -1104,6 +1295,20 @@ export const api = {
     invoke<ExportPreview>("modpack_export_preview", { versionId }),
   modpackExport: (versionId: string, options: ExportOptions, jobId?: string) =>
     invoke<ExportResult>("modpack_export", { versionId, options, jobId }),
+  modpackUpdatePreview: (versionId: string, path: string) =>
+    invoke<PackUpdatePreview>("modpack_update_preview", { versionId, path }),
+  modpackUpdateApply: (
+    versionId: string,
+    path: string,
+    installOptional?: boolean,
+    jobId?: string
+  ) =>
+    invoke<PackUpdateResult>("modpack_update_apply", {
+      versionId,
+      path,
+      installOptional: installOptional ?? null,
+      jobId,
+    }),
   cfSearch: (
     classId: number,
     query: string,
