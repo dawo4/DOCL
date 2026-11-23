@@ -671,7 +671,7 @@ pub fn apply(cfg: &mut Config, raw_root: &str) -> Result<PclPreview> {
         cfg.game_dir = dir.clone();
     }
     if let Some(java) = &preview.java_path {
-        cfg.java_path = Some(java.clone());
+        cfg.remember_java(java);
     }
     if let Some(auto) = preview.memory_auto {
         cfg.memory_auto = auto;

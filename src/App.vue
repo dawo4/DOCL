@@ -274,10 +274,11 @@ const bgFitStyle = computed<CSSProperties>(() => {
   }
 });
 
-/// 毛玻璃模式下让页面背景透出，配合系统 Acrylic 看到桌面
+/// 毛玻璃模式下让页面背景透出，配合系统 Acrylic 看到桌面；低内存模式强制关闭
 watch(
-  () => store.config?.window_vibrancy,
-  (value) => document.documentElement.classList.toggle("vibrancy", !!value),
+  () => [store.config?.window_vibrancy, store.config?.low_memory] as const,
+  ([vibrancy, lowMemory]) =>
+    document.documentElement.classList.toggle("vibrancy", !!vibrancy && !lowMemory),
   { immediate: true }
 );
 
@@ -298,7 +299,10 @@ const currentView = computed(() => views[store.page as Page]);
 <template>
   <div
     class="app glass"
-    :class="{ 'no-anim': store.config && !store.config.animations }"
+    :class="{
+      'no-anim': store.config && (!store.config.animations || store.config.low_memory),
+      'low-memory': store.config?.low_memory,
+    }"
     :data-density="store.config?.ui_density ?? 'normal'"
     :data-font="store.config?.ui_font ?? 'default'"
     :style="appStyle"

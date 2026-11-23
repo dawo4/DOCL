@@ -401,6 +401,25 @@ const filteredFiles = computed(() => {
     file.display_name.toLowerCase().includes(keyword)
   );
 });
+
+/// 一次最多渲染的条数：几百个 Mod 全量挂 DOM 会明显抬高渲染进程的内存，
+/// 其余条目点「显示更多」再追加，不影响搜索与排序。
+const FILE_PAGE_SIZE = 120;
+const fileLimit = ref(FILE_PAGE_SIZE);
+const visibleFiles = computed(() => filteredFiles.value.slice(0, fileLimit.value));
+const hiddenFileCount = computed(() =>
+  Math.max(filteredFiles.value.length - visibleFiles.value.length, 0)
+);
+
+function showMoreFiles() {
+  fileLimit.value += FILE_PAGE_SIZE;
+}
+
+// 切换分类、改动搜索词或换实例时，回到第一页
+watch([tab, fileQuery, () => store.instanceId], () => {
+  fileLimit.value = FILE_PAGE_SIZE;
+});
+
 const canDownloadMore = computed(
   () =>
     tab.value === "mods" ||
@@ -696,12 +715,13 @@ function thumbOf(file: InstanceFile) {
   return thumbs[thumbKey(file)] ?? "";
 }
 
-/// 逐张按需生成缩略图，避免一次性解码整个截图目录卡住界面。
+/// 逐张按需生成缩略图：只处理当前渲染出来的条目，
+/// 否则一个几百张截图的目录会把所有 base64 图片常驻在内存里。
 async function loadThumbs() {
   if (!store.instanceId || !["saves", "screenshots"].includes(contentKind.value)) return;
   const versionId = store.instanceId;
   const kind = contentKind.value;
-  for (const file of files.value) {
+  for (const file of visibleFiles.value) {
     if (kind === "screenshots" && file.is_dir) continue;
     if (kind === "saves" && !file.is_dir) continue;
     const key = `${kind}:${file.name}:${file.modified}`;
@@ -719,6 +739,16 @@ async function loadThumbs() {
     }
   }
 }
+
+// 切换分类/实例时释放旧缩略图；翻页或搜索后补加载新出现的条目
+watch([tab, fileQuery, () => store.instanceId], () => {
+  for (const key of Object.keys(thumbs)) delete thumbs[key];
+  thumbPending.clear();
+});
+
+watch(visibleFiles, () => {
+  if (["saves", "screenshots"].includes(contentKind.value)) void loadThumbs();
+});
 
 async function refreshFiles() {
   await loadFiles();
@@ -1827,7 +1857,7 @@ function launch() {
           </div>
 
           <p class="muted small">
-            留空表示跟随全局设置；这里的值只对当前版本生效，下次启动时使用。
+            未单独设置的项默认跟随全局；这里改的值只对当前版本生效，下次启动时使用。
           </p>
 
           <div class="setting">
@@ -1845,7 +1875,7 @@ function launch() {
           <div class="setting">
             <div class="setting__label">
               <strong>内存管理</strong>
-              <span>留空跟随全局；自定义时不追加任何 GC 参数</span>
+              <span>默认跟随全局；选「自定义」时不追加任何 GC 参数</span>
             </div>
             <div class="setting__control">
               <WoodSelect v-model="form.memoryMode" :options="memoryModeOptions" />
@@ -1855,7 +1885,7 @@ function launch() {
           <div class="setting">
             <div class="setting__label">
               <strong>Java 运行时</strong>
-              <span>该版本独用的 Java 路径</span>
+              <span>该版本独用的 Java；默认跟随全局设置</span>
             </div>
             <div class="setting__control setting__control--wide">
               <WoodSelect v-model="form.javaPath" :options="javaOptions" />
@@ -1925,7 +1955,7 @@ function launch() {
           <div class="setting">
             <div class="setting__label">
               <strong>窗口尺寸</strong>
-              <span>留空使用全局分辨率</span>
+              <span>默认使用全局分辨率</span>
             </div>
             <div class="setting__control">
               <div class="row resolution">
@@ -2332,7 +2362,7 @@ function launch() {
             <span class="muted small">没有匹配的文件</span>
           </div>
           <div v-else-if="tab === 'screenshots'" class="shot-grid">
-            <article v-for="file in filteredFiles" :key="file.name" class="shot-card">
+            <article v-for="file in visibleFiles" :key="file.name" class="shot-card">
               <button class="shot-card__thumb" @click="openShot(file)">
                 <img
                   v-if="thumbOf(file)"
@@ -2357,9 +2387,14 @@ function launch() {
                 />
               </footer>
             </article>
+            <div v-if="hiddenFileCount" class="file-more">
+              <WoodButton variant="ghost" size="sm" @click="showMoreFiles">
+                显示更多（还有 {{ hiddenFileCount }} 个）
+              </WoodButton>
+            </div>
           </div>
           <div v-else class="file-list">
-            <div v-for="file in filteredFiles" :key="file.name" class="file-row">
+            <div v-for="file in visibleFiles" :key="file.name" class="file-row">
               <span
                 v-if="modMetaOf(file)"
                 class="file-row__thumb file-row__thumb--mod"
@@ -2443,6 +2478,11 @@ function launch() {
                 :size="30"
                 @click="requestDelete(file)"
               />
+            </div>
+            <div v-if="hiddenFileCount" class="file-more">
+              <WoodButton variant="ghost" size="sm" @click="showMoreFiles">
+                显示更多（还有 {{ hiddenFileCount }} 个）
+              </WoodButton>
             </div>
           </div>
         </section>
@@ -3745,12 +3785,23 @@ function launch() {
   margin-top: 4px;
 }
 
+/* 长列表分页的「显示更多」：截图网格里让它占满一行 */
+.file-more {
+  display: flex;
+  justify-content: center;
+  padding: 12px 0 4px;
+  grid-column: 1 / -1;
+}
+
 .file-row {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 9px;
   border-radius: 0;
+  /* 屏幕外的行跳过布局与绘制，长列表滚动时内存和帧率都更稳 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 47px;
   transition: background var(--dur-1) ease, box-shadow var(--dur-1) ease;
 }
 
@@ -3819,6 +3870,9 @@ function launch() {
   border-radius: 0;
   overflow: hidden;
   background: var(--panel-2);
+  /* 截图同样按需绘制，避免一屏之外的缩略图常驻合成层 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 190px;
   transition: border-color var(--dur-2) ease, transform var(--dur-2) var(--ease-out-expo),
     box-shadow var(--dur-2) ease;
 }

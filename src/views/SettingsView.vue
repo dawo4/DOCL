@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿<script setup lang="ts">
+﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -43,7 +43,7 @@ import {
   startupUpdate,
   store,
 } from "../store";
-import { formatBytes } from "../utils";
+import { formatBytes, skipWhenHidden } from "../utils";
 
 const form = reactive<Config>({
   game_dir: "",
@@ -54,6 +54,7 @@ const form = reactive<Config>({
   update_url: "",
   update_mode: "notify",
   java_path: null,
+  extra_java_paths: [],
   java_install_dir: null,
   memory_mb: 4096,
   memory_auto: true,
@@ -93,6 +94,8 @@ const form = reactive<Config>({
   remember_window: true,
   launcher_window_w: 0,
   launcher_window_h: 0,
+  portable_root: null,
+  low_memory: false,
 });
 
 /// 从 store 同步到表单期间要抑制自动保存，避免刚打开页面就写盘。
@@ -153,6 +156,7 @@ const autoSaveKeys: (keyof Config)[] = [
   "window_vibrancy",
   "mcmod_names",
   "remember_window",
+  "low_memory",
 ];
 
 let autoTimer: number | undefined;
@@ -844,7 +848,7 @@ onMounted(() => {
   void initUpdateSection();
   void refreshMemory();
   void loadJavaOptions();
-  memoryTimer = window.setInterval(refreshMemory, 2000);
+  memoryTimer = window.setInterval(skipWhenHidden(() => void refreshMemory()), 2000);
 });
 
 onBeforeUnmount(() => {
@@ -1167,18 +1171,21 @@ function useAutoJava() {
   notify("已改为自动选择 Java");
 }
 
-/// 删除启动器下载的运行时（系统安装的 Java 不提供删除，避免误删）
-async function removeJava(path: string) {
-  const ok = await confirm("确定删除这个 Java 运行时？删除后需要重新下载才能使用。", {
-    title: "删除 Java 运行时",
-    kind: "warning",
-  });
+/// 删除启动器下载的运行时，或把手动添加的条目从列表移除（不动磁盘文件）
+async function removeJava(path: string, source: string) {
+  const runtime = source === "启动器运行时";
+  const ok = await confirm(
+    runtime
+      ? "确定删除这个 Java 运行时？删除后需要重新下载才能使用。"
+      : "确定从列表里移除这个 Java？磁盘上的文件不会被删除。",
+    { title: runtime ? "删除 Java 运行时" : "移除 Java", kind: "warning" }
+  );
   if (!ok) return;
   try {
     await api.deleteJava(path);
     if (form.java_path === path) form.java_path = null;
     await refreshJava();
-    notify("已删除该 Java 运行时");
+    notify(runtime ? "已删除该 Java 运行时" : "已从列表移除该 Java");
   } catch (err) {
     notify(`删除失败：${String(err)}`, "err");
   }
@@ -1411,12 +1418,12 @@ async function removeJava(path: string) {
           <span class="tag">{{ java.vendor }} {{ java.kind }}</span>
           <span class="tag">{{ java.source }}</span>
           <IconButton
-            v-if="java.source === '启动器运行时'"
+            v-if="['启动器运行时', '手动添加', '手动指定'].includes(java.source)"
             icon="trash"
-            label="删除这个运行时"
+            :label="java.source === '启动器运行时' ? '删除这个运行时' : '从列表移除'"
             variant="danger-quiet"
             :size="30"
-            @click.stop="removeJava(java.path)"
+            @click.stop="removeJava(java.path, java.source)"
           />
         </div>
         <div v-if="!store.javaList.length" class="java-empty">
@@ -1438,7 +1445,7 @@ async function removeJava(path: string) {
       <div class="setting setting--stack">
         <div class="setting__label">
           <strong>Java 安装位置</strong>
-          <span>下载的运行时保存到这里，留空则使用启动器数据目录</span>
+          <span>下载的运行时保存到这里，默认使用启动器数据目录</span>
         </div>
         <div class="setting__control">
           <div class="path-card">
@@ -1725,7 +1732,7 @@ async function removeJava(path: string) {
       <div class="setting setting--stack">
         <div class="setting__label">
           <strong>卡片字体颜色</strong>
-          <span>底图与文字对比度不够时调整，留空使用默认浅色</span>
+          <span>底图与文字对比度不够时调整，默认使用浅色</span>
         </div>
         <div class="setting__control">
           <ColorField
@@ -1971,6 +1978,16 @@ async function removeJava(path: string) {
         </div>
       </div>
 
+      <div class="setting">
+        <div class="setting__label">
+          <strong>低内存模式</strong>
+          <span>降低 WebView2 缓存与 JS 堆上限，并关闭毛玻璃、背景模糊和动效；重启启动器后生效</span>
+        </div>
+        <div class="setting__control">
+          <WoodToggle v-model="form.low_memory" />
+        </div>
+      </div>
+
       <div class="setting setting--stack">
         <div class="setting__label">
           <strong>Java 虚拟机参数</strong>
@@ -2136,7 +2153,7 @@ async function removeJava(path: string) {
       <div class="setting setting--stack setting--last">
         <div class="setting__label">
           <strong>房间大厅地址</strong>
-          <span>留空关闭大厅；填写后可返回 JSON 列表的地址，启动器会按此拉取房间</span>
+          <span>默认关闭大厅；填写可返回 JSON 列表的地址后，启动器会按此拉取房间</span>
         </div>
         <div class="setting__control setting__control--wide">
           <WoodInput

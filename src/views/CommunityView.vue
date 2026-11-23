@@ -21,10 +21,13 @@ import {
   installCfFile,
   installShaderLoader,
   installWorld,
+  isFavorite,
   notify,
   openInstance,
+  refreshFavorites,
   refreshVersions,
   store,
+  toggleFavorite,
 } from "../store";
 import { formatBytes, formatDate } from "../utils";
 
@@ -455,6 +458,7 @@ const hasMore = computed(() =>
 );
 
 onMounted(async () => {
+  void refreshFavorites();
   // 地图只有 CurseForge 收录，直接锁定来源
   if (props.kind === "worlds") source.value = "curseforge";
   const fromPreset =
@@ -478,7 +482,9 @@ onMounted(async () => {
   await search(true);
   // 版本 tab 需要与官方版本表求交集，确保 manifest 已加载
   if (!store.versions.length) void refreshVersions();
-  if (preset?.projectId) {
+  if (preset?.project) {
+    openProject(preset.project);
+  } else if (preset?.projectId) {
     const hit =
       items.value.find((project) => project.id === preset.projectId) ??
       items.value[0];
@@ -720,6 +726,11 @@ function openProject(project: CfProject) {
   void loadTranslations([project]);
   void loadChineseNames([project]);
   loadFiles(project);
+}
+
+/// 切换收藏；列表行里的点击要阻止冒泡，避免顺带打开详情
+async function toggleFav(project: CfProject) {
+  await toggleFavorite(props.kind, project);
 }
 
 /// 返回上一级项目（从前置跳进来时），没有历史就回到搜索结果。
@@ -1216,7 +1227,7 @@ async function confirmImport() {
           <span class="cf-field__label">名称</span>
           <WoodInput
             v-model="query"
-            :placeholder="`输入${label}名称，留空浏览全部`"
+            :placeholder="`输入${label}名称，默认浏览全部`"
             @keyup.enter="search(true)"
           />
         </label>
@@ -1295,6 +1306,14 @@ async function confirmImport() {
           <div class="cf-detail__title-row">
             <h2 class="cf-detail__title">{{ displayName(active) }}</h2>
             <span class="tag">{{ sourceLabel(active.source) }}</span>
+            <IconButton
+              icon="star"
+              :label="isFavorite(active) ? '取消收藏' : '收藏'"
+              :active="isFavorite(active)"
+              variant="soft"
+              :size="30"
+              @click="toggleFav(active)"
+            />
             <span
               v-for="category in active.categories.slice(0, 3)"
               :key="category"
@@ -1536,12 +1555,15 @@ async function confirmImport() {
       </div>
 
       <div v-else class="cf-list">
-        <button
+        <div
           v-for="(project, i) in items"
           :key="`${project.source}-${project.id}`"
           class="cf-row"
           :style="{ '--i': i }"
+          role="button"
+          tabindex="0"
           @click="openProject(project)"
+          @keydown.enter.prevent="openProject(project)"
         >
           <img
             v-if="project.logo_url"
@@ -1589,7 +1611,16 @@ async function confirmImport() {
               <span>{{ updatedLabel(project.updated) }}</span>
             </span>
           </div>
-        </button>
+
+          <button
+            class="cf-fav"
+            :class="{ 'cf-fav--on': isFavorite(project) }"
+            :aria-label="isFavorite(project) ? '取消收藏' : '收藏'"
+            @click.stop="toggleFav(project)"
+          >
+            <AppIcon name="star" :size="16" />
+          </button>
+        </div>
       </div>
 
       <div v-if="items.length && hasMore" class="load-more">
@@ -1672,7 +1703,7 @@ async function confirmImport() {
                 class="pack-field"
               >
                 <span class="pack-field__label">加载器版本</span>
-                <WoodInput v-model="importForm.loaderVersion" mono placeholder="留空自动选择" />
+                <WoodInput v-model="importForm.loaderVersion" mono placeholder="默认自动选择" />
               </label>
 
               <label v-if="packPreview?.format === 'generic'" class="pack-field">
@@ -1901,7 +1932,7 @@ async function confirmImport() {
 
 .cf-row {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr) 296px;
+  grid-template-columns: 48px minmax(0, 1fr) 296px 30px;
   align-items: center;
   gap: 14px;
   width: 100%;
@@ -1909,6 +1940,7 @@ async function confirmImport() {
   text-align: left;
   color: var(--ink);
   background: var(--panel);
+  cursor: pointer;
   transition: background var(--dur-1) ease;
   animation: rise-in 380ms var(--ease-out-expo) both;
   animation-delay: calc(var(--i, 0) * 14ms);
@@ -1916,6 +1948,35 @@ async function confirmImport() {
 
 .cf-row:hover {
   background: rgba(var(--accent-rgb), 0.05);
+}
+
+.cf-row:focus-visible {
+  outline: 2px solid rgba(94, 123, 73, 0.55);
+  outline-offset: -2px;
+}
+
+/* 收藏星标：未收藏是灰色描边，收藏后填充琥珀色 */
+.cf-fav {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  color: var(--muted);
+  border-radius: 2px;
+  transition: color var(--dur-1) ease, background var(--dur-1) ease;
+}
+
+.cf-fav:hover {
+  color: var(--amber);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.cf-fav--on {
+  color: var(--amber);
+}
+
+.cf-fav--on .icon {
+  fill: currentColor;
 }
 
 .cf-row__logo {

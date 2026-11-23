@@ -25,6 +25,8 @@ pub struct Account {
     pub skin_model: String,
     /// 第三方认证（authlib-injector）的 Yggdrasil API 根
     pub authlib_url: Option<String>,
+    /// 第三方账号在皮肤站上的全部角色，用于登录后切换
+    pub profiles: Vec<crate::authlib::Profile>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -37,6 +39,8 @@ pub struct AccountView {
     pub skin_model: String,
     /// 第三方认证的 API 根，前端用于展示服务名
     pub authlib_url: Option<String>,
+    /// 第三方账号的全部角色
+    pub profiles: Vec<crate::authlib::Profile>,
 }
 
 impl From<&Account> for AccountView {
@@ -49,6 +53,7 @@ impl From<&Account> for AccountView {
             skin_path: a.skin_path.clone(),
             skin_model: a.skin_model.clone(),
             authlib_url: a.authlib_url.clone(),
+            profiles: a.profiles.clone(),
         }
     }
 }
@@ -72,6 +77,8 @@ struct StoredAccount {
     skin_model: String,
     #[serde(default)]
     authlib_url: Option<String>,
+    #[serde(default)]
+    profiles: Vec<crate::authlib::Profile>,
 }
 
 #[derive(Serialize, Clone)]
@@ -196,6 +203,7 @@ pub fn create_offline(name: &str) -> Result<Account> {
         skin_path: None,
         skin_model: "classic".into(),
         authlib_url: None,
+        profiles: Vec::new(),
     })
 }
 
@@ -219,12 +227,27 @@ pub fn load_accounts() -> Vec<Account> {
                 access_token: access,
                 refresh_token: refresh,
                 expires_at: s.expires_at,
-                skin_path: s.skin_path,
+                skin_path: heal_skin_path(s.skin_path),
                 skin_model: s.skin_model,
                 authlib_url: s.authlib_url,
+                profiles: s.profiles,
             })
         })
         .collect()
+}
+
+/// 皮肤原本保存在 data/skins 下，整包搬家后绝对路径失效；
+/// 按文件名在前目录里找回，找回失败就当作没有本地皮肤。
+fn heal_skin_path(path: Option<String>) -> Option<String> {
+    let path = path?;
+    if std::path::Path::new(&path).is_file() {
+        return Some(path);
+    }
+    let name = std::path::Path::new(&path).file_name()?;
+    let candidate = config::data_dir().join("skins").join(name);
+    candidate
+        .is_file()
+        .then(|| candidate.to_string_lossy().to_string())
 }
 
 pub fn save_accounts(accounts: &[Account]) -> Result<()> {
@@ -249,6 +272,7 @@ pub fn save_accounts(accounts: &[Account]) -> Result<()> {
             skin_path: a.skin_path.clone(),
             skin_model: a.skin_model.clone(),
             authlib_url: a.authlib_url.clone(),
+            profiles: a.profiles.clone(),
         })
         .collect();
     std::fs::create_dir_all(config::data_dir())?;
@@ -455,6 +479,7 @@ pub async fn refresh(client: &reqwest::Client, account: &Account) -> Result<Acco
         skin_path: account.skin_path.clone(),
         skin_model: account.skin_model.clone(),
         authlib_url: None,
+        profiles: Vec::new(),
     })
 }
 
@@ -482,6 +507,7 @@ pub async fn poll_device_login(
         skin_path: None,
         skin_model: "classic".into(),
         authlib_url: None,
+        profiles: Vec::new(),
     };
     let mut accounts = load_accounts();
     accounts.retain(|a| a.id != account.id);

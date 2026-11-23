@@ -207,19 +207,20 @@ onBeforeUnmount(() => {
   border-bottom-color: color-mix(in srgb, var(--moss) 72%, #000);
 }
 
+/* 提示气泡跟随主题：底色取主题墨色，文字取页面纸色，深浅主题都保证对比度 */
 .icon-tip {
   position: fixed;
   z-index: 120;
   padding: 5px 9px;
   border-radius: 2px;
-  background: #3c2b1c;
-  color: #fbf4e6;
+  background: var(--ink);
+  color: var(--paper);
   font-size: 11.5px;
   line-height: 1.4;
   white-space: nowrap;
   pointer-events: none;
-  box-shadow: 0 6px 18px rgba(40, 28, 16, 0.28);
-  border: 1px solid rgba(255, 253, 246, 0.08);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 26%, transparent);
+  border: 1px solid color-mix(in srgb, var(--paper) 22%, transparent);
 }
 
 .icon-tip--instant {

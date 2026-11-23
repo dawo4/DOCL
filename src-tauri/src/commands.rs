@@ -198,6 +198,9 @@ pub fn import_settings(state: State<'_, AppState>, path: String) -> CmdResult<Co
     let bytes = std::fs::read(path.trim()).map_err(err)?;
     let mut config: Config = serde_json::from_slice(&bytes)
         .map_err(|e| format!("配置文件格式不正确：{e}"))?;
+    // 导入的配置可能来自另一台电脑/另一个目录，先按当前位置纠正路径
+    config.rebase_paths();
+    config.heal_paths();
     config.sync_game_dirs();
     config::save(&config).map_err(err)?;
     *state.config.lock().unwrap() = config.clone();
@@ -1835,32 +1838,39 @@ pub async fn authlib_meta(
     authlib::meta(&state.client, &root).await.map_err(err)
 }
 
-/// LittleSkin 等第三方皮肤站登录：账号密码换 accessToken，并保存为 authlib 账号。
-#[tauri::command]
-pub async fn authlib_login(
-    state: State<'_, AppState>,
-    root: String,
-    username: String,
-    password: String,
-) -> CmdResult<AccountView> {
-    let login = authlib::authenticate(&state.client, &root, &username, &password)
-        .await
-        .map_err(err)?;
+/// 第三方账号登录结果：多角色时先返回角色列表，由前端选择后再建账号。
+#[derive(serde::Serialize)]
+pub struct AuthlibLoginView {
+    pub needs_selection: bool,
+    pub profiles: Vec<authlib::Profile>,
+    /// 站点已经绑定的角色（通常是没有 selectedProfile 时的默认角色）
+    pub selected: Option<authlib::Profile>,
+    pub account: Option<auth::AccountView>,
+}
+
+/// 把登录结果保存成 authlib 账号并设为当前账号。
+fn save_authlib_account(
+    state: &AppState,
+    root: &str,
+    login: &authlib::LoginResult,
+) -> CmdResult<auth::AccountView> {
     let account = Account {
         id: format!("authlib-{}", login.uuid),
         kind: "authlib".into(),
-        name: login.name,
-        uuid: login.uuid,
-        access_token: login.access_token,
-        refresh_token: login.client_token,
+        name: login.name.clone(),
+        uuid: login.uuid.clone(),
+        access_token: login.access_token.clone(),
+        refresh_token: login.client_token.clone(),
         expires_at: u64::MAX,
         // 不写本地默认皮肤，否则会盖住皮肤站上的角色皮肤
         skin_path: None,
         skin_model: "classic".into(),
         authlib_url: Some(root.trim().trim_end_matches('/').to_string()),
+        profiles: login.profiles.clone(),
     };
     {
         let mut accounts = state.accounts.lock().unwrap();
+        // 同一角色重复登录时替换旧记录
         accounts.retain(|a| a.id != account.id);
         accounts.push(account.clone());
         auth::save_accounts(&accounts).map_err(err)?;
@@ -1870,7 +1880,174 @@ pub async fn authlib_login(
         cfg.selected_account = Some(account.id.clone());
         config::save(&cfg).map_err(err)?;
     }
-    Ok(AccountView::from(&account))
+    Ok(auth::AccountView::from(&account))
+}
+
+/// 让 token 绑定到指定角色；单角色账号也会走这一步，保证进服时 profile 一致。
+async fn bind_profile(
+    client: &reqwest::Client,
+    root: &str,
+    login: &mut authlib::LoginResult,
+    profile: &authlib::Profile,
+) -> Result<(), String> {
+    let bound = authlib::select_profile(
+        client,
+        root,
+        &login.access_token,
+        &login.client_token,
+        profile,
+    )
+    .await
+    .map_err(err)?;
+    login.name = bound.name;
+    login.uuid = bound.uuid;
+    login.access_token = bound.access_token;
+    login.client_token = bound.client_token;
+    login.selected = bound.selected.or_else(|| Some(profile.clone()));
+    Ok(())
+}
+
+/// LittleSkin 等第三方皮肤站登录：账号密码换 accessToken，并保存为 authlib 账号。
+/// 账号下有多个角色时先返回列表，由前端选择。
+#[tauri::command]
+pub async fn authlib_login(
+    state: State<'_, AppState>,
+    root: String,
+    username: String,
+    password: String,
+) -> CmdResult<AuthlibLoginView> {
+    let mut login = authlib::authenticate(&state.client, &root, &username, &password)
+        .await
+        .map_err(err)?;
+
+    if login.profiles.len() > 1 {
+        let profiles = login.profiles.clone();
+        let selected = login.selected.clone();
+        let root = root.trim().trim_end_matches('/').to_string();
+        *state.authlib_pending.lock().unwrap() = Some(authlib::PendingLogin { root, login });
+        return Ok(AuthlibLoginView {
+            needs_selection: true,
+            profiles,
+            selected,
+            account: None,
+        });
+    }
+
+    // 只有一个角色：token 未绑定时先绑定，失败也允许保存（部分站点本来就只返回空 selectedProfile）
+    if login.selected.is_none() {
+        if let Some(profile) = login.profiles.first().cloned() {
+            let _ = bind_profile(&state.client, &root, &mut login, &profile).await;
+        }
+    }
+    let account = save_authlib_account(&state, &root, &login)?;
+    Ok(AuthlibLoginView {
+        needs_selection: false,
+        profiles: login.profiles,
+        selected: login.selected,
+        account: Some(account),
+    })
+}
+
+/// 选择角色：用登录时换到的 token 调 refresh 绑定角色，然后建账号。
+#[tauri::command]
+pub async fn authlib_login_select(
+    state: State<'_, AppState>,
+    profile_id: String,
+) -> CmdResult<AuthlibLoginView> {
+    let pending = state
+        .authlib_pending
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| err("登录会话已过期，请重新登录"))?;
+    let profile = pending
+        .login
+        .profiles
+        .iter()
+        .find(|item| item.id == profile_id)
+        .cloned()
+        .ok_or_else(|| err("角色不存在，请重新登录"))?;
+
+    let mut login = pending.login.clone();
+    let already_bound = login
+        .selected
+        .as_ref()
+        .map(|item| item.id == profile.id)
+        .unwrap_or(false);
+    if !already_bound {
+        bind_profile(&state.client, &pending.root, &mut login, &profile).await?;
+    }
+    // refresh 只返回当前角色，完整列表用登录时的
+    login.profiles = pending.login.profiles.clone();
+
+    let account = save_authlib_account(&state, &pending.root, &login)?;
+    *state.authlib_pending.lock().unwrap() = None;
+    Ok(AuthlibLoginView {
+        needs_selection: false,
+        profiles: login.profiles,
+        selected: login.selected,
+        account: Some(account),
+    })
+}
+
+/// 在已保存的第三方账号里切换角色（不重新输入密码）。
+#[tauri::command]
+pub async fn authlib_switch_profile(
+    state: State<'_, AppState>,
+    account_id: String,
+    profile_id: String,
+) -> CmdResult<auth::AccountView> {
+    let account = state
+        .accounts
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|item| item.id == account_id)
+        .cloned()
+        .ok_or_else(|| err("账号不存在"))?;
+    if account.kind != "authlib" {
+        return Err(err("只有第三方账号可以切换角色"));
+    }
+    let root = account
+        .authlib_url
+        .clone()
+        .ok_or_else(|| err("账号缺少认证服务器地址，请重新登录"))?;
+    if account.profiles.is_empty() {
+        return Err(err(
+            "这个账号是旧版本保存的，没有角色列表；请移除后重新登录再切换",
+        ));
+    }
+    let profile = account
+        .profiles
+        .iter()
+        .find(|item| item.id == profile_id)
+        .cloned()
+        .ok_or_else(|| err("角色不存在，请移除账号后重新登录"))?;
+
+    let bound = authlib::select_profile(
+        &state.client,
+        &root,
+        &account.access_token,
+        &account.refresh_token,
+        &profile,
+    )
+    .await
+    .map_err(err)?;
+
+    let mut updated = account.clone();
+    updated.name = bound.name;
+    updated.uuid = bound.uuid;
+    updated.access_token = bound.access_token;
+    updated.refresh_token = bound.client_token;
+    // 账号 id 保持不变，避免影响已选中的账号与皮肤缓存
+    {
+        let mut accounts = state.accounts.lock().unwrap();
+        if let Some(slot) = accounts.iter_mut().find(|item| item.id == account_id) {
+            *slot = updated.clone();
+        }
+        auth::save_accounts(&accounts).map_err(err)?;
+    }
+    Ok(auth::AccountView::from(&updated))
 }
 
 #[tauri::command]
@@ -2269,12 +2446,12 @@ pub fn detect_java(state: State<'_, AppState>) -> Vec<JavaInfo> {
 }
 
 /// 手动添加 Java：接受 java.exe、javaw.exe 或 JDK/JRE 安装目录。
-/// 校验通过后立即设为优先使用的运行时，自动检测不到的自定义安装也能用。
+/// 记录到额外列表并设为优先使用，之后重复添加不会覆盖之前的条目。
 #[tauri::command]
 pub fn add_java(state: State<'_, AppState>, path: String) -> CmdResult<JavaInfo> {
     let info = java::inspect_manual(&path).map_err(err)?;
     let mut cfg = state.config.lock().unwrap();
-    cfg.java_path = Some(info.path.clone());
+    cfg.remember_java(&info.path);
     config::save(&cfg).map_err(err)?;
     Ok(info)
 }
@@ -2319,8 +2496,8 @@ pub async fn install_java(
     }
 }
 
-/// 删除启动器下载的 Java 运行时。
-/// 只允许删运行时目录内的组件，系统/PATH/手动指定的 Java 一律拒绝，避免误删。
+/// 删除启动器下载的 Java 运行时，或忘记手动添加的 Java 条目。
+/// 只允许删运行时目录内的组件，系统/PATH 里的 Java 一律拒绝，避免误删文件。
 #[tauri::command]
 pub async fn delete_java(state: State<'_, AppState>, path: String) -> CmdResult<bool> {
     let root = state.config.lock().unwrap().java_runtime_root();
@@ -2331,23 +2508,38 @@ pub async fn delete_java(state: State<'_, AppState>, path: String) -> CmdResult<
         .map(|dir| dir.to_path_buf())
         .ok_or_else(|| "无效的 Java 路径".to_string())?;
 
-    let canonical_root = std::fs::canonicalize(&root).unwrap_or(root);
-    let canonical_target = std::fs::canonicalize(&target)
-        .map_err(|_| "Java 目录不存在或无法访问".to_string())?;
-    if canonical_target == canonical_root || !canonical_target.starts_with(&canonical_root) {
-        return Err("只能删除启动器下载的 Java 运行时".to_string());
+    let in_runtime = std::fs::canonicalize(&target)
+        .ok()
+        .map(|target| {
+            let canonical_root = std::fs::canonicalize(&root).unwrap_or(root);
+            target != canonical_root && target.starts_with(&canonical_root)
+        })
+        .unwrap_or(false);
+
+    if in_runtime {
+        let canonical_target = std::fs::canonicalize(&target)
+            .map_err(|_| "Java 目录不存在或无法访问".to_string())?;
+        tokio::fs::remove_dir_all(&canonical_target)
+            .await
+            .map_err(|e| format!("删除失败：{e}"))?;
     }
 
-    tokio::fs::remove_dir_all(&canonical_target)
-        .await
-        .map_err(|e| format!("删除失败：{e}"))?;
-
-    // 手动指定的正是被删的这个时回退到自动选择
     let mut cfg = state.config.lock().unwrap();
-    if cfg.java_path.as_deref() == Some(path.as_str()) {
-        cfg.java_path = None;
-        let _ = config::save(&cfg);
+    let before = cfg.extra_java_paths.len();
+    cfg.extra_java_paths
+        .retain(|item| !item.eq_ignore_ascii_case(&path));
+    let dropped = cfg.extra_java_paths.len() != before;
+    // 手动添加的条目只从列表里移除，不动磁盘文件；
+    // 旧版本只记在 java_path 里的条目也允许清掉引用
+    let selected = cfg.java_path.as_deref() == Some(path.as_str());
+    if !in_runtime && !dropped && !selected {
+        return Err("只能删除启动器下载的运行时，或手动添加过的 Java".to_string());
     }
+    // 手动指定的正是被删的这个时回退到自动选择
+    if selected {
+        cfg.java_path = None;
+    }
+    let _ = config::save(&cfg);
     Ok(true)
 }
 

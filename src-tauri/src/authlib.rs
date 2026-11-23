@@ -29,20 +29,31 @@ pub struct ServerMeta {
     pub homepage: String,
 }
 
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct Profile {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct LoginResult {
     pub name: String,
     pub uuid: String,
     pub access_token: String,
     pub client_token: String,
+    /// 该账号在皮肤站上的全部角色（availableProfiles）
+    pub profiles: Vec<Profile>,
+    /// token 当前绑定的角色；None 表示需要启动器选择角色
+    pub selected: Option<Profile>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
-struct ProfileResp {
-    #[serde(default)]
-    id: String,
-    #[serde(default)]
-    name: String,
+/// 等待用户选择角色的登录会话：密码不落盘，只保留这次换到的 token。
+#[derive(Debug, Clone)]
+pub struct PendingLogin {
+    pub root: String,
+    pub login: LoginResult,
 }
 
 #[derive(serde::Deserialize)]
@@ -53,9 +64,9 @@ struct AuthResp {
     #[serde(default)]
     client_token: Option<String>,
     #[serde(default)]
-    selected_profile: Option<ProfileResp>,
+    selected_profile: Option<Profile>,
     #[serde(default)]
-    available_profiles: Vec<ProfileResp>,
+    available_profiles: Vec<Profile>,
     // 失败响应里的错误信息：目前只用于日志/排查，保留字段便于后续展示
     #[allow(dead_code)]
     #[serde(default)]
@@ -103,11 +114,58 @@ fn friendly_error(status: reqwest::StatusCode, text: &str) -> String {
     format!("认证失败（HTTP {status}）")
 }
 
-fn pick_profile(data: &AuthResp) -> Result<ProfileResp> {
-    data.selected_profile
+/// 合并 availableProfiles 与 selectedProfile，按 UUID 去重并过滤空档案。
+fn collect_profiles(data: &AuthResp) -> Vec<Profile> {
+    let mut out: Vec<Profile> = Vec::new();
+    let mut push = |profile: &Profile| {
+        if profile.id.is_empty() || out.iter().any(|item| item.id == profile.id) {
+            return;
+        }
+        out.push(profile.clone());
+    };
+    for profile in &data.available_profiles {
+        push(profile);
+    }
+    if let Some(profile) = &data.selected_profile {
+        push(profile);
+    }
+    out
+}
+
+fn login_result(data: AuthResp, fallback_client_token: String) -> Result<LoginResult> {
+    let profiles = collect_profiles(&data);
+    let selected = data
+        .selected_profile
         .clone()
-        .or_else(|| data.available_profiles.first().cloned())
-        .ok_or_else(|| anyhow::anyhow!("该账号没有可用的角色档案"))
+        .filter(|profile| !profile.id.is_empty());
+    // token 没绑定角色时先拿第一个当展示用，真正进游戏前仍需用户选择
+    let profile = selected
+        .clone()
+        .or_else(|| profiles.first().cloned())
+        .ok_or_else(|| anyhow::anyhow!("该账号没有可用的角色档案"))?;
+    let access_token = data
+        .access_token
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("认证服务器没有返回 accessToken"))?;
+    Ok(LoginResult {
+        name: profile.name,
+        uuid: profile.id,
+        access_token,
+        client_token: data.client_token.unwrap_or(fallback_client_token),
+        profiles,
+        selected,
+    })
+}
+
+/// 请求体里统一带上 agent，第三方实现对该字段的要求并不一致。
+fn login_body(username: &str, password: &str, client_token: &str) -> serde_json::Value {
+    serde_json::json!({
+        "username": username,
+        "password": password,
+        "clientToken": client_token,
+        "agent": { "name": "Minecraft", "version": 1 },
+        "requestUser": false
+    })
 }
 
 /// 读取皮肤站元数据，并按照响应头修正 API 根（LittleSkin 等会给出规范地址）。
@@ -169,13 +227,7 @@ pub async fn authenticate(
     let client_token = new_client_token();
     let resp = client
         .post(format!("{root}/authserver/authenticate"))
-        .json(&serde_json::json!({
-            "username": username.trim(),
-            "password": password,
-            "clientToken": client_token,
-            "agent": { "name": "Minecraft", "version": 1 },
-            "requestUser": false
-        }))
+        .json(&login_body(username.trim(), password, &client_token))
         .send()
         .await
         .with_context(|| format!("无法连接认证服务器：{root}"))?;
@@ -185,20 +237,10 @@ pub async fn authenticate(
         bail!("{}", friendly_error(status, &text));
     }
     let data: AuthResp = serde_json::from_str(&text).context("认证服务器返回了无法解析的内容")?;
-    let profile = pick_profile(&data)?;
-    let access_token = data
-        .access_token
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("认证服务器没有返回 accessToken"))?;
-    if profile.id.is_empty() {
-        bail!("角色档案缺少 UUID");
+    if collect_profiles(&data).is_empty() {
+        bail!("该账号没有可用的角色档案");
     }
-    Ok(LoginResult {
-        name: profile.name,
-        uuid: profile.id,
-        access_token,
-        client_token: data.client_token.unwrap_or(client_token),
-    })
+    login_result(data, client_token)
 }
 
 /// 用 refreshToken 续期；第三方站点的 accessToken 通常一周左右过期。
@@ -225,17 +267,48 @@ pub async fn refresh(
         bail!("{}", friendly_error(status, &text));
     }
     let data: AuthResp = serde_json::from_str(&text).context("认证服务器返回了无法解析的内容")?;
-    let profile = pick_profile(&data)?;
-    let access_token = data
-        .access_token
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("认证服务器没有返回 accessToken"))?;
-    Ok(LoginResult {
-        name: profile.name,
-        uuid: profile.id,
-        access_token,
-        client_token: data.client_token.unwrap_or_else(|| client_token.to_string()),
-    })
+    login_result(data, client_token.to_string())
+}
+
+/// 在多个角色之间做选择：按 Yggdrasil 规范，refresh 请求带 `selectedProfile`
+/// 会把新 token 绑定到该角色（原 token 必须尚未绑定）。
+pub async fn select_profile(
+    client: &reqwest::Client,
+    root: &str,
+    access_token: &str,
+    client_token: &str,
+    profile: &Profile,
+) -> Result<LoginResult> {
+    let root = normalize_root(root);
+    if profile.id.is_empty() {
+        bail!("角色信息不完整，请重新登录");
+    }
+    let resp = client
+        .post(format!("{root}/authserver/refresh"))
+        .json(&serde_json::json!({
+            "accessToken": access_token,
+            "clientToken": client_token,
+            "requestUser": false,
+            "selectedProfile": { "id": profile.id, "name": profile.name }
+        }))
+        .send()
+        .await
+        .with_context(|| format!("无法连接认证服务器：{root}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let message = friendly_error(status, &text);
+        // 已经绑定过角色的 token 不能再改绑，提示用户重新登录更直接
+        bail!(
+            "{message}。如果仍无法切换，请在皮肤站里更换默认角色，或移除该账号后重新登录并选择角色"
+        );
+    }
+    let mut data: AuthResp =
+        serde_json::from_str(&text).context("认证服务器返回了无法解析的内容")?;
+    if data.selected_profile.is_none() {
+        data.selected_profile = Some(profile.clone());
+    }
+    login_result(data, client_token.to_string())
 }
 
 fn injector_file() -> PathBuf {
@@ -330,18 +403,41 @@ mod tests {
         let data: AuthResp = serde_json::from_str(text).unwrap();
         assert_eq!(data.access_token.as_deref(), Some("token"));
         assert_eq!(data.client_token.as_deref(), Some("client"));
-        let profile = pick_profile(&data).unwrap();
-        assert_eq!(profile.name, "Steve");
-        assert_eq!(profile.id, "069a79f444e94726a5befca90e38aaf5");
+        let login = login_result(data, "fallback".into()).unwrap();
+        assert_eq!(login.name, "Steve");
+        assert_eq!(login.uuid, "069a79f444e94726a5befca90e38aaf5");
+        assert_eq!(login.client_token, "client");
+        assert_eq!(login.profiles.len(), 1);
+        assert!(login.selected.is_some());
     }
 
-    /// 没有 selectedProfile 时退回第一个可用角色
+    /// 没有 selectedProfile 时退回第一个可用角色，但标记为「待选择」
     #[test]
     fn falls_back_to_first_available_profile() {
         let data: AuthResp = serde_json::from_str(
-            r#"{"availableProfiles":[{"id":"abc","name":"Alex"}]}"#,
+            r#"{"accessToken":"t","availableProfiles":[{"id":"abc","name":"Alex"}]}"#,
         )
         .unwrap();
-        assert_eq!(pick_profile(&data).unwrap().name, "Alex");
+        let login = login_result(data, "c".into()).unwrap();
+        assert_eq!(login.name, "Alex");
+        assert_eq!(login.uuid, "abc");
+        assert!(login.selected.is_none());
+    }
+
+    /// 多角色账号要保留全部档案，供登录后选择
+    #[test]
+    fn keeps_all_available_profiles() {
+        let data: AuthResp = serde_json::from_str(
+            r#"{"accessToken":"t","availableProfiles":[
+                {"id":"a1","name":"Alice"},
+                {"id":"b2","name":"Bob"},
+                {"id":"a1","name":"Alice"}
+            ]}"#,
+        )
+        .unwrap();
+        let login = login_result(data, "c".into()).unwrap();
+        assert_eq!(login.profiles.len(), 2);
+        assert_eq!(login.profiles[1].name, "Bob");
+        assert!(login.selected.is_none());
     }
 }

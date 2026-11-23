@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { api, openExternal, saveSkinDialog } from "../api";
+import { api, openExternal, saveSkinDialog, type AuthlibProfile } from "../api";
 import AppIcon from "../components/AppIcon.vue";
 import IconButton from "../components/IconButton.vue";
 import PlayerAvatar from "../components/PlayerAvatar.vue";
@@ -39,6 +39,14 @@ const thirdPass = ref("");
 const thirdBusy = ref(false);
 const thirdServerName = ref("");
 
+/// 多角色账号：登录后或已保存账号里选择要使用的角色
+const thirdPickOpen = ref(false);
+const thirdPickProfiles = ref<AuthlibProfile[]>([]);
+const thirdPickSelected = ref("");
+const thirdPickBusy = ref(false);
+/// 非空表示在已保存的账号里切换角色，为空表示登录后首次选择
+const thirdPickAccount = ref("");
+
 /// 常用皮肤站预设，点一下填入地址
 const thirdPresets = [
   { label: "LittleSkin", root: "https://littleskin.cn/api/yggdrasil" },
@@ -68,20 +76,75 @@ async function loginThird() {
   }
   thirdBusy.value = true;
   try {
-    const account = await api.authlibLogin(
+    const result = await api.authlibLogin(
       thirdRoot.value.trim(),
       thirdUser.value.trim(),
       thirdPass.value
     );
-    await refreshAccounts();
-    await refreshConfig();
-    thirdOpen.value = false;
-    thirdPass.value = "";
-    notify(`已登录 ${account.name}`);
+    if (result.needs_selection) {
+      // 多个角色：先让用户选，选完再落账号
+      thirdPickProfiles.value = result.profiles;
+      thirdPickSelected.value = result.selected?.id ?? result.profiles[0]?.id ?? "";
+      thirdPickAccount.value = "";
+      thirdPickOpen.value = true;
+      thirdOpen.value = false;
+      thirdPass.value = "";
+      return;
+    }
+    await finishThirdLogin(result.account?.name ?? "");
   } catch (err) {
     notify(String(err), "err");
   } finally {
     thirdBusy.value = false;
+  }
+}
+
+async function finishThirdLogin(accountName: string) {
+  await refreshAccounts();
+  await refreshConfig();
+  thirdOpen.value = false;
+  thirdPass.value = "";
+  thirdPickOpen.value = false;
+  notify(`已登录 ${accountName}`);
+}
+
+/// 在已保存的第三方账号里切换角色
+function openSwitchProfile() {
+  const account = selectedAccount.value;
+  if (!account || account.kind !== "authlib" || account.profiles.length < 2) return;
+  thirdPickProfiles.value = account.profiles;
+  thirdPickSelected.value =
+    account.profiles.find((item) => item.id === account.uuid)?.id ??
+    account.profiles[0].id;
+  thirdPickAccount.value = account.id;
+  thirdPickOpen.value = true;
+}
+
+async function confirmThirdProfile() {
+  if (thirdPickBusy.value || !thirdPickSelected.value) return;
+  thirdPickBusy.value = true;
+  try {
+    if (thirdPickAccount.value) {
+      const account = await api.authlibSwitchProfile(
+        thirdPickAccount.value,
+        thirdPickSelected.value
+      );
+      await refreshAccounts();
+      await refreshConfig();
+      thirdPickOpen.value = false;
+      notify(`已切换到角色 ${account.name}`);
+    } else {
+      const result = await api.authlibLoginSelect(thirdPickSelected.value);
+      if (!result.account) {
+        notify("登录未完成，请重试", "err");
+        return;
+      }
+      await finishThirdLogin(result.account.name);
+    }
+  } catch (err) {
+    notify(String(err), "err");
+  } finally {
+    thirdPickBusy.value = false;
   }
 }
 
@@ -456,6 +519,15 @@ onMounted(() => {
             刷新皮肤
           </WoodButton>
           <WoodButton
+            v-if="selectedAccount.kind === 'authlib' && selectedAccount.profiles.length > 1"
+            variant="soft"
+            size="sm"
+            @click="openSwitchProfile"
+          >
+            <AppIcon name="user" :size="14" />
+            切换角色
+          </WoodButton>
+          <WoodButton
             v-if="selectedAccount.kind !== 'offline' && store.accountSkin?.source === 'local'"
             variant="ghost"
             size="sm"
@@ -603,6 +675,41 @@ onMounted(() => {
         <WoodButton variant="ghost" @click="thirdOpen = false">取消</WoodButton>
         <WoodButton variant="primary" sheen :disabled="thirdBusy" @click="loginThird">
           {{ thirdBusy ? "登录中…" : "登录" }}
+        </WoodButton>
+      </div>
+    </WoodModal>
+
+    <WoodModal
+      v-if="thirdPickOpen"
+      :title="thirdPickAccount ? '切换角色' : '选择角色'"
+      :width="420"
+      @close="thirdPickOpen = false"
+    >
+      <p class="offline-hint muted">
+        这个皮肤站账号下有多个角色，选一个用于启动游戏；之后可以在账号页随时切换。
+      </p>
+      <div class="third-role-list">
+        <button
+          v-for="profile in thirdPickProfiles"
+          :key="profile.id"
+          class="third-role"
+          :class="{ 'third-role--active': thirdPickSelected === profile.id }"
+          @click="thirdPickSelected = profile.id"
+        >
+          <span class="third-role__name">{{ profile.name }}</span>
+          <span class="third-role__uuid mono">{{ profile.id.slice(0, 8) }}</span>
+          <span v-if="thirdPickSelected === profile.id" class="tag tag--grass">已选</span>
+        </button>
+      </div>
+      <div class="offline-actions">
+        <WoodButton variant="ghost" @click="thirdPickOpen = false">取消</WoodButton>
+        <WoodButton
+          variant="primary"
+          sheen
+          :disabled="thirdPickBusy"
+          @click="confirmThirdProfile"
+        >
+          {{ thirdPickBusy ? "处理中…" : "使用这个角色" }}
         </WoodButton>
       </div>
     </WoodModal>
@@ -884,6 +991,54 @@ onMounted(() => {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 14px;
+}
+
+/* 多角色选择列表 */
+.third-role-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin-bottom: 14px;
+}
+
+.third-role {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel-2);
+  text-align: left;
+  transition: background var(--dur-1) ease, border-color var(--dur-1) ease;
+}
+
+.third-role:hover {
+  background: var(--hover);
+}
+
+.third-role--active {
+  border-color: var(--moss);
+  background: var(--moss-soft);
+  box-shadow: inset 3px 0 0 var(--moss);
+}
+
+.third-role__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.third-role__uuid {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .third-preset {

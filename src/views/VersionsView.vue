@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+﻿﻿<script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import defaultProfileCard from "../assets/profile-card.jpg";
@@ -456,7 +456,7 @@ async function chooseImage(id: string) {
       </div>
       <div class="page-head__actions">
         <div class="dir-switch">
-          <IconButton icon="layers" label="切换游戏目录" :size="32" @click="toggleDirs" />
+          <IconButton icon="layers" label="切换游戏目录" variant="soft" :size="34" @click="toggleDirs" />
           <template v-if="dirOpen">
             <div class="dir-backdrop" @click="dirOpen = false" />
             <div class="dir-panel">
@@ -483,7 +483,7 @@ async function chooseImage(id: string) {
             </div>
           </template>
         </div>
-        <IconButton icon="folder" label="打开游戏目录" :size="32" @click="openDir" />
+        <IconButton icon="folder" label="打开游戏目录" variant="soft" :size="34" @click="openDir" />
         <WoodButton variant="primary" size="sm" sheen @click="store.page = 'download'">
           <AppIcon name="plus" :size="14" />
           安装新版本
@@ -1517,6 +1517,14 @@ async function chooseImage(id: string) {
 
 .version-row__actions :deep(.icon-btn--danger) {
   color: var(--danger);
+}
+
+/* 行内操作按钮统一成浅显图标：悬停只变底色，不出现浮雕边框 */
+.version-row__actions :deep(.icon-btn:hover:not(:disabled)) {
+  border-color: transparent;
+  background: rgba(var(--accent-rgb), 0.08);
+  box-shadow: none;
+  transform: none;
 }
 
 .version-row__actions :deep(.icon-btn--primary:hover:not(:disabled)),

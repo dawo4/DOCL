@@ -173,6 +173,8 @@ export interface Config {
   update_url: string;
   update_mode: string;
   java_path: string | null;
+  /// 手动添加过的 Java（自动检测不到的自定义安装）
+  extra_java_paths: string[];
   java_install_dir: string | null;
   memory_mb: number;
   memory_auto: boolean;
@@ -221,6 +223,10 @@ export interface Config {
   remember_window: boolean;
   launcher_window_w: number;
   launcher_window_h: number;
+  /// 上次保存时便携版根目录（exe 所在目录），用于整包搬家后重写绝对路径
+  portable_root: string | null;
+  /// 低内存模式：降低 WebView2 缓存与 JS 堆上限，并关闭毛玻璃/动效（重启后生效）
+  low_memory: boolean;
 }
 
 export interface BackgroundInfo {
@@ -1011,6 +1017,26 @@ export interface CfSearchResult {
   total: number;
 }
 
+/// 本地收藏的社区项目
+export interface Favorite {
+  id: string;
+  source: string;
+  /// 资源分类：mods / modpacks / resourcepacks 等
+  kind: string;
+  name: string;
+  slug: string;
+  summary: string;
+  website_url: string;
+  logo_url: string;
+  author: string;
+  download_count: number;
+  class_id: number;
+  updated: string;
+  categories: string[];
+  /// 收藏时间（Unix 秒）
+  added_at: number;
+}
+
 export interface CfFileView {
   id: string;
   name: string;
@@ -1064,6 +1090,23 @@ export interface AccountView {
   skin_model: string;
   /// 第三方认证（authlib-injector）的 API 根
   authlib_url: string | null;
+  /// 第三方账号在皮肤站上的全部角色
+  profiles: AuthlibProfile[];
+}
+
+/// 皮肤站上的角色档案
+export interface AuthlibProfile {
+  id: string;
+  name: string;
+}
+
+export interface AuthlibLoginResult {
+  /// 账号下有多个角色时需要前端先选择
+  needs_selection: boolean;
+  profiles: AuthlibProfile[];
+  /// 站点已经绑定/默认的角色
+  selected: AuthlibProfile | null;
+  account: AccountView | null;
 }
 
 export interface AuthlibMeta {
@@ -1327,6 +1370,8 @@ export const api = {
       index,
       sortField,
     }),
+  favoritesList: () => invoke<Favorite[]>("favorites_list"),
+  favoritesToggle: (favorite: Favorite) => invoke<boolean>("favorites_toggle", { favorite }),
   cfGameVersions: () => invoke<string[]>("cf_game_versions"),
   cfCategories: (classId: number) =>
     invoke<{ id: number; name: string }[]>("cf_categories", { classId }),
@@ -1388,7 +1433,13 @@ export const api = {
   createOfflineAccount: (name: string) => invoke<AccountView>("create_offline_account", { name }),
   authlibMeta: (root: string) => invoke<AuthlibMeta>("authlib_meta", { root }),
   authlibLogin: (root: string, username: string, password: string) =>
-    invoke<AccountView>("authlib_login", { root, username, password }),
+    invoke<AuthlibLoginResult>("authlib_login", { root, username, password }),
+  /// 多角色账号：选择要使用的角色并完成建号
+  authlibLoginSelect: (profileId: string) =>
+    invoke<AuthlibLoginResult>("authlib_login_select", { profileId }),
+  /// 在已保存的第三方账号里切换角色
+  authlibSwitchProfile: (accountId: string, profileId: string) =>
+    invoke<AccountView>("authlib_switch_profile", { accountId, profileId }),
   removeAccount: (id: string) => invoke<void>("remove_account", { id }),
   selectAccount: (id: string) => invoke<void>("select_account", { id }),
   getAccountSkin: (accountId: string) =>

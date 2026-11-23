@@ -1,4 +1,4 @@
-﻿﻿<script setup lang="ts">
+﻿﻿﻿﻿<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
@@ -29,7 +29,7 @@ import {
   selectedVersion,
   store,
 } from "../store";
-import { kindLabel } from "../utils";
+import { kindLabel, skipWhenHidden } from "../utils";
 
 type Tab = "hall" | "lan" | "room" | "direct" | "recent" | "server";
 
@@ -545,7 +545,7 @@ function tipOf(address: string): string {
 
 function startPingPolling() {
   stopPingPolling();
-  pingTimer = window.setInterval(() => void pingAll(), 30000);
+  pingTimer = window.setInterval(skipWhenHidden(() => void pingAll()), 30000);
 }
 
 function stopPingPolling() {
@@ -680,7 +680,7 @@ async function refreshTc() {
 
 function startTcPolling() {
   if (tcTimer) return;
-  tcTimer = window.setInterval(refreshTc, 700);
+  tcTimer = window.setInterval(skipWhenHidden(() => void refreshTc()), 700);
 }
 
 function stopTcPolling() {
@@ -777,8 +777,8 @@ onMounted(() => {
   void refreshLan();
   void loadServerVersions();
   void refreshServer();
-  timer = window.setInterval(refreshLan, 2500);
-  serverTimer = window.setInterval(refreshServer, 1500);
+  timer = window.setInterval(skipWhenHidden(() => void refreshLan()), 2500);
+  serverTimer = window.setInterval(skipWhenHidden(() => void refreshServer()), 1500);
 });
 
 onBeforeUnmount(() => {
@@ -1201,7 +1201,7 @@ onBeforeUnmount(() => {
       </div>
 
       <p class="muted small mp-hint">
-        支持域名或 IP，端口留空默认 25565；1.20 及以上会使用快速加入参数，旧版本走 --server。
+        支持域名或 IP，端口默认 25565；1.20 及以上会使用快速加入参数，旧版本走 --server。
       </p>
 
       <div class="mp-direct">

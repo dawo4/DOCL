@@ -251,8 +251,10 @@ pub fn detect(cfg: &Config) -> Vec<JavaInfo> {
         }
     };
 
-    if let Some(path) = &cfg.java_path {
-        if let Some(info) = inspect_java(Path::new(path), "手动指定") {
+    // 手动添加过的自定义安装：可能不在常见目录，靠这份列表才能一直看到；
+    // 放在最前面，保证它们标注为「手动添加」而不是「手动指定」
+    for path in &cfg.extra_java_paths {
+        if let Some(info) = inspect_java(Path::new(path), "手动添加") {
             push(info);
         }
     }
@@ -295,6 +297,13 @@ pub fn detect(cfg: &Config) -> Vec<JavaInfo> {
 
     for path in where_java() {
         if let Some(info) = inspect_java(&path, "PATH") {
+            push(info);
+        }
+    }
+
+    // 旧配置里只记了 java_path、没有进手动列表的路径，兜底显示出来
+    if let Some(path) = &cfg.java_path {
+        if let Some(info) = inspect_java(Path::new(path), "手动指定") {
             push(info);
         }
     }

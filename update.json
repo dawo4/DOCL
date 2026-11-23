@@ -1,6 +1,6 @@
 {
-  "version": "1.7.2",
-  "url": "https://github.com/dawo4/DOCL/releases/download/v1.7.2/DOCL_1.7.2_x64-setup.exe",
-  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.7.2/DOCL_1.7.2_portable.zip",
-  "notes": "整合包更新：实例页可直接选择新版 .mrpack 或 CurseForge 整合包，先预览新增/更新/移除再动手，覆盖前自动备份，只补差异文件；导出的 .mrpack 现在带完整 files[]，别人用 Modrinth 生态可以继续更新。启动器导入新增 HMCL（含 3.16+ 新配置布局），并完善 PCL 多游戏文件夹与版本隔离识别。诊断增强：一键修复前可预览会改动的文件、修复历史按次还原、撤销本次新增的 Mod、崩溃规则误报可忽略/导出反馈/本地回滚，FileAlreadyExistsException 支持定点清理；损坏 jar 按 SHA-1 重下，自动移除无效 -javaagent。设置页新增「清理游戏垃圾」。修正输入框占位符与侧边栏标题在部分主题下发黄的问题。"
+  "version": "1.7.3",
+  "url": "https://github.com/dawo4/DOCL/releases/download/v1.7.3/DOCL_1.7.3_x64-setup.exe",
+  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.7.3/DOCL_1.7.3_portable.zip",
+  "notes": "资源下载页新增「我的收藏」：Mod、整合包、资源包、光影包、数据包和地图都能一键星标收藏，收藏列表支持按类型筛选，点开可直接回到对应资源详情。第三方账号（LittleSkin 等）支持多角色：登录时自动列出角色供选择，账号页可随时切换，不再只识别第一个角色。修复手动添加 Java 时新条目会顶掉旧条目——现在多次添加都会保留，并可在列表里单独移除。便携版路径可迁移：整个文件夹压缩发给别人或换盘、改名后，游戏目录、Java 路径、背景图和角色皮肤会自动按新位置纠正，默认 .minecraft 始终落在 exe 旁边，解压即用。新增「低内存模式」：降低 WebView2 缓存与 JS 堆上限并关闭毛玻璃/动效；默认模式也限制了 JS 堆上限。内存占用优化：版本内容列表分页渲染、屏幕外条目跳过绘制、窗口隐藏时暂停轮询、缩略图只加载当前可见项。界面细节：提示气泡改为跟随主题配色，版本库与版本实例页按钮样式统一，多处「留空」文案改为「默认跟随全局」。"
 }

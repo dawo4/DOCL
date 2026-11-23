@@ -9,6 +9,7 @@ mod curseforge;
 mod download;
 
 mod dropzone;
+mod favorites;
 mod forge_native;
 mod gameopts;
 mod hall;
@@ -58,6 +59,8 @@ pub struct AppState {
     pub manifest: Mutex<Option<models::VersionManifest>>,
     pub child_pid: Mutex<Option<u32>>,
     pub accounts: Mutex<Vec<auth::Account>>,
+    /// 第三方登录时等待用户选择角色的临时会话
+    pub authlib_pending: Mutex<Option<authlib::PendingLogin>>,
 }
 
 impl AppState {
@@ -104,6 +107,13 @@ pub fn run() {
     download::set_force_mirror(cfg.download_source == "mirror");
     // 全局并发额度：所有并行任务共享，避免多任务叠加打爆源站
     download::set_concurrency_limit(cfg.concurrency as usize);
+    // WebView2 启动参数：写入窗口配置，在建窗前生效。
+    // 指定后 wry 不再追加默认参数，所以这里要带上它原来的两项
+    let browser_args = if cfg.low_memory {
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --js-flags=--max-old-space-size=192 --enable-low-end-device-mode"
+    } else {
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --js-flags=--max-old-space-size=384"
+    };
     let accounts = auth::load_accounts();
     lan::start();
 
@@ -113,7 +123,7 @@ pub fn run() {
         .setup(move |app| {
             let window = app.get_webview_window("main");
             // 按配置恢复毛玻璃；失败静默跳过，设置页开关可以重试
-            if cfg.window_vibrancy {
+            if cfg.window_vibrancy && !cfg.low_memory {
                 if let Some(window) = &window {
                     if let Err(e) = vibrancy::enable(window) {
                         eprintln!("vibrancy: {e}");
@@ -162,6 +172,7 @@ pub fn run() {
             manifest: Mutex::new(None),
             child_pid: Mutex::new(None),
             accounts: Mutex::new(accounts),
+            authlib_pending: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
@@ -185,6 +196,8 @@ pub fn run() {
             commands::portable_update_install,
             commands::open_folder,
             commands::cf_categories,
+            favorites::favorites_list,
+            favorites::favorites_toggle,
             commands::modrinth_categories,
             commands::reveal_file,
             commands::game_dirs,
@@ -313,6 +326,8 @@ pub fn run() {
             commands::ms_login_begin,
             commands::authlib_meta,
             commands::authlib_login,
+            commands::authlib_login_select,
+            commands::authlib_switch_profile,
             commands::detect_java,
             commands::add_java,
             commands::java_runtime_majors,
@@ -345,7 +360,14 @@ pub fn run() {
             commands::background_data_url,
             commands::pick_background_random,
         ])
-        .build(tauri::generate_context!())
+        .build({
+            // 建窗前把启动参数塞进窗口配置，运行时才能真正生效
+            let mut context = tauri::generate_context!();
+            if let Some(window) = context.config_mut().app.windows.first_mut() {
+                window.additional_browser_args = Some(browser_args.to_string());
+            }
+            context
+        })
         .expect("构建启动器失败");
 
     app.run(|_app, event| {

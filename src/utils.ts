@@ -46,6 +46,15 @@ export function formatDuration(ms: number): string {
   return minutes > 0 ? `${minutes} 分 ${seconds} 秒` : `${seconds} 秒`;
 }
 
+/// 窗口最小化 / 被完全遮挡时跳过这一轮轮询：
+/// 定时器本身不销毁，恢复可见后由下一次触发自然刷新，避免积压请求。
+export function skipWhenHidden<A extends unknown[]>(fn: (...args: A) => void) {
+  return (...args: A) => {
+    if (document.hidden) return;
+    fn(...args);
+  };
+}
+
 export interface IconPreset {
   value: string;
   label: string;

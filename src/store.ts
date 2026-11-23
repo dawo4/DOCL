@@ -11,6 +11,8 @@ import {
   type Config,
   type CustomTheme,
   type DeviceCode,
+  type Favorite,
+  type CfProject,
   type InstalledVersion,
   type InstanceMeta,
   type JavaInfo,
@@ -69,9 +71,13 @@ export const store = reactive({
     loader: string;
     query?: string;
     projectId?: string;
+    /// 从收藏页跳进来时直接打开的项目
+    project?: CfProject;
     /// 与 kind 不同的实际安装分类，例如数据包需要带上目标世界
     installKind?: string;
   } | null,
+  /// 社区资源收藏（本地 JSON），按收藏时间倒序
+  favorites: [] as Favorite[],
   config: null as Config | null,
   versions: [] as VersionSummary[],
   installed: [] as InstalledVersion[],
@@ -288,6 +294,37 @@ export async function saveConfig(patch: Partial<Config>) {
     await refreshJava();
   } catch (err) {
     notify(`保存设置失败：${String(err)}`, "err");
+  }
+}
+
+/// 收藏列表：读取失败时保留内存里的旧值，不打扰资源浏览
+export async function refreshFavorites() {
+  try {
+    store.favorites = await api.favoritesList();
+  } catch {
+    // 收藏文件损坏或不可读时按空处理
+  }
+}
+
+export function isFavorite(project: { id: string; source: string }) {
+  return store.favorites.some(
+    (item) => item.id === project.id && item.source === project.source
+  );
+}
+
+/// 切换收藏状态：kind 为资源分类（mods / modpacks 等），返回切换后是否已收藏
+export async function toggleFavorite(
+  kind: string,
+  project: Omit<Favorite, "kind" | "added_at">
+) {
+  try {
+    const added = await api.favoritesToggle({ ...project, kind, added_at: 0 });
+    await refreshFavorites();
+    notify(added ? "已加入收藏" : "已取消收藏");
+    return added;
+  } catch (err) {
+    notify(`收藏失败：${String(err)}`, "err");
+    return false;
   }
 }
 
@@ -1333,6 +1370,7 @@ export async function initApp() {
     refreshJava(),
     refreshInstanceMetas(),
     refreshDirCounts(),
+    refreshFavorites(),
     api.systemMemory().then((value) => {
       store.systemMemory = value;
     }),

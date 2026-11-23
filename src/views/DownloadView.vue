@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { api, type LoaderOption, type LoaderVersion } from "../api";
+import { api, type Favorite, type LoaderOption, type LoaderVersion } from "../api";
 import AppIcon from "../components/AppIcon.vue";
 import DownloadTasks from "../components/DownloadTasks.vue";
 import IconButton from "../components/IconButton.vue";
 import WoodButton from "../components/WoodButton.vue";
 import WoodInput from "../components/WoodInput.vue";
 import CommunityView from "./CommunityView.vue";
+import FavoritesView from "./FavoritesView.vue";
 import {
   installLoader,
   installVersion,
@@ -30,7 +31,8 @@ type Category =
   | "datapacks"
   | "worlds"
   | "resourcepacks"
-  | "shaders";
+  | "shaders"
+  | "favorites";
 
 const categories: { value: Category; label: string; icon: string }[] = [
   { value: "vanilla", label: "原版游戏", icon: "cube" },
@@ -158,6 +160,31 @@ function openDetail(id: string) {
   taskOpen.value = false;
 }
 
+/// 从收藏页打开项目：切到对应分类，并把项目交给资源页直接展开详情
+function openFavorite(favorite: Favorite) {
+  store.communityContext = {
+    kind: favorite.kind,
+    instanceId: "",
+    gameVersion: "",
+    loader: "",
+    project: {
+      source: favorite.source,
+      id: favorite.id,
+      name: favorite.name,
+      slug: favorite.slug,
+      website_url: favorite.website_url,
+      summary: favorite.summary,
+      download_count: favorite.download_count,
+      class_id: favorite.class_id,
+      logo_url: favorite.logo_url,
+      author: favorite.author,
+      updated: favorite.updated,
+      categories: favorite.categories,
+    },
+  };
+  switchCategory(favorite.kind as Category);
+}
+
 function backToList() {
   detailId.value = null;
 }
@@ -264,10 +291,24 @@ function launchLoader(id: string | null) {
           <AppIcon :name="item.icon" :size="17" />
           <span>{{ item.label }}</span>
         </button>
+
+        <div class="dl-side__label">我的</div>
+        <button
+          class="dl-side__item"
+          :class="{ 'dl-side__item--active': category === 'favorites' }"
+          @click="switchCategory('favorites')"
+        >
+          <AppIcon name="star" :size="17" />
+          <span>我的收藏</span>
+        </button>
       </aside>
 
       <div class="dl-main">
-        <template v-if="category !== 'vanilla'">
+        <template v-if="category === 'favorites'">
+          <FavoritesView @open="openFavorite" />
+        </template>
+
+        <template v-else-if="category !== 'vanilla'">
           <CommunityView :key="category" :kind="category" />
         </template>
 
