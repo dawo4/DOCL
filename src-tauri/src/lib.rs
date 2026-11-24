@@ -39,6 +39,7 @@ mod repair;
 mod saves;
 mod server;
 mod skins;
+mod sources;
 mod stats;
 mod system;
 mod terracotta;
@@ -103,8 +104,8 @@ pub fn run() {
     let cfg = config::load();
     // 恢复上次的下载限速设置
     download::set_speed_limit(cfg.speed_limit as u64 * 1024 * 1024);
-    // 「仅镜像」时强制镜像优先，其余走按主机的智能排序
-    download::set_force_mirror(cfg.download_source == "mirror");
+    // 分来源下载偏好（元数据 / 文件 / Modrinth / CurseForge）
+    sources::apply(&cfg);
     // 全局并发额度：所有并行任务共享，避免多任务叠加打爆源站
     download::set_concurrency_limit(cfg.concurrency as usize);
     // WebView2 启动参数：写入窗口配置，在建窗前生效。
@@ -267,6 +268,7 @@ pub fn run() {
             gameopts::delete_game_options_preset,
             probes::probe_download_sources,
             commands::retry_failed_downloads,
+            commands::retry_content_deps,
             commands::play_stats,
             commands::crash_analyze,
             commands::crash_export,

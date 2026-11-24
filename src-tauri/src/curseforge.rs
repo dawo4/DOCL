@@ -15,9 +15,11 @@ const MIRROR_BASE: &str = "https://mod.mcimirror.top/curseforge/v1";
 async fn get_json_api<T: serde::de::DeserializeOwned>(
     client: &reqwest::Client,
     path: &str,
-    prefer_mirror: bool,
+    _prefer_mirror: bool,
 ) -> Result<T> {
-    let bases: [&str; 2] = if prefer_mirror {
+    // 设置页「CurseForge」下拉框优先于调用方传的老式布尔值
+    let bases: [&str; 2] = if crate::sources::api_mirror_first(crate::sources::Category::CurseForge)
+    {
         [MIRROR_BASE, BASE]
     } else {
         [BASE, MIRROR_BASE]
@@ -80,6 +82,13 @@ struct CfHash {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct CfModule {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CfFile {
     id: i64,
     #[serde(default)]
@@ -90,6 +99,10 @@ struct CfFile {
     file_date: String,
     #[serde(default)]
     file_length: u64,
+    /// 压缩包内的顶层条目（META-INF、shaders、pack.mcmeta 等），
+    /// 项目大类缺失时用它判断该放进哪个目录
+    #[serde(default)]
+    modules: Vec<CfModule>,
     #[serde(default)]
     hashes: Option<Vec<CfHash>>,
     #[serde(default)]
@@ -356,6 +369,96 @@ pub async fn projects(client: &reqwest::Client, ids: &[i64]) -> Vec<CfProject> {
     result
 }
 
+/// POST 版多源请求：批量项目接口只支持 POST。
+async fn post_json_api<T: serde::de::DeserializeOwned, B: serde::Serialize>(
+    client: &reqwest::Client,
+    path: &str,
+    body: &B,
+    _prefer_mirror: bool,
+) -> Result<T> {
+    let bases: [&str; 2] = if crate::sources::api_mirror_first(crate::sources::Category::CurseForge)
+    {
+        [MIRROR_BASE, BASE]
+    } else {
+        [BASE, MIRROR_BASE]
+    };
+    let mut last_error: Option<anyhow::Error> = None;
+    for base in bases {
+        let url = format!("{base}{path}");
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(12), async {
+            let response = client
+                .post(&url)
+                .json(body)
+                .send()
+                .await
+                .with_context(|| format!("请求 {url} 失败"))?;
+            if !response.status().is_success() {
+                return Err(anyhow!("HTTP {}", response.status()));
+            }
+            response.json::<T>().await.context("解析响应失败")
+        })
+        .await;
+        match outcome {
+            Ok(Ok(value)) => return Ok(value),
+            Ok(Err(err)) => {
+                #[cfg(debug_assertions)]
+                eprintln!("[curseforge] {base} POST {path} 失败: {err}");
+                last_error = Some(err);
+            }
+            Err(_) => {
+                #[cfg(debug_assertions)]
+                eprintln!("[curseforge] {base} POST {path} 超时");
+                last_error = Some(anyhow!("CurseForge 接口超时"));
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("CurseForge 接口不可用")))
+}
+
+#[derive(Debug, Deserialize)]
+struct CfModsResponse {
+    #[serde(default)]
+    data: Vec<CfMod>,
+}
+
+/// 批量取项目所属大类：6=Mod、12=资源包、6552=光影、6945=数据包。
+/// 导入时一次问几十个，避免对几百个文件逐个查详情。
+pub async fn project_class_ids(
+    client: &reqwest::Client,
+    ids: &[i64],
+    prefer_mirror: bool,
+) -> std::collections::HashMap<i64, i64> {
+    let mut out = std::collections::HashMap::new();
+    for chunk in ids.chunks(50) {
+        let body = serde_json::json!({ "modIds": chunk });
+        if let Ok(response) =
+            post_json_api::<CfModsResponse, _>(client, "/mods", &body, prefer_mirror).await
+        {
+            for project in response.data {
+                out.insert(project.id, project.class_id);
+            }
+        }
+    }
+    out
+}
+
+/// 单个项目的大类，批量接口缺项时兜底。
+pub async fn project_class_id(
+    client: &reqwest::Client,
+    id: i64,
+    prefer_mirror: bool,
+) -> Option<i64> {
+    #[derive(Deserialize)]
+    struct CfModResponse {
+        data: CfMod,
+    }
+    get_json_api::<CfModResponse>(client, &format!("/mods/{id}"), prefer_mirror)
+        .await
+        .ok()
+        .map(|response| response.data.class_id)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CfGameVersion {
@@ -473,10 +576,14 @@ pub async fn files(
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FileDownload {
+    /// 所属项目 ID，用于判断是 Mod 还是光影/资源包
+    pub project_id: i64,
     pub url: String,
     pub name: String,
     pub sha1: Option<String>,
     pub size: u64,
+    /// 压缩包顶层条目，项目大类缺失时用于猜测目标目录
+    pub modules: Vec<String>,
 }
 
 /// 解析 cursemaven 的 /test 调试输出：里面有服务端解析出来的直链与文件大小。
@@ -543,11 +650,13 @@ async fn cursemaven_download(
         return None;
     }
     Some(FileDownload {
+        project_id: mod_id,
         url: download_url,
         name,
         // cursemaven 不提供哈希；大小来自 CDN 的 Content-Length，拿不到时为 0（不校验）
         sha1: None,
         size,
+        modules: Vec::new(),
     })
 }
 
@@ -609,10 +718,17 @@ pub async fn file_download(
         .find(|hash| hash.algo == 1 && !hash.value.is_empty())
         .map(|hash| hash.value.clone());
     Ok(FileDownload {
+        project_id: mod_id,
         url: download_url,
         name,
         sha1,
         size: file.file_length,
+        modules: file
+            .modules
+            .iter()
+            .map(|module| module.name.clone())
+            .filter(|name| !name.is_empty())
+            .collect(),
     })
 }
 
@@ -758,6 +874,44 @@ pub async fn install_world(
     }
     progress.set_message("地图安装完成");
     Ok(dest.to_string_lossy().to_string())
+}
+
+/// 把 saves 目录里已经下载好的地图 zip 解压成存档文件夹。
+/// 整合包清单里的地图（classId 17）就是这种 zip，PCL 也是在收尾阶段统一解压。
+pub(crate) fn install_world_zip(
+    zip_path: &Path,
+    saves: &Path,
+) -> Result<std::path::PathBuf> {
+    let file_name = zip_path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let stem = world_file_stem(&file_name);
+    let staging = saves.join(format!(".install-{stem}"));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).ok();
+    }
+    let outcome = (|| -> Result<std::path::PathBuf> {
+        extract_world_archive(zip_path, &staging)?;
+        let source = find_world_root(&staging)?;
+        let base = if source == staging {
+            stem.clone()
+        } else {
+            source
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_else(|| stem.clone())
+        };
+        let name = unique_world_name(saves, &clean_world_name(&base, &stem));
+        let dest = saves.join(&name);
+        std::fs::rename(&source, &dest)
+            .with_context(|| format!("无法把地图移动到 {}", dest.display()))?;
+        Ok(dest)
+    })();
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).ok();
+    }
+    outcome
 }
 
 fn world_file_stem(file_name: &str) -> String {

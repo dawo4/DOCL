@@ -9,6 +9,7 @@ import {
   pauseJob,
   resumeAllJobs,
   resumeJob,
+  retryContentDeps,
   retryFailedDownloads,
   retryJob,
   store,
@@ -58,6 +59,8 @@ function percentOf(job: DownloadJob) {
   if (job.status === "done") return 100;
   const p = job.progress;
   if (!p) return 0;
+  // 总进度由后端跨阶段累加；阶段内的字节/文件比例只用于步骤行
+  if (p.overall > 0) return Math.min(100, p.overall);
   if (p.bytes_total > 0) return Math.min(100, (p.bytes_done / p.bytes_total) * 100);
   if (p.files_total > 0) return Math.min(100, (p.files_done / p.files_total) * 100);
   return job.status === "partial" ? 100 : 0;
@@ -171,7 +174,14 @@ function sizeOf(job: DownloadJob) {
           </span>
           <div class="task-card__end">
             <button
-              v-if="job.status === 'partial'"
+              v-if="job.status === 'partial' && job.retryKind === 'deps'"
+              class="task-card__act"
+              @click="retryContentDeps(job)"
+            >
+              重试补前置
+            </button>
+            <button
+              v-else-if="job.status === 'partial'"
               class="task-card__act"
               @click="retryFailedDownloads(job.id)"
             >

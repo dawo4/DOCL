@@ -84,6 +84,15 @@ pub struct Config {
     pub fullscreen: bool,
     /// auto / official / mirror
     pub download_source: String,
+    /// 分来源偏好（留空表示跟随 download_source）：auto / official / mirror / cernet
+    #[serde(default)]
+    pub source_metadata: String,
+    #[serde(default)]
+    pub source_files: String,
+    #[serde(default)]
+    pub source_modrinth: String,
+    #[serde(default)]
+    pub source_curseforge: String,
     pub concurrency: u32,
     /// 全局下载限速（MiB/s），0 表示不限速
     pub speed_limit: u32,
@@ -173,6 +182,10 @@ impl Default for Config {
             window_height: 720,
             fullscreen: false,
             download_source: "auto".into(),
+            source_metadata: String::new(),
+            source_files: String::new(),
+            source_modrinth: String::new(),
+            source_curseforge: String::new(),
             // 32 是安装资源（几千个小文件）与日常下载的平衡点；
             // 全局并发闸门直接按这个值封顶
             concurrency: 32,
@@ -334,6 +347,8 @@ pub fn load() -> Config {
 }
 
 pub fn save(cfg: &Config) -> Result<()> {
+    // 下载偏好随配置一起生效，任何保存路径都不会漏掉
+    crate::sources::apply(cfg);
     // 锚点永远以当前 exe 位置为准，避免把别处的路径带进配置文件
     let mut snapshot = cfg.clone();
     snapshot.portable_root = portable_anchor();

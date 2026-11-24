@@ -1,9 +1,25 @@
 use crate::curseforge::{CfFileView, CfProject, CfSearchResult};
 use crate::download;
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 
 const BASE: &str = "https://api.modrinth.com/v2";
+
+/// 按设置里的 Modrinth 偏好依次尝试官方 / MCIM 镜像。
+async fn get_api<T: serde::de::DeserializeOwned>(
+    client: &reqwest::Client,
+    path: &str,
+) -> Result<T> {
+    let mut last_error: Option<anyhow::Error> = None;
+    for base in crate::sources::modrinth_api_bases() {
+        let url = format!("{base}{path}");
+        match download::get_json::<T>(client, &url, false).await {
+            Ok(value) => return Ok(value),
+            Err(err) => last_error = Some(err),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("Modrinth 接口不可用")))
+}
 
 #[derive(Debug, Clone, Deserialize)]
 struct MrSearchResponse {
@@ -119,7 +135,12 @@ struct MrTag {
 /// 拉取 Modrinth 某资源类型下的分类标签，供类型筛选下拉使用。
 pub async fn categories(client: &reqwest::Client, kind: &str) -> Result<Vec<String>> {
     let url = reqwest::Url::parse(&format!("{BASE}/tag/category"))?;
-    let tags: Vec<MrTag> = download::get_json(client, url.as_str(), false).await?;
+    let path = url
+        .as_str()
+        .strip_prefix(BASE)
+        .unwrap_or("/")
+        .to_string();
+    let tags: Vec<MrTag> = get_api(client, &path).await?;
     let target = project_type(kind)?;
     let mut names: Vec<String> = tags
         .into_iter()
@@ -169,7 +190,12 @@ pub async fn search(
             .append_pair("facets", &format!("[{}]", facets.join(",")));
     }
 
-    let response: MrSearchResponse = download::get_json(client, url.as_str(), false).await?;
+    let path = url
+        .as_str()
+        .strip_prefix(BASE)
+        .unwrap_or("/")
+        .to_string();
+    let response: MrSearchResponse = get_api(client, &path).await?;
     let items = response
         .hits
         .into_iter()
@@ -225,7 +251,12 @@ pub async fn files(
         }
     }
 
-    let versions: Vec<MrVersion> = download::get_json(client, url.as_str(), false).await?;
+    let path = url
+        .as_str()
+        .strip_prefix(BASE)
+        .unwrap_or("/")
+        .to_string();
+    let versions: Vec<MrVersion> = get_api(client, &path).await?;
     let mut files = Vec::new();
     for version in versions {
         let file = version
@@ -304,7 +335,12 @@ pub async fn projects(client: &reqwest::Client, ids: &[String]) -> Result<Vec<Cf
     let encoded = serde_json::to_string(&list)?;
     let mut url = reqwest::Url::parse(&format!("{BASE}/projects"))?;
     url.query_pairs_mut().append_pair("ids", &encoded);
-    let projects: Vec<MrProjectDetail> = download::get_json(client, url.as_str(), false).await?;
+    let path = url
+        .as_str()
+        .strip_prefix(BASE)
+        .unwrap_or("/")
+        .to_string();
+    let projects: Vec<MrProjectDetail> = get_api(client, &path).await?;
     Ok(projects
         .into_iter()
         .map(|project| {

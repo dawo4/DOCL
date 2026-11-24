@@ -12,6 +12,26 @@ use tauri::AppHandle;
 use zip::ZipArchive;
 
 const BASE: &str = "https://api.modrinth.com/v2";
+
+/// 依次尝试官方 / MCIM 镜像的 Modrinth 接口。
+/// 前置解析只发一两次请求，接口偶发超时或 429 会让整个前置被误判成「不存在」。
+async fn mr_json<T: serde::de::DeserializeOwned>(
+    client: &reqwest::Client,
+    url: &str,
+) -> anyhow::Result<T> {
+    let mut last_error: Option<anyhow::Error> = None;
+    for base in crate::sources::modrinth_api_bases() {
+        let candidate = match url.strip_prefix(BASE) {
+            Some(rest) => format!("{base}{rest}"),
+            None => url.to_string(),
+        };
+        match download::get_json::<T>(client, &candidate, false).await {
+            Ok(value) => return Ok(value),
+            Err(err) => last_error = Some(err),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Modrinth 接口不可用")))
+}
 /// 一次最多自动补几个前置，避免模组写错依赖时无限拉取
 const MAX_AUTO_DEPS: usize = 8;
 
@@ -498,9 +518,7 @@ async fn resolve(
     game_version: &str,
 ) -> Option<Resolved> {
     let url = version_query(project_slug(id), loader, game_version)?;
-    let versions: Vec<MrVersion> = download::get_json(client, url.as_str(), false)
-        .await
-        .ok()?;
+    let versions: Vec<MrVersion> = mr_json(client, url.as_str()).await.ok()?;
     let version = versions.first()?;
     let mut item = resolved_from(version)?;
     item.name = if version.version_number.is_empty() {
@@ -521,14 +539,12 @@ async fn resolve_dependency(
 ) -> Option<Resolved> {
     if let Some(id) = version_id.filter(|value| !value.is_empty()) {
         let url = format!("{BASE}/version/{id}");
-        let version: MrVersion = download::get_json(client, &url, false).await.ok()?;
+        let version: MrVersion = mr_json(client, &url).await.ok()?;
         return resolved_from(&version);
     }
     let project = project.filter(|value| !value.is_empty())?;
     let url = version_query(project, loader, game_version)?;
-    let versions: Vec<MrVersion> = download::get_json(client, url.as_str(), false)
-        .await
-        .ok()?;
+    let versions: Vec<MrVersion> = mr_json(client, url.as_str()).await.ok()?;
     resolved_from(versions.first()?)
 }
 
@@ -542,7 +558,7 @@ async fn official_dependencies(
 ) -> Vec<MrDep> {
     if let Some(hash) = sha1_of(jar) {
         let url = format!("{BASE}/version_file/{hash}");
-        if let Ok(version) = download::get_json::<MrVersion>(client, &url, false).await {
+        if let Ok(version) = mr_json::<MrVersion>(client, &url).await {
             // 命中就以官方列表为准：即使没有 required，也说明这版确实不需要额外前置
             return version.dependencies;
         }
@@ -553,8 +569,7 @@ async fn official_dependencies(
     let Some(url) = version_query(&slug, loader, game_version) else {
         return Vec::new();
     };
-    let Ok(versions) = download::get_json::<Vec<MrVersion>>(client, url.as_str(), false).await
-    else {
+    let Ok(versions) = mr_json::<Vec<MrVersion>>(client, url.as_str()).await else {
         return Vec::new();
     };
     versions

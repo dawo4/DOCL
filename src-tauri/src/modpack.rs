@@ -457,6 +457,163 @@ fn download_file_name(file: &curseforge::FileDownload) -> String {
         .to_string()
 }
 
+/// CurseForge 项目大类 → 实例子目录。
+/// 整合包清单里的光影、资源包、数据包必须分开放：全塞进 mods 不但不会生效，
+/// 还会让光影列表里看不到（个别整合包就是这样把光影下进 mods 的）。
+const CLASS_MOD: i64 = 6;
+const CLASS_RESOURCEPACK: i64 = 12;
+const CLASS_WORLD: i64 = 17;
+const CLASS_SHADER: i64 = 6552;
+const CLASS_DATAPACK: i64 = 6945;
+
+fn pack_subdir(class_id: Option<i64>, file_name: &str, modules: &[String]) -> &'static str {
+    match class_id {
+        Some(CLASS_SHADER) => "shaderpacks",
+        Some(CLASS_RESOURCEPACK) => "resourcepacks",
+        Some(CLASS_DATAPACK) => "datapacks",
+        // 地图是 zip，落进 saves 后由收尾阶段解压成存档文件夹
+        Some(CLASS_WORLD) => "saves",
+        Some(CLASS_MOD) => "mods",
+        _ => infer_subdir(file_name, modules),
+    }
+}
+
+/// 项目大类缺失时的兜底：和 PCL 一样看压缩包内容。
+/// 数据包与资源包都有 pack.mcmeta，用是否含 data/ 区分。
+fn infer_subdir(file_name: &str, modules: &[String]) -> &'static str {
+    if modules.is_empty() {
+        // 拿不到内容清单时按 Mod 处理，与 PCL 的 #1006 兜底一致
+        return "mods";
+    }
+    let has = |name: &str| modules.iter().any(|item| item.eq_ignore_ascii_case(name));
+    if file_name.to_ascii_lowercase().ends_with(".jar")
+        || has("META-INF")
+        || has("mcmod.info")
+        || has("fabric.mod.json")
+    {
+        return "mods";
+    }
+    if has("shaders") {
+        return "shaderpacks";
+    }
+    if has("pack.mcmeta") {
+        return if has("data") { "datapacks" } else { "resourcepacks" };
+    }
+    "saves"
+}
+
+/// 整合包收尾：解压 saves 里的地图 zip，并把数据包放到真正会被加载的位置。
+/// 原版只从 world/datapacks 读取数据包；装了 Open Loader / Paxi 时改放它们的全局目录。
+fn sync_content_dirs(root: &std::path::Path) -> Result<()> {
+    let saves = root.join("saves");
+    // 1) 地图：清单里下载的是 zip，解压成存档文件夹。
+    // zip 必须保留：更新时 plan_update 按「文件是否存在」判断，删掉会导致每次更新都重下。
+    // 用隐藏标记记录已解压过，避免重复同步时生成「世界 (2)」这样的副本。
+    if saves.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&saves) {
+            let zips: Vec<std::path::PathBuf> = entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.is_file()
+                        && path
+                            .extension()
+                            .map(|ext| ext.eq_ignore_ascii_case("zip"))
+                            .unwrap_or(false)
+                })
+                .collect();
+            let marks = saves.join(".docl-map-marks");
+            for zip in zips {
+                let Some(name) = zip.file_name().map(|value| value.to_string_lossy().to_string())
+                else {
+                    continue;
+                };
+                let marker = marks.join(format!("{name}.done"));
+                if marker.is_file() {
+                    continue;
+                }
+                if crate::curseforge::install_world_zip(&zip, &saves).is_ok() {
+                    let _ = std::fs::create_dir_all(&marks);
+                    let _ = std::fs::write(&marker, b"");
+                }
+            }
+        }
+    }
+
+    // 2) 数据包：实例根目录只是暂存位置，真正生效要放进存档或全局加载器目录
+    let datapacks = root.join("datapacks");
+    let Ok(entries) = std::fs::read_dir(&datapacks) else {
+        return Ok(());
+    };
+    let files: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect();
+    if files.is_empty() {
+        return Ok(());
+    }
+
+    // 2a) 装了 Open Loader / Paxi 时写它们的全局目录：所有存档（含以后新建的）都会加载。
+    // 此时不再往每个存档各复制一份，避免同一数据包被加载两次。
+    if let Some(global) = global_datapack_dir(root) {
+        copy_datapacks(&files, &global)?;
+        return Ok(());
+    }
+
+    // 2b) 没有全局加载器：复制进每个已有存档，没有存档时保留在实例根目录
+    if !saves.is_dir() {
+        return Ok(());
+    }
+    let Ok(worlds) = std::fs::read_dir(&saves) else {
+        return Ok(());
+    };
+    for world in worlds.flatten() {
+        let path = world.path();
+        if !path.is_dir() || !path.join("level.dat").is_file() {
+            continue;
+        }
+        copy_datapacks(&files, &path.join("datapacks"))?;
+    }
+    Ok(())
+}
+
+/// 实例里装了全局数据包加载器时，返回它扫描的目录。
+/// Open Loader 与 Paxi 是 CurseForge 推荐的两个，只认优先级最高的一个，避免重复加载。
+fn global_datapack_dir(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mods = root.join("mods");
+    let mut names: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&mods) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if name.ends_with(".jar") {
+                names.push(name);
+            }
+        }
+    }
+    let has = |needle: &str| names.iter().any(|name| name.contains(needle));
+    if has("openloader") {
+        // 默认目录，可在 config/openloader/advanced_options.json 里改；改过的用户需要手动同步
+        return Some(root.join("config").join("openloader").join("data"));
+    }
+    if has("paxi") {
+        return Some(root.join("config").join("paxi").join("datapacks"));
+    }
+    None
+}
+
+fn copy_datapacks(files: &[std::path::PathBuf], target: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(target)?;
+    for file in files {
+        let Some(name) = file.file_name() else {
+            continue;
+        };
+        // 同名覆盖，兼容更新后换了数据包版本；单个失败不影响其它文件
+        let _ = std::fs::copy(file, target.join(name));
+    }
+    Ok(())
+}
+
 /// 把新版整合包解析成统一的更新文件清单：
 /// Modrinth 清单自带路径与直链，CurseForge 需要联网把 projectID/fileID 换成文件名与直链。
 async fn resolve_update_source(
@@ -487,6 +644,7 @@ async fn resolve_update_source(
             files,
         } => {
             let prefer_mirror = cfg.use_mirror();
+            let project_ids: Vec<i64> = files.iter().map(|(id, _, _)| *id).collect();
             let specs = files.clone();
             let mut stream = stream::iter(specs.into_iter().map(|(project_id, file_id, required)| {
                 let client = client.clone();
@@ -497,20 +655,34 @@ async fn resolve_update_source(
                 }
             }))
             .buffer_unordered(8);
-            let mut resolved: Vec<UpdateFile> = Vec::new();
+            let mut raw: Vec<(i64, bool, curseforge::FileDownload)> = Vec::new();
             let mut warnings = Vec::new();
             while let Some((project_id, file_id, required, outcome)) = stream.next().await {
                 match outcome {
-                    Ok(file) => resolved.push((
-                        format!("mods/{}", download_file_name(&file)),
-                        file.url,
-                        file.sha1,
-                        file.size,
-                        !required,
-                    )),
+                    Ok(file) => raw.push((project_id, required, file)),
                     Err(err) => warnings
                         .push(format!("无法获取 CurseForge 文件 {project_id}/{file_id}：{err}")),
                 }
+            }
+            // 光影、资源包按项目大类放进对应目录，不能一律塞 mods
+            let class_ids =
+                curseforge::project_class_ids(client, &project_ids, prefer_mirror).await;
+            let mut resolved: Vec<UpdateFile> = Vec::new();
+            for (project_id, required, file) in raw {
+                let class_id = match class_ids.get(&project_id).copied() {
+                    Some(id) => Some(id),
+                    // 批量接口缺项时才逐个查，且只查非 jar 文件（Mod 一定是 jar）
+                    None if !file.name.to_lowercase().ends_with(".jar") => {
+                        curseforge::project_class_id(client, project_id, prefer_mirror).await
+                    }
+                    None => None,
+                };
+                let path = format!(
+                    "{}/{}",
+                    pack_subdir(class_id, &file.name, &file.modules),
+                    download_file_name(&file)
+                );
+                resolved.push((path, file.url, file.sha1, file.size, !required));
             }
             if resolved.is_empty() && !warnings.is_empty() {
                 bail!("{}", warnings.remove(0));
@@ -732,6 +904,14 @@ pub async fn update_apply(
         if std::fs::remove_file(&dest).is_ok() {
             removed += 1;
         }
+    }
+
+    // 与导入一致：地图 zip 解压成存档，数据包同步进每个已有存档
+    let root_for_sync = root.clone();
+    match tokio::task::spawn_blocking(move || sync_content_dirs(&root_for_sync)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => warnings.push(format!("整理存档内容失败：{err}")),
+        Err(err) => warnings.push(format!("整理存档内容失败：{err}")),
     }
 
     // 记录本次清单，下次更新时用来判断「已移除的文件」；
@@ -2420,6 +2600,7 @@ pub async fn import(
                 .filter(|(_, _, required)| *required || options.install_optional)
                 .collect();
             let total_specs = specs.len();
+            let project_ids: Vec<i64> = specs.iter().map(|(id, _, _)| *id).collect();
             download::begin_stage(
                 app,
                 &progress,
@@ -2478,18 +2659,35 @@ pub async fn import(
                 }
             }
 
+            // 光影、资源包按项目大类放进对应目录：清单只给 projectID，
+            // 一律塞 mods 会导致光影不生效、资源包列表里也看不到
+            let class_ids = curseforge::project_class_ids(client, &project_ids, prefer_mirror).await;
             let root = instance::game_dir(cfg, &instance_id);
-            let mods_dir = root.join("mods");
-            std::fs::create_dir_all(&mods_dir)?;
             let mut pack_paths: Vec<String> = Vec::new();
             for result in results {
                 match result {
                     Ok(Some(file)) => {
+                        let class_id = match class_ids.get(&file.project_id).copied() {
+                            Some(id) => Some(id),
+                            // 批量接口缺项时才逐个查，且只查非 jar 文件（Mod 一定是 jar）
+                            None if !file.name.to_lowercase().ends_with(".jar") => {
+                                curseforge::project_class_id(
+                                    client,
+                                    file.project_id,
+                                    prefer_mirror,
+                                )
+                                .await
+                            }
+                            None => None,
+                        };
+                        let sub = pack_subdir(class_id, &file.name, &file.modules);
+                        let dir = root.join(sub);
+                        std::fs::create_dir_all(&dir)?;
                         // 与更新路径保持一致：文件名为空时用下载直链里的文件名
                         let file_name = download_file_name(&file);
-                        pack_paths.push(format!("mods/{file_name}"));
+                        pack_paths.push(format!("{sub}/{file_name}"));
                         tasks.push(FileTask {
-                            dest: mods_dir.join(file_name),
+                            dest: dir.join(file_name),
                             url: file.url,
                             sha1: file.sha1,
                             size: file.size,
@@ -2745,6 +2943,16 @@ pub async fn import(
         }
     };
 
+    // 收尾：解压清单里的地图 zip，并把数据包复制进已有存档
+    let instance_root = instance::game_dir(cfg, &instance_id);
+    let root_for_sync = instance_root.clone();
+    match tokio::task::spawn_blocking(move || sync_content_dirs(&root_for_sync)).await {
+        Ok(Ok(())) => {}
+        // 解压大存档可能很慢，放到阻塞线程池，避免卡住界面
+        Ok(Err(error)) => failed.push(format!("整理存档内容失败：{error}")),
+        Err(error) => failed.push(format!("整理存档内容失败：{error}")),
+    }
+
     // 导入完成后做 PCL 式自包含：合并 json + jar 进实例，清掉独占的父版本目录。
     // generic 的父版本可能是用户自己的实例，不清理。失败时保留 inheritsFrom 架构兜底。
     let remove_parents = !matches!(parsed.source, SourceData::Generic { .. });
@@ -2767,11 +2975,125 @@ pub async fn import(
 #[cfg(test)]
 mod tests {
     use super::{
-        broken_jars, mrpack_candidate, old_pack_manifest, plan_update, sha1_file, write_pack_record,
-        UpdateFile,
+        broken_jars, global_datapack_dir, infer_subdir, mrpack_candidate, old_pack_manifest,
+        pack_subdir, plan_update, sha1_file, sync_content_dirs, write_pack_record, UpdateFile,
     };
     use std::io::Write;
     use std::path::PathBuf;
+
+    /// CurseForge 清单只有 projectID，光影/资源包/数据包/地图要落到对应目录
+    #[test]
+    fn curse_class_ids_map_to_instance_dirs() {
+        let none: Vec<String> = Vec::new();
+        assert_eq!(pack_subdir(Some(6), "a.jar", &none), "mods");
+        assert_eq!(pack_subdir(Some(12), "a.zip", &none), "resourcepacks");
+        assert_eq!(pack_subdir(Some(6552), "a.zip", &none), "shaderpacks");
+        assert_eq!(pack_subdir(Some(6945), "a.zip", &none), "datapacks");
+        // 地图是 zip，收尾阶段会解压成存档文件夹
+        assert_eq!(pack_subdir(Some(17), "map.zip", &none), "saves");
+        // 未知类别走内容判断，拿不到清单时按 Mod 兜底
+        assert_eq!(pack_subdir(Some(9999), "a.jar", &none), "mods");
+    }
+
+    /// 数据包与资源包都带 pack.mcmeta，靠 data/ 区分（PCL 只看 pack.mcmeta，会误判成资源包）
+    #[test]
+    fn infers_subdir_from_archive_modules() {
+        let datapack = vec![
+            "pack.mcmeta".to_string(),
+            "assets".to_string(),
+            "data".to_string(),
+        ];
+        assert_eq!(infer_subdir("pack.zip", &datapack), "datapacks");
+
+        let resourcepack = vec!["pack.mcmeta".to_string(), "assets".to_string()];
+        assert_eq!(infer_subdir("pack.zip", &resourcepack), "resourcepacks");
+
+        let shader = vec!["shaders".to_string(), "pack.mcmeta".to_string()];
+        assert_eq!(infer_subdir("shader.zip", &shader), "shaderpacks");
+
+        let map = vec!["level.dat".to_string(), "region".to_string()];
+        assert_eq!(infer_subdir("world.zip", &map), "saves");
+
+        let jar = vec!["META-INF".to_string(), "mezz".to_string()];
+        assert_eq!(infer_subdir("jei.jar", &jar), "mods");
+    }
+
+    /// 收尾：数据包复制进每个已有存档，没有存档时保留在实例根目录
+    #[test]
+    fn copies_datapacks_into_existing_worlds() {
+        let root = temp_dir("datapack");
+        std::fs::create_dir_all(root.join("datapacks")).unwrap();
+        std::fs::write(root.join("datapacks").join("pack.zip"), b"dp").unwrap();
+
+        // 没有存档：不创建任何目录
+        sync_content_dirs(&root).unwrap();
+        assert!(!root.join("saves").exists());
+
+        let world = root.join("saves").join("world");
+        std::fs::create_dir_all(&world).unwrap();
+        std::fs::write(world.join("level.dat"), b"level").unwrap();
+        sync_content_dirs(&root).unwrap();
+        assert!(world.join("datapacks").join("pack.zip").is_file());
+
+        // 源码仍保留在实例根目录，便于之后新建存档时再复制
+        assert!(root.join("datapacks").join("pack.zip").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 地图 zip 只解压一次：原包要保留（否则每次更新都会重下），重复同步不能生成副本
+    #[test]
+    fn extracts_map_zip_once_and_keeps_archive() {
+        let root = temp_dir("map-sync");
+        let saves = root.join("saves");
+        std::fs::create_dir_all(&saves).unwrap();
+        let archive = saves.join("Adventure.zip");
+        let file = std::fs::File::create(&archive).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file("Adventure/level.dat", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"level").unwrap();
+        zip.finish().unwrap();
+
+        sync_content_dirs(&root).unwrap();
+        assert!(saves.join("Adventure").join("level.dat").is_file());
+        assert!(archive.is_file(), "地图 zip 不能删，否则更新会重复下载");
+
+        sync_content_dirs(&root).unwrap();
+        assert!(!saves.join("Adventure (2)").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 装了 Open Loader / Paxi 时写它们的全局目录，不再逐个存档复制，避免重复加载
+    #[test]
+    fn uses_global_loader_dir_when_present() {
+        let root = temp_dir("global-dp");
+        std::fs::create_dir_all(root.join("mods")).unwrap();
+        std::fs::create_dir_all(root.join("datapacks")).unwrap();
+        std::fs::write(root.join("datapacks").join("pack.zip"), b"dp").unwrap();
+        let world = root.join("saves").join("world");
+        std::fs::create_dir_all(&world).unwrap();
+        std::fs::write(world.join("level.dat"), b"level").unwrap();
+
+        // Open Loader 优先
+        let openloader = root.join("mods").join("openloader-1.20.1-1.1.1.jar");
+        std::fs::write(&openloader, b"jar").unwrap();
+        sync_content_dirs(&root).unwrap();
+        assert!(root.join("config").join("openloader").join("data").join("pack.zip").is_file());
+        assert!(!world.join("datapacks").join("pack.zip").exists());
+
+        // 去掉 Open Loader、换成 Paxi
+        std::fs::remove_file(&openloader).unwrap();
+        std::fs::write(
+            root.join("mods").join("Paxi-1.20.1-Forge-4.0.jar"),
+            b"jar",
+        )
+        .unwrap();
+        sync_content_dirs(&root).unwrap();
+        let paxi = root.join("config").join("paxi").join("datapacks");
+        assert!(paxi.join("pack.zip").is_file());
+        assert_eq!(global_datapack_dir(&root), Some(paxi));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn temp_dir(label: &str) -> PathBuf {
         let stamp = std::time::SystemTime::now()

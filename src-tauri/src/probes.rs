@@ -40,13 +40,19 @@ const SOURCES: &[(&str, &str, &str, &str)] = &[
         "forge_maven",
         "Forge Maven 官方",
         "mojang",
-        "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml",
+        "https://maven.minecraftforge.net/releases/net/minecraftforge/forge/maven-metadata.xml",
     ),
     (
         "bmclapi_maven",
         "BMCLAPI Maven",
         "mojang",
         "https://bmclapi2.bangbang93.com/maven/net/minecraftforge/forge/maven-metadata.xml",
+    ),
+    (
+        "cernet_maven",
+        "CERNET 镜像",
+        "mojang",
+        "https://mirrors.cernet.edu.cn/bmclapi/net/minecraftforge/forge/maven-metadata.xml",
     ),
     (
         "mcim_curseforge",
@@ -85,8 +91,10 @@ async fn probe_one(client: &reqwest::Client, source: &(&str, &str, &str, &str)) 
     let started = Instant::now();
     let result = client
         .get(url)
-        // 只取头部一小段，测的是「能否连上 + 首包延迟」，不浪费流量
+        // 只取头部一小段，测的是「能否连上 + 首包延迟」，不浪费流量。
+        // 必须要求明文：压缩响应叠加 Range 会拿到半截 gzip，误报「读取响应失败」
         .header(reqwest::header::RANGE, "bytes=0-65535")
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
         .timeout(Duration::from_secs(15))
         .send()
         .await;

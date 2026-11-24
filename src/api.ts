@@ -189,6 +189,11 @@ export interface Config {
   window_height: number;
   fullscreen: boolean;
   download_source: string;
+  /// 分来源偏好：留空表示跟随 download_source
+  source_metadata: string;
+  source_files: string;
+  source_modrinth: string;
+  source_curseforge: string;
   concurrency: number;
   /// 全局下载限速（MiB/s），0 表示不限速
   speed_limit: number;
@@ -1147,6 +1152,8 @@ export interface ProgressSnapshot {
   bytes_done: number;
   bytes_total: number;
   elapsed_ms: number;
+  /// 整个任务的总进度（0-100），跨阶段累加，不会每步归零
+  overall: number;
   active: boolean;
   paused: boolean;
 }
@@ -1415,6 +1422,9 @@ export const api = {
     invoke<{ url: string; file_name: string }>("cf_file_link", { projectId, fileId }),
   cfInstallFile: (versionId: string, kind: string, url: string, fileName: string, jobId?: string) =>
     invoke<InstallOutcome>("cf_install_file", { versionId, kind, url, fileName, jobId }),
+  /// 重新检查并补齐某个已装模组的前置
+  retryContentDeps: (instanceId: string, path: string, jobId?: string) =>
+    invoke<DependencyReport>("retry_content_deps", { instanceId, path, jobId }),
   cfInstallWorld: (versionId: string, url: string, fileName: string, jobId?: string) =>
     invoke<string>("cf_install_world", { versionId, url, fileName, jobId }),
   contentProjects: (source: string, ids: string[]) =>

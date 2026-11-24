@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -69,6 +69,10 @@ const form = reactive<Config>({
   window_height: 720,
   fullscreen: false,
   download_source: "auto",
+  source_metadata: "auto",
+  source_files: "auto",
+  source_modrinth: "auto",
+  source_curseforge: "auto",
   concurrency: 16,
   speed_limit: 0,
   animations: true,
@@ -107,6 +111,7 @@ watch(
     if (!config) return;
     syncing = true;
     Object.assign(form, config);
+    normalizeSources(form);
     await nextTick();
     syncing = false;
   },
@@ -150,6 +155,10 @@ const autoSaveKeys: (keyof Config)[] = [
   "window_height",
   "fullscreen",
   "download_source",
+  "source_metadata",
+  "source_files",
+  "source_modrinth",
+  "source_curseforge",
   "concurrency",
   "speed_limit",
   "version_isolation",
@@ -652,10 +661,30 @@ const bgPreviewStyle = computed(() => {
 });
 
 const sourceOptions = [
-  { value: "auto", label: "自动（按来源智能选择）" },
-  { value: "mirror", label: "仅加速镜像" },
-  { value: "official", label: "仅官方源" },
+  { value: "auto", label: "自动（推荐）" },
+  { value: "official", label: "官方优先" },
+  { value: "mirror", label: "镜像优先" },
 ];
+
+/// 文件/加载器多一个 CERNET 静态镜像选项
+const fileSourceOptions = [
+  ...sourceOptions,
+  { value: "cernet", label: "CERNET 优先" },
+];
+
+/// 老配置没有分来源字段时，用旧的全局选项补齐，下拉框才能显示当前真实行为
+function normalizeSources(config: Config) {
+  const legacy = config.download_source || "auto";
+  const keys = [
+    "source_metadata",
+    "source_files",
+    "source_modrinth",
+    "source_curseforge",
+  ] as const;
+  for (const key of keys) {
+    if (!config[key]) config[key] = legacy;
+  }
+}
 
 /* ---------- 下载源测速 ---------- */
 const probes = ref<SourceProbe[]>([]);
@@ -947,6 +976,7 @@ async function adoptConfig(config: Config) {
   syncing = true;
   store.config = config;
   Object.assign(form, config);
+  normalizeSources(form);
   await nextTick();
   syncing = false;
   activeDir.value = config.game_dir;
@@ -2067,11 +2097,38 @@ async function removeJava(path: string, source: string) {
 
       <div class="setting">
         <div class="setting__label">
-          <strong>下载源</strong>
-          <span>自动模式按来源选择：Modrinth 走镜像，其余优先官方；失败会自动回退</span>
+          <strong>Minecraft 元数据</strong>
+          <span>版本清单与版本 JSON；国内镜像走 BMCLAPI</span>
         </div>
         <div class="setting__control">
-          <WoodSelect v-model="form.download_source" :options="sourceOptions" />
+          <WoodSelect v-model="form.source_metadata" :options="sourceOptions" />
+        </div>
+      </div>
+      <div class="setting">
+        <div class="setting__label">
+          <strong>Minecraft 文件、加载器与 Java</strong>
+          <span>游戏库、资源、加载器安装器与 Java 运行时；可选 CERNET 教育网镜像</span>
+        </div>
+        <div class="setting__control">
+          <WoodSelect v-model="form.source_files" :options="fileSourceOptions" />
+        </div>
+      </div>
+      <div class="setting">
+        <div class="setting__label">
+          <strong>Modrinth</strong>
+          <span>搜索、项目与版本查询，以及文件下载；镜像走 MCIM</span>
+        </div>
+        <div class="setting__control">
+          <WoodSelect v-model="form.source_modrinth" :options="sourceOptions" />
+        </div>
+      </div>
+      <div class="setting">
+        <div class="setting__label">
+          <strong>CurseForge</strong>
+          <span>搜索、项目与文件查询，以及文件下载；镜像走 MCIM</span>
+        </div>
+        <div class="setting__control">
+          <WoodSelect v-model="form.source_curseforge" :options="sourceOptions" />
         </div>
       </div>
       <div class="setting">

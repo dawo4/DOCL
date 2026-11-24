@@ -1,6 +1,6 @@
 {
-  "version": "1.7.3",
-  "url": "https://github.com/dawo4/DOCL/releases/download/v1.7.3/DOCL_1.7.3_x64-setup.exe",
-  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.7.3/DOCL_1.7.3_portable.zip",
-  "notes": "资源下载页新增「我的收藏」：Mod、整合包、资源包、光影包、数据包和地图都能一键星标收藏，收藏列表支持按类型筛选，点开可直接回到对应资源详情。第三方账号（LittleSkin 等）支持多角色：登录时自动列出角色供选择，账号页可随时切换，不再只识别第一个角色。修复手动添加 Java 时新条目会顶掉旧条目——现在多次添加都会保留，并可在列表里单独移除。便携版路径可迁移：整个文件夹压缩发给别人或换盘、改名后，游戏目录、Java 路径、背景图和角色皮肤会自动按新位置纠正，默认 .minecraft 始终落在 exe 旁边，解压即用。新增「低内存模式」：降低 WebView2 缓存与 JS 堆上限并关闭毛玻璃/动效；默认模式也限制了 JS 堆上限。内存占用优化：版本内容列表分页渲染、屏幕外条目跳过绘制、窗口隐藏时暂停轮询、缩略图只加载当前可见项。界面细节：提示气泡改为跟随主题配色，版本库与版本实例页按钮样式统一，多处「留空」文案改为「默认跟随全局」。"
+  "version": "1.7.4",
+  "url": "https://github.com/dawo4/DOCL/releases/download/v1.7.4/DOCL_1.7.4_x64-setup.exe",
+  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.7.4/DOCL_1.7.4_portable.zip",
+  "notes": "修复部分用户加载器安装一直失败：安装器下载新增 CERNET 教育网镜像，并与 BMCLAPI 新旧入口、官方源组成多轮换源重试；Forge 官方地址改用 releases 规范路径，失败时会按源列出原因，不再只剩一条地址。设置页新增分来源下载源：Minecraft 元数据、游戏文件与加载器及 Java、Modrinth、CurseForge 可分别选择自动 / 官方优先 / 镜像优先，文件类还支持 CERNET 优先，官方源始终保留兜底。修复 CurseForge 整合包把光影、资源包塞进 mods 的问题：按项目大类分流到 shaderpacks、resourcepacks、datapacks，地图则自动解压成存档；项目信息缺失时按压缩包内容判断。整合包里的数据包会复制进已有存档，装了 Open Loader 或 Paxi 时写入它们的全局目录，之后新建的世界也能生效。修复补前置：查询 Modrinth 时增加 MCIM 镜像回退，缺前置任务提供真正的「重试补前置」，补齐后原任务不再停留在部分完成，没有可补项时会明确提示而不是假装成功。下载面板的总进度改为跨阶段累加，不再每完成一步就从 0 重新开始。其余：Modrinth 接口增加镜像兜底，下载源测速修复误报并新增 CERNET 镜像项。"
 }

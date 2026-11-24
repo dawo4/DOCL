@@ -567,8 +567,8 @@ pub async fn install_version(
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_partial_loader_dir, context_from, failure_message, loader_version_from_id,
-        official_installer_url,
+        alternate_installer_mirror, cernet_installer_mirror, clean_partial_loader_dir,
+        context_from, failure_message, loader_version_from_id, official_installer_url,
     };
     use crate::models::VersionDetail;
 
@@ -658,7 +658,16 @@ mod tests {
                 "https://bmclapi2.bangbang93.com/maven/net/minecraftforge/forge/1.20.1-47.4.28/forge-1.20.1-47.4.28-installer.jar"
             )
             .as_deref(),
-            Some("https://maven.minecraftforge.net/net/minecraftforge/forge/1.20.1-47.4.28/forge-1.20.1-47.4.28-installer.jar")
+            Some("https://maven.minecraftforge.net/releases/net/minecraftforge/forge/1.20.1-47.4.28/forge-1.20.1-47.4.28-installer.jar")
+        );
+        // 旧域名入口也要能还原官方地址
+        assert_eq!(
+            official_installer_url(
+                "forge",
+                "https://bmclapi.bangbang93.com/maven/net/minecraftforge/forge/1.20.1-47.4.28/forge-1.20.1-47.4.28-installer.jar"
+            )
+            .as_deref(),
+            Some("https://maven.minecraftforge.net/releases/net/minecraftforge/forge/1.20.1-47.4.28/forge-1.20.1-47.4.28-installer.jar")
         );
         assert_eq!(
             official_installer_url(
@@ -669,6 +678,44 @@ mod tests {
             Some("https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.259/neoforge-21.1.259-installer.jar")
         );
         assert_eq!(official_installer_url("forge", "https://example.com/x.jar"), None);
+    }
+
+    #[test]
+    fn alternate_installer_mirror_swaps_domains() {
+        assert_eq!(
+            alternate_installer_mirror(
+                "https://bmclapi2.bangbang93.com/maven/net/minecraftforge/forge/x.jar"
+            )
+            .as_deref(),
+            Some("https://bmclapi.bangbang93.com/maven/net/minecraftforge/forge/x.jar")
+        );
+        assert_eq!(
+            alternate_installer_mirror(
+                "https://bmclapi.bangbang93.com/maven/net/minecraftforge/forge/x.jar"
+            )
+            .as_deref(),
+            Some("https://bmclapi2.bangbang93.com/maven/net/minecraftforge/forge/x.jar")
+        );
+        assert!(alternate_installer_mirror("https://example.com/x.jar").is_none());
+    }
+
+    #[test]
+    fn cernet_mirror_maps_installer_url() {
+        assert_eq!(
+            cernet_installer_mirror(
+                "https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/21.1.234/neoforge-21.1.234-installer.jar"
+            )
+            .as_deref(),
+            Some("https://mirrors.cernet.edu.cn/bmclapi/net/neoforged/neoforge/21.1.234/neoforge-21.1.234-installer.jar")
+        );
+        assert_eq!(
+            cernet_installer_mirror(
+                "https://bmclapi.bangbang93.com/maven/net/minecraftforge/forge/1.20.1-47.4.20/forge-1.20.1-47.4.20-installer.jar"
+            )
+            .as_deref(),
+            Some("https://mirrors.cernet.edu.cn/bmclapi/net/minecraftforge/forge/1.20.1-47.4.20/forge-1.20.1-47.4.20-installer.jar")
+        );
+        assert!(cernet_installer_mirror("https://example.com/x.jar").is_none());
     }
 
     #[test]
@@ -1188,7 +1235,10 @@ async fn fetch_maven_metadata(
     official_base: &str,
 ) -> Result<Vec<String>> {
     let mirrors = [
+        // CERNET 静态镜像最稳，其次 BMCLAPI 新旧入口，最后官方源
+        format!("https://mirrors.cernet.edu.cn/bmclapi/{path}"),
         format!("https://bmclapi2.bangbang93.com/maven/{path}"),
+        format!("https://bmclapi.bangbang93.com/maven/{path}"),
         format!("{official_base}{path}"),
     ];
     for url in mirrors {
@@ -1423,7 +1473,7 @@ pub async fn loader_versions(
         let all = fetch_maven_metadata(
             client,
             "net/minecraftforge/forge/maven-metadata.xml",
-            "https://maven.minecraftforge.net/",
+            "https://maven.minecraftforge.net/releases/",
         )
         .await?;
         let prefix = format!("{game_version}-");
@@ -1769,12 +1819,35 @@ fn flush_tail(
 
 /// 安装器下载地址的官方备用源（镜像地址被改写前的原始主机）
 fn official_installer_url(loader: &str, mirror_url: &str) -> Option<String> {
-    let rest = mirror_url.strip_prefix("https://bmclapi2.bangbang93.com/maven/")?;
+    let rest = mirror_url
+        .strip_prefix("https://bmclapi2.bangbang93.com/maven/")
+        .or_else(|| mirror_url.strip_prefix("https://bmclapi.bangbang93.com/maven/"))?;
     Some(if loader == "neoforge" {
         format!("https://maven.neoforged.net/releases/{rest}")
     } else {
-        format!("https://maven.minecraftforge.net/{rest}")
+        // Forge 的规范路径是 /releases/：files.minecraftforge.net 也是 301 到这里，
+        // 根路径的 maven-metadata.xml 在国内经常超时
+        format!("https://maven.minecraftforge.net/releases/{rest}")
     })
+}
+
+/// BMCLAPI 的新旧两个入口，其中一个被网络挡住时换另一个试试。
+fn alternate_installer_mirror(url: &str) -> Option<String> {
+    if let Some(rest) = url.strip_prefix("https://bmclapi2.bangbang93.com/") {
+        return Some(format!("https://bmclapi.bangbang93.com/{rest}"));
+    }
+    let rest = url.strip_prefix("https://bmclapi.bangbang93.com/")?;
+    Some(format!("https://bmclapi2.bangbang93.com/{rest}"))
+}
+
+/// CERNET 的 BMCLAPI 静态镜像：路径把 `/maven/` 换成 `/bmclapi/`。
+/// BMCLAPI 的 302 会随机落到 sakura/hurtmc 等 CDN 节点，国内部分网络连不上；
+/// CERNET 是稳定的教育网镜像，实测 Forge / NeoForge 安装器都能直接下载。
+fn cernet_installer_mirror(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://bmclapi2.bangbang93.com/maven/")
+        .or_else(|| url.strip_prefix("https://bmclapi.bangbang93.com/maven/"))?;
+    Some(format!("https://mirrors.cernet.edu.cn/bmclapi/{rest}"))
 }
 
 /// 确保安装器缓存完整可用：坏包直接删掉重下，镜像失败再走官方源。
@@ -1797,52 +1870,110 @@ async fn ensure_installer(
     let part = PathBuf::from(format!("{}.part", path.display()));
     let _ = tokio::fs::remove_file(&part).await;
 
-    let mut candidates = vec![mirror_url.to_string()];
-    if let Some(official) = official_installer_url(loader, mirror_url) {
-        candidates.push(official);
+    // 国内优先走 CERNET 静态镜像，再接 BMCLAPI 新旧入口，最后回退官方源
+    let mut candidates = Vec::new();
+    if let Some(cernet) = cernet_installer_mirror(mirror_url) {
+        candidates.push(cernet);
     }
+    candidates.push(mirror_url.to_string());
+    if let Some(alternate) = alternate_installer_mirror(mirror_url) {
+        candidates.push(alternate);
+    }
+    if let Some(official) = official_installer_url(loader, mirror_url) {
+        if crate::sources::files_official_first() {
+            candidates.insert(0, official);
+        } else {
+            candidates.push(official);
+        }
+    }
+    candidates.dedup();
 
+    // 每个候选的失败原因都保留：界面直接展示最后一个 URL 会让人误以为是官方源的问题
+    let mut errors: Vec<String> = Vec::new();
     let mut last_err: Option<anyhow::Error> = None;
-    for (index, url) in candidates.iter().enumerate() {
-        progress.files_total.store(1, Ordering::Relaxed);
-        progress.files_done.store(0, Ordering::Relaxed);
-        progress.bytes_done.store(0, Ordering::Relaxed);
-        progress.bytes_total.store(0, Ordering::Relaxed);
-        download::begin_stage(
-            app,
-            progress,
-            if index == 0 {
-                format!("正在下载 {loader} 安装器…")
-            } else {
-                format!("安装器校验失败，改用官方源重下…")
-            },
-        );
+    // 镜像会 302 到轮换的 CDN 节点，同一个地址再试一轮往往能拿到另一个节点
+    const ROUNDS: usize = 2;
+    for round in 0..ROUNDS {
+        for (index, url) in candidates.iter().enumerate() {
+            progress.files_total.store(1, Ordering::Relaxed);
+            progress.files_done.store(0, Ordering::Relaxed);
+            progress.bytes_done.store(0, Ordering::Relaxed);
+            progress.bytes_total.store(0, Ordering::Relaxed);
+            let official = url.contains("minecraftforge.net") || url.contains("neoforged.net");
+            download::begin_stage(
+                app,
+                progress,
+                if round == 0 && index == 0 {
+                    format!("正在下载 {loader} 安装器…")
+                } else if official {
+                    format!("镜像不可用，改用官方源下载 {loader} 安装器…")
+                } else {
+                    format!("安装器下载失败，换源重试第 {} 次…", round + 1)
+                },
+            );
 
-        let mut on_progress = |done: u64, total: u64| {
-            progress.bytes_done.store(done, Ordering::Relaxed);
-            progress.bytes_total.store(total, Ordering::Relaxed);
-            download::emit_now(app, progress);
-        };
-        match download::download_stream(client, std::slice::from_ref(url), &path, &mut on_progress)
+            let mut on_progress = |done: u64, total: u64| {
+                progress.bytes_done.store(done, Ordering::Relaxed);
+                progress.bytes_total.store(total, Ordering::Relaxed);
+                download::emit_now(app, progress);
+            };
+            match download::download_stream(
+                client,
+                std::slice::from_ref(url),
+                &path,
+                &mut on_progress,
+            )
             .await
-        {
-            Ok(()) => {
-                if crate::forge_native::installer_usable(&path) {
-                    progress.files_done.store(1, Ordering::Relaxed);
-                    download::emit_now(app, progress);
-                    return Ok(path);
+            {
+                Ok(()) => {
+                    if crate::forge_native::installer_usable(&path) {
+                        progress.files_done.store(1, Ordering::Relaxed);
+                        download::emit_now(app, progress);
+                        return Ok(path);
+                    }
+                    let _ = tokio::fs::remove_file(&path).await;
+                    let message = format!("{} 返回的安装器包不完整", url_host(url));
+                    errors.push(message.clone());
+                    last_err = Some(anyhow!(message));
                 }
-                let _ = tokio::fs::remove_file(&path).await;
-                last_err = Some(anyhow!("{url} 返回的安装器包不完整"));
-            }
-            Err(err) => {
-                let _ = tokio::fs::remove_file(&path).await;
-                let _ = tokio::fs::remove_file(&part).await;
-                last_err = Some(err.context(format!("下载 {loader} 安装器失败：{url}")));
+                Err(err) => {
+                    let _ = tokio::fs::remove_file(&path).await;
+                    let _ = tokio::fs::remove_file(&part).await;
+                    // 下载错误里可能带着很长的地址，只留一行给界面
+                    let text = err.to_string();
+                    let text: String = text.chars().take(120).collect();
+                    errors.push(format!("{}：{text}", url_host(url)));
+                    last_err = Some(err.context(format!("下载 {loader} 安装器失败：{url}")));
+                }
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| anyhow!("下载 {loader} 安装器失败")))
+    let detail = {
+        // 多轮重试会产生重复候选，按主机去重后最多列 4 条
+        let mut unique: Vec<String> = Vec::new();
+        for item in errors.iter().rev() {
+            if !unique.iter().any(|existing| existing == item) {
+                unique.push(item.clone());
+            }
+            if unique.len() >= 4 {
+                break;
+            }
+        }
+        unique.join("；")
+    };
+    if detail.is_empty() {
+        Err(last_err.unwrap_or_else(|| anyhow!("下载 {loader} 安装器失败")))
+    } else {
+        Err(anyhow!("下载 {loader} 安装器失败：{detail}"))
+    }
+}
+
+/// 取 URL 的主机名，失败原因里只展示这一段，别把整条地址铺满界面。
+fn url_host(url: &str) -> &str {
+    url.split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or(url)
 }
 
 /// 清掉安装器声明版本对应的加载器产物：残缺清单留着会让下一次安装直接复用。

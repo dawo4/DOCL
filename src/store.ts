@@ -55,6 +55,10 @@ export interface DownloadJob {
   finishedAt: number | null;
   /// 去重键：同一版本/同一目标文件同时只允许一个任务
   key?: string;
+  /// 部分完成时的重试方式：downloads=补下失败文件，deps=重新补前置
+  retryKind?: "downloads" | "deps";
+  /// 缺前置任务重试所需的信息
+  retryContext?: { instanceId: string; path: string };
 }
 
 export const store = reactive({
@@ -546,6 +550,7 @@ function primeSnapshot(stage: string, message: string, job: string): ProgressSna
     bytes_done: 0,
     bytes_total: 0,
     elapsed_ms: 0,
+    overall: 0,
     active: true,
     paused: false,
   };
@@ -828,9 +833,13 @@ export function installCfFile(
       if (deps.installed.length) notes.push(`已自动补齐前置 ${deps.installed.join("、")}`);
       if (deps.failed.length) notes.push(`前置下载失败：${deps.failed.join("、")}`);
       notify(`${title} 下载完成${notes.length ? `，${notes.join("；")}` : ""}`);
-      if (deps.unresolved.length) {
+      if (deps.unresolved.length || deps.failed.length) {
         job.partial = true;
-        job.error = `缺少前置：${deps.unresolved.join("、")}。当前实例的版本或加载器下没有找到对应文件，请手动安装。`;
+        job.retryKind = "deps";
+        job.retryContext = { instanceId: versionId, path: result.path };
+        job.error = deps.unresolved.length
+          ? `缺少前置：${deps.unresolved.join("、")}。当前实例的版本或加载器下没有找到对应文件，可以重试补前置或手动安装。`
+          : `前置下载失败：${deps.failed.join("、")}。可以点「重试补前置」重新下载。`;
       }
     },
   });
@@ -925,6 +934,46 @@ export function retryFailedDownloads(sourceJob?: string) {
         notify(`仍有 ${result.failed.length} 个文件未能下载`, "err");
       } else {
         notify("失败文件已全部补齐");
+      }
+    },
+  });
+}
+
+/// 重新检查并补齐某个已装模组的前置；缺前置任务的重试入口。
+export function retryContentDeps(source: DownloadJob) {
+  const ctx = source.retryContext;
+  if (!ctx) {
+    notify("缺少重试所需的模组信息，请重新安装该模组", "err");
+    return;
+  }
+  return enqueueJob({
+    title: `补前置 · ${source.title}`,
+    stage: "install",
+    message: "准备检查模组前置…",
+    errorPrefix: "补前置失败",
+    key: `deps:${ctx.instanceId}:${ctx.path}`,
+    run: async (jobId, job) => {
+      const report = await api.retryContentDeps(ctx.instanceId, ctx.path, jobId);
+      await refreshInstalled();
+      await refreshInstanceMetas();
+      if (report.unresolved.length || report.failed.length) {
+        job.partial = true;
+        const parts: string[] = [];
+        if (report.unresolved.length) parts.push(`仍缺少：${report.unresolved.join("、")}`);
+        if (report.failed.length) parts.push(`下载失败：${report.failed.join("、")}`);
+        job.error = `${parts.join("；")}。请手动安装或检查网络后重试。`;
+        notify("仍有前置未能补齐，请查看任务详情", "err");
+      } else {
+        // 前置补齐后，原任务不再算「部分完成」，避免它一直挂着旧错误
+        source.partial = false;
+        source.error = null;
+        source.retryKind = undefined;
+        if (source.status === "partial") source.status = "done";
+        notify(
+          report.installed.length
+            ? `已补齐前置 ${report.installed.join("、")}`
+            : "前置已齐全"
+        );
       }
     },
   });

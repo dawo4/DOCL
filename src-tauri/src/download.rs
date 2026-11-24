@@ -1,4 +1,3 @@
-use crate::mirror;
 use anyhow::{anyhow, bail, Context, Result};
 use futures::stream::{FuturesUnordered, StreamExt};
 use serde::Serialize;
@@ -37,6 +36,8 @@ pub struct ProgressState {
     pub active: AtomicBool,
     /// 是否已有刷新联动的任务，避免重复起多个
     ticking: AtomicBool,
+    /// 总进度高水位（百分比 × 100）。步骤列表会裁剪旧条目，用它保证进度不倒退
+    overall_high: AtomicU64,
     /// 当前阶段的计时基准，进入新阶段会重置
     started: Mutex<Instant>,
 }
@@ -64,6 +65,8 @@ pub struct ProgressSnapshot {
     pub bytes_done: u64,
     pub bytes_total: u64,
     pub elapsed_ms: u64,
+    /// 整个任务的总进度（0-100）：跨阶段累加，不会每进入一步就归零
+    pub overall: f64,
     pub active: bool,
     pub paused: bool,
 }
@@ -87,6 +90,7 @@ impl ProgressState {
             paused: AtomicBool::new(false),
             active: AtomicBool::new(true),
             ticking: AtomicBool::new(false),
+            overall_high: AtomicU64::new(0),
             started: Mutex::new(Instant::now()),
         })
     }
@@ -209,6 +213,24 @@ impl ProgressState {
                 last.percent = 100.0;
             }
         }
+        // 总进度：每完成一步走掉剩余距离的 45%，所以跨阶段连续、单调，
+        // 不会出现「加载器装完显示 100%，接着下载整合包又回到 0%」。
+        let overall = if steps.is_empty() {
+            0.0
+        } else {
+            let done = steps.iter().filter(|step| step.done).count() as f64;
+            let current = steps
+                .iter()
+                .rev()
+                .find(|step| !step.done)
+                .map(|step| (step.percent / 100.0).clamp(0.0, 1.0))
+                .unwrap_or(0.0);
+            let value = 100.0 * (1.0 - 0.55_f64.powf(done + current));
+            // 步骤列表会裁剪旧条目，用高水位兜住，避免读数倒退
+            let key = (value * 100.0) as u64;
+            let high = self.overall_high.fetch_max(key, Ordering::Relaxed).max(key);
+            high as f64 / 100.0
+        };
         ProgressSnapshot {
             job: self.job.clone(),
             stage: self.stage.clone(),
@@ -227,6 +249,7 @@ impl ProgressState {
                 .lock()
                 .map(|started| started.elapsed().as_millis() as u64)
                 .unwrap_or(0),
+            overall,
             active,
             paused: self.is_paused(),
         }
@@ -268,15 +291,8 @@ pub async fn get_bytes(
     use_mirror: bool,
 ) -> Result<Vec<u8>> {
     let mut last_err: Option<anyhow::Error> = None;
-    let mirror_url = mirror::rewrite(url);
-    // 镜像未覆盖该主机时 rewrite 原样返回，去重避免对同一地址打两遍
-    let raw = if use_mirror {
-        vec![mirror_url, url.to_string()]
-    } else {
-        vec![url.to_string(), mirror_url]
-    };
-    let mut seen = std::collections::HashSet::new();
-    let candidates: Vec<String> = raw.into_iter().filter(|c| seen.insert(c.clone())).collect();
+    // 候选顺序由分来源偏好决定：元数据/文件/Modrinth/CurseForge 各自可选官方或镜像优先
+    let candidates = crate::sources::candidates(url, use_mirror);
     // 单文件请求必须有总超时：connect_timeout 只管握手，
     // 响应体挂起（官方源被墙断流）会无限等待，表现为「卡在某一步」
     for (idx, candidate) in candidates.iter().enumerate() {
@@ -357,14 +373,7 @@ pub async fn get_bytes_race(
     spawn_delay_ms: u64,
 ) -> Result<Vec<u8>> {
     let lanes = lanes.clamp(1, 4);
-    let mirror_url = mirror::rewrite(url);
-    let ordered = if use_mirror {
-        vec![mirror_url, url.to_string()]
-    } else {
-        vec![url.to_string(), mirror_url]
-    };
-    let mut seen = std::collections::HashSet::new();
-    let targets: Vec<String> = ordered.into_iter().filter(|c| seen.insert(c.clone())).collect();
+    let targets = crate::sources::candidates(url, use_mirror);
 
     let mut pending = FuturesUnordered::new();
     let mut started = 0usize;
@@ -481,13 +490,6 @@ impl Drop for GatePermit {
         gate.in_flight.fetch_sub(1, Ordering::Relaxed);
         gate.notify.notify_waiters();
     }
-}
-
-/// 用户是否强制「仅镜像」：此时不看智能排序，全部镜像优先
-static FORCE_MIRROR: AtomicBool = AtomicBool::new(false);
-
-pub fn set_force_mirror(value: bool) {
-    FORCE_MIRROR.store(value, Ordering::Relaxed);
 }
 
 /// 滑动 1 秒窗口的简单限速：所有并发任务共享同一个配额。
@@ -1151,21 +1153,10 @@ async fn download_one(
         return Ok(());
     }
 
-    let mirror_url = mirror::rewrite(&task.url);
+    // 候选顺序由分来源偏好决定；官方地址永远是最后兜底
+    let candidates = crate::sources::candidates(&task.url, use_mirror);
     let official_url = task.url.clone();
-    let mirror_healthy = use_mirror && mirror_failures.load(Ordering::Relaxed) < 4;
-    // 智能排序：Modrinth CDN 国内多数网络不可达，镜像优先；
-    // CurseForge 等官方源通常更快，官方优先，慢了再由慢速降级切走。
-    // 用户显式选「仅镜像」时不排序，一律镜像优先。
-    let mirror_first = mirror_healthy
-        && (FORCE_MIRROR.load(Ordering::Relaxed) || mirror::prefer_mirror_first(&task.url));
-    let order = if mirror_first {
-        [mirror_url, official_url]
-    } else {
-        [official_url, mirror_url]
-    };
-    // 两个候选地址不同且镜像可用时，才值得做双源竞速
-    let hedge = mirror_healthy && order[0] != order[1];
+    let hedge = candidates.len() > 1;
 
     let mut last_err: Option<anyhow::Error> = None;
     // 5xx / 超时给服务端留出恢复时间：2s → 6s → 15s，共 4 次尝试
@@ -1175,11 +1166,12 @@ async fn download_one(
         if progress.is_cancelled() {
             bail!("下载已取消");
         }
-        let index = attempt % 2;
-        let uses_mirror = if mirror_first { index == 0 } else { index == 1 };
-        let url = &order[index];
+        let index = attempt % candidates.len();
+        let url = &candidates[index];
+        let uses_mirror = url != &official_url;
+        // 交替用下一个候选做竞速，镜像慢时能及时切走
         let alternate = if hedge {
-            Some(order[1 - index].as_str())
+            Some(candidates[(index + 1) % candidates.len()].as_str())
         } else {
             None
         };
@@ -1479,6 +1471,27 @@ mod tests {
             size: 0,
             label: name.to_string(),
         }
+    }
+
+    /// 总进度要跨阶段累加：进入下一阶段时接着走，不能回到 0
+    #[test]
+    fn overall_progress_accumulates_across_steps() {
+        let progress = ProgressState::new("install");
+        progress.set_message("下载游戏文件…");
+        progress.begin_phase(1, 100);
+        progress.bytes_done.store(50, Ordering::Relaxed);
+        let half = progress.snapshot().overall;
+        assert!(half > 0.0 && half < 100.0);
+
+        progress.bytes_done.store(100, Ordering::Relaxed);
+        let first_done = progress.snapshot().overall;
+
+        // 进入下一阶段：本阶段计数清零，总进度仍要 ≥ 上一步结束时的读数
+        progress.set_message("安装加载器…");
+        progress.begin_phase(1, 0);
+        let next = progress.snapshot().overall;
+        assert!(next >= first_done - 0.01, "{next} < {first_done}");
+        assert!(next > 0.0 && next < 100.0);
     }
 
     /// 失败批次按任务分开存：清空一个任务的失败项不能影响并行中的另一个任务

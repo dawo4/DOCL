@@ -22,6 +22,12 @@ const HOST_MAPPINGS: &[(&str, &str)] = &[
         "https://libraries.minecraft.net/",
         "https://bmclapi2.bangbang93.com/maven/",
     ),
+    // Forge 的规范路径带 /releases/，必须先于通用主机映射匹配，
+    // 否则会被拼成 /maven/net/minecraftforge/releases/... 这个不存在的地址
+    (
+        "https://maven.minecraftforge.net/releases/",
+        "https://bmclapi2.bangbang93.com/maven/",
+    ),
     (
         "https://maven.minecraftforge.net/",
         "https://bmclapi2.bangbang93.com/maven/",
@@ -61,6 +67,11 @@ const HOST_MAPPINGS: &[(&str, &str)] = &[
     ("https://media.forgecdn.net/", "https://mod.mcimirror.top/"),
     // Modrinth CDN：国内多数网络直接不可达，MCIM 同样按路径代理
     ("https://cdn.modrinth.com/", "https://mod.mcimirror.top/"),
+    // Modrinth 接口：搜索/项目/版本查询同样常被阻断，镜像路径带 /modrinth/v2
+    (
+        "https://api.modrinth.com/v2/",
+        "https://mod.mcimirror.top/modrinth/v2/",
+    ),
 ];
 
 pub fn rewrite(url: &str) -> String {
@@ -96,6 +107,25 @@ mod tests {
         assert_eq!(
             super::rewrite(url),
             "https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/21.1.259/neoforge-21.1.259-installer.jar"
+        );
+    }
+
+    /// Forge 的 /releases/ 是仓库根路径的别名，镜像地址不能带这段
+    #[test]
+    fn rewrites_forge_releases_path_without_duplicating() {
+        let url = "https://maven.minecraftforge.net/releases/net/minecraftforge/forge/1.20.1-47.4.20/forge-1.20.1-47.4.20-installer.jar";
+        assert_eq!(
+            super::rewrite(url),
+            "https://bmclapi2.bangbang93.com/maven/net/minecraftforge/forge/1.20.1-47.4.20/forge-1.20.1-47.4.20-installer.jar"
+        );
+    }
+
+    /// Modrinth 接口也要能落到 MCIM 镜像
+    #[test]
+    fn rewrites_modrinth_api_to_mcim() {
+        assert_eq!(
+            super::rewrite("https://api.modrinth.com/v2/search?query=sodium"),
+            "https://mod.mcimirror.top/modrinth/v2/search?query=sodium"
         );
     }
 }

@@ -168,7 +168,7 @@ pub fn save_config(
     config.sync_game_dirs();
     // 限速设置立即生效（字节/秒；0 = 不限）
     download::set_speed_limit(config.speed_limit as u64 * 1024 * 1024);
-    download::set_force_mirror(config.download_source == "mirror");
+    crate::sources::apply(&config);
     download::set_concurrency_limit(config.concurrency as usize);
     // 毛玻璃开关变化时实时应用；系统不支持则回滚为关闭并照常保存，
     // 返回回滚后的配置让前端把开关弹回去
@@ -202,6 +202,7 @@ pub fn import_settings(state: State<'_, AppState>, path: String) -> CmdResult<Co
     config.rebase_paths();
     config.heal_paths();
     config.sync_game_dirs();
+    crate::sources::apply(&config);
     config::save(&config).map_err(err)?;
     *state.config.lock().unwrap() = config.clone();
     Ok(config)
@@ -1277,7 +1278,10 @@ pub async fn retry_failed_downloads(
 ) -> CmdResult<RetryDownloadsView> {
     // 失败批次按任务存放：指定了原任务就只取它那一批，避免并行时重跑到别人的文件
     let Some(batch) = download::take_failed_batch(source_job.as_deref()) else {
-        return Ok(RetryDownloadsView { failed: Vec::new() });
+        return Err(
+            "这个任务没有可补下的下载失败项；如果是缺前置或清单写入失败，请用对应的“重试补前置”或重新导入"
+                .to_string(),
+        );
     };
     let progress = begin_job(&state, job_id, "repair", "准备重试失败文件…");
 
@@ -1297,6 +1301,34 @@ pub async fn retry_failed_downloads(
     Ok(RetryDownloadsView {
         failed: outcome.failed.into_iter().map(|(label, _)| label).collect(),
     })
+}
+
+/// 重新检查并补齐某个已装模组的前置；缺前置任务的重试入口。
+#[tauri::command]
+pub async fn retry_content_deps(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    instance_id: String,
+    path: String,
+    job_id: Option<String>,
+) -> CmdResult<moddeps::DependencyReport> {
+    let jar = std::path::PathBuf::from(path.trim());
+    if !jar.is_file() {
+        return Err("模组文件不存在，请重新安装".to_string());
+    }
+    let cfg = state.config.lock().unwrap().clone();
+    let progress = begin_job(&state, job_id, "install", "准备检查模组前置…");
+    let report = moddeps::install_missing(
+        &app,
+        &state.client,
+        &cfg,
+        &instance_id,
+        &jar,
+        progress.clone(),
+    )
+    .await;
+    finish_job(&state, &app, &progress);
+    Ok(report)
 }
 
 /// 本地游玩画像：各版本累计时长、启动次数与最近几次游戏
