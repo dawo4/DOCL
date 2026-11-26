@@ -45,7 +45,7 @@ function onClick(event: MouseEvent) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--space-3);
   box-sizing: border-box;
   border-radius: 2px;
   border-style: solid;
@@ -59,15 +59,15 @@ function onClick(event: MouseEvent) {
   font-weight: 700;
   line-height: 1;
   letter-spacing: 0.02em;
-  transition: background 150ms ease, border-color 150ms ease,
-    transform 100ms ease, box-shadow 100ms ease, color 150ms ease;
+  transition: background var(--dur-1) ease, border-color var(--dur-1) ease,
+    transform var(--dur-0) ease, box-shadow var(--dur-0) ease, color var(--dur-1) ease;
 }
 
 .btn__label {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   white-space: nowrap;
 }
 
@@ -84,32 +84,32 @@ function onClick(event: MouseEvent) {
   border-right-color: var(--bevel-hi);
   border-bottom-color: var(--bevel-hi);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.26);
+  box-shadow: var(--shadow-press);
 }
 
 .btn:disabled {
-  opacity: 0.45;
+  opacity: var(--opacity-disabled);
   cursor: not-allowed;
 }
 
 .btn--sm {
   height: 30px;
   padding: 0 12px;
-  font-size: 12.5px;
+  font-size: var(--text-base);
 }
 
 .btn--md {
   --btn-depth: 4px;
   height: 38px;
   padding: 0 18px;
-  font-size: 13.5px;
+  font-size: var(--text-lg);
 }
 
 .btn--lg {
   --btn-depth: 5px;
   height: 52px;
   padding: 0 30px;
-  font-size: 16px;
+  font-size: var(--text-xl);
 }
 
 .btn--block {

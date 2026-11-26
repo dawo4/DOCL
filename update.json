@@ -1,6 +1,6 @@
 {
-  "version": "1.7.4",
-  "url": "https://github.com/dawo4/DOCL/releases/download/v1.7.4/DOCL_1.7.4_x64-setup.exe",
-  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.7.4/DOCL_1.7.4_portable.zip",
-  "notes": "修复部分用户加载器安装一直失败：安装器下载新增 CERNET 教育网镜像，并与 BMCLAPI 新旧入口、官方源组成多轮换源重试；Forge 官方地址改用 releases 规范路径，失败时会按源列出原因，不再只剩一条地址。设置页新增分来源下载源：Minecraft 元数据、游戏文件与加载器及 Java、Modrinth、CurseForge 可分别选择自动 / 官方优先 / 镜像优先，文件类还支持 CERNET 优先，官方源始终保留兜底。修复 CurseForge 整合包把光影、资源包塞进 mods 的问题：按项目大类分流到 shaderpacks、resourcepacks、datapacks，地图则自动解压成存档；项目信息缺失时按压缩包内容判断。整合包里的数据包会复制进已有存档，装了 Open Loader 或 Paxi 时写入它们的全局目录，之后新建的世界也能生效。修复补前置：查询 Modrinth 时增加 MCIM 镜像回退，缺前置任务提供真正的「重试补前置」，补齐后原任务不再停留在部分完成，没有可补项时会明确提示而不是假装成功。下载面板的总进度改为跨阶段累加，不再每完成一步就从 0 重新开始。其余：Modrinth 接口增加镜像兜底，下载源测速修复误报并新增 CERNET 镜像项。"
+  "version": "1.7.5",
+  "url": "https://github.com/dawo4/DOCL/releases/download/v1.7.5/DOCL_1.7.5_x64-setup.exe",
+  "portable_url": "https://github.com/dawo4/DOCL/releases/download/v1.7.5/DOCL_1.7.5_portable.zip",
+  "notes": "修复整合包导入的失败处理：解析与下载失败的文件按项目分组列出，可在任务卡片上逐个补下或整批补下，解析阶段拿不到地址的文件不再只能重新导入整个整合包；下载直链对带空格、井号等特殊字符的文件名正确转义。修复 Fabric / Quilt 整合包导入失败：fabric-loader-0.15.x 这类加载器 ID 的版本号不再切错。整合包声明了暂不支持的加载器（Cleanroom、LiteLoader 等）时不再伪装成原版：文件全部保留并如实标注，启动前明确提示模组不会加载。Java 运行时：启动前发现缺少所需的大版本时，可在弹窗里一键安装并自动继续启动，不用再去设置页手动操作；一键安装不再悄悄改动全局 Java 选择；官方运行时组件按固定规则挑选，不再随机装到快照版。新增实例「配置文件」页：可折叠浏览 config 目录，内置带搜索与语法高亮的编辑器，GBK 文件保存后编码不变，含编码无法表示的字符时明确报错而不是悄悄改坏。一键开服完善：开服人游戏名自动写入白名单并保留大小写，空白名单改为二次确认，控制台拦截 JVM 参数，日志按问题注解，支持生成诊断报告。崩溃分析：弹窗底栏不再被裁切，修复只装了 authlib-injector 就误报第三方认证失败的问题。界面与体验：字号、间距、层级与动效整体统一并支持紧凑 / 舒适密度，玻璃不透明度下限放宽到 12%，弹窗与下拉的键盘导航完善，修复主界面头像侧面贴图镜像渲染与版本设置页「停止游戏」按钮无响应的问题。"
 }

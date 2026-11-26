@@ -70,6 +70,6 @@ defineEmits<{ (e: "update:modelValue", value: string): void }>();
 
 .input.mono {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--text-base);
 }
 </style>

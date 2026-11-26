@@ -220,7 +220,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   background: var(--panel);
   box-shadow: var(--shadow-3);
   overflow: hidden;
-  animation: log-pop 220ms var(--ease-out-expo) both;
+  animation: log-pop var(--dur-2) var(--ease-out-expo) both;
 }
 
 /* 顶部一道苔绿细线，和下载中心面板保持同一套标识 */
@@ -236,7 +236,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .log-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   flex-shrink: 0;
   height: 54px;
   padding: 0 12px 0 14px;
@@ -264,13 +264,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 }
 
 .log-head__title {
-  font-size: 13.5px;
+  font-size: var(--text-lg);
   font-weight: 700;
   color: var(--walnut-deep);
 }
 
 .log-head__count {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
@@ -299,7 +299,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   border-bottom-color: color-mix(in srgb, var(--frame) 70%, #000);
   background: var(--panel);
   color: var(--ink-soft);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   transition: border-color var(--dur-1) ease, color var(--dur-1) ease,
     transform var(--dur-1) ease;
 }
@@ -320,7 +320,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   border-right-color: color-mix(in srgb, var(--frame) 72%, #fff);
   border-bottom-width: 1px;
   border-bottom-color: color-mix(in srgb, var(--frame) 72%, #fff);
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .log-icon {
@@ -341,7 +341,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .log-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   flex-shrink: 0;
   height: 52px;
   padding: 0 14px;
@@ -369,7 +369,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   padding: 0 9px;
   border-radius: 1px;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 600;
   transition: color var(--dur-1) ease, background var(--dur-1) ease,
     box-shadow var(--dur-1) ease;
@@ -382,7 +382,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .log-tab em {
   font-style: normal;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
@@ -430,7 +430,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   border: none;
   outline: none;
   background: none;
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--ink);
 }
 
@@ -438,10 +438,16 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   color: var(--muted);
 }
 
+/* 输入框本身去掉了 outline，焦点视觉交给外层容器 */
+.log-search:focus-within {
+  border-color: color-mix(in srgb, var(--moss) 52%, var(--line-strong));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--moss) 20%, transparent);
+}
+
 .log-follow {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   height: 30px;
   padding: 0 10px;
   border-radius: 2px;
@@ -453,7 +459,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   border-bottom-color: color-mix(in srgb, var(--frame) 68%, #000);
   background: var(--panel);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 600;
   transition: border-color var(--dur-1) ease, color var(--dur-1) ease,
     transform var(--dur-1) ease, box-shadow var(--dur-1) ease;
@@ -485,7 +491,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
   color: var(--moss);
   transform: translateY(1px);
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .log-follow--on .log-follow__dot {
@@ -506,7 +512,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 
 .log-line {
   display: flex;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 0 16px 0 14px;
   border-left: 2px solid transparent;
   transition: background var(--dur-1) ease;
@@ -563,7 +569,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   padding: 60px 20px;
   text-align: center;
 }
@@ -588,13 +594,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 
 .log-empty__title {
   color: var(--ink-soft);
-  font-size: 13.5px;
+  font-size: var(--text-lg);
   font-weight: 700;
 }
 
 .log-empty__hint {
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .log-foot {
@@ -608,14 +614,14 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   background: var(--panel);
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   letter-spacing: 0.04em;
 }
 
 .log-foot__state {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .log-foot__dot {
@@ -632,7 +638,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 
 .log-fade-enter-active,
 .log-fade-leave-active {
-  transition: opacity 170ms ease;
+  transition: opacity var(--dur-1) ease;
 }
 
 .log-fade-enter-from,

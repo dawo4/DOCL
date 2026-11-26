@@ -73,8 +73,11 @@ function headMesh(
   transparent: boolean
 ) {
   const order = [
-    regions.right,
+    // BoxGeometry 材质组顺序是 +X / -X / +Y / -Y / +Z / -Z；
+    // 皮肤展开图的「右/左」是角色自身的右侧/左侧，角色面向 +Z 时
+    // 自身右侧为 -X，所以 left → +X 面、right → -X 面（与 SkinModel 保持一致）
     regions.left,
+    regions.right,
     regions.top,
     regions.bottom,
     regions.front,

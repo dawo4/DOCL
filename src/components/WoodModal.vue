@@ -1,5 +1,12 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from "vue";
+import {
+  DialogContent,
+  DialogOverlay,
+  DialogPortal,
+  DialogRoot,
+  DialogTitle,
+} from "reka-ui";
 import AppIcon from "./AppIcon.vue";
 
 withDefaults(defineProps<{ title: string; width?: number; zIndex?: number }>(), {
@@ -8,32 +15,49 @@ withDefaults(defineProps<{ title: string; width?: number; zIndex?: number }>(), 
 });
 const emit = defineEmits<{ (e: "close"): void }>();
 
-function onKey(event: KeyboardEvent) {
-  if (event.key === "Escape") emit("close");
+/// 弹窗叠加时按引用计数锁定页面滚动，最后一个关闭后恢复。
+/// 真正滚动的是 .main，所以用 html 上的标记交给 CSS 处理。
+let scrollLocks = 0;
+function lockScroll() {
+  scrollLocks += 1;
+  document.documentElement.classList.add("modal-open");
+}
+function unlockScroll() {
+  scrollLocks = Math.max(0, scrollLocks - 1);
+  if (scrollLocks === 0) document.documentElement.classList.remove("modal-open");
 }
 
-onMounted(() => window.addEventListener("keydown", onKey));
-onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
+onMounted(lockScroll);
+onBeforeUnmount(unlockScroll);
+
+function onOpenChange(open: boolean) {
+  if (!open) emit("close");
+}
 </script>
 
 <template>
-  <teleport to="body">
-    <div class="overlay" :style="{ zIndex }" @mousedown.self="$emit('close')">
-      <div class="modal" :style="{ width: `${width}px` }">
+  <DialogRoot :open="true" @update:open="onOpenChange">
+    <DialogPortal>
+      <DialogOverlay class="overlay" :style="{ zIndex }" />
+      <DialogContent
+        class="modal"
+        :style="{ width: `${width}px`, zIndex: zIndex + 1 }"
+        :aria-describedby="undefined"
+      >
         <span class="modal__accent" />
         <header class="modal__head">
           <div>
-            <h3 class="modal__title">{{ title }}</h3>
+            <DialogTitle class="modal__title">{{ title }}</DialogTitle>
           </div>
-          <button class="modal__close" aria-label="关闭" @click="$emit('close')">
+          <button class="modal__close" aria-label="关闭" @click="emit('close')">
             <AppIcon name="close" :size="14" />
           </button>
         </header>
         <div class="modal__body"><slot /></div>
         <footer v-if="$slots.footer" class="modal__foot"><slot name="footer" /></footer>
-      </div>
-    </div>
-  </teleport>
+      </DialogContent>
+    </DialogPortal>
+  </DialogRoot>
 </template>
 
 <style scoped>
@@ -45,26 +69,29 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   display: grid;
   place-items: center;
   z-index: 80;
-  animation: fade-in 180ms ease both;
+  animation: fade-in var(--dur-1) ease both;
 }
 
 .modal {
-  position: relative;
-  background: var(--panel);
-  border: 2px solid var(--frame);
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--surface-pop);
+  border: var(--edge-pop);
   /* 和卡片一致：左上亮、右下暗的浮雕边框 */
-  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
-  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
-  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
-  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
+  border-top-color: var(--edge-pop-t);
+  border-left-color: var(--edge-pop-l);
+  border-right-color: var(--edge-pop-r);
+  border-bottom-color: var(--edge-pop-b);
   border-radius: 2px;
-  box-shadow: 0 30px 70px rgba(50, 34, 18, 0.32);
+  box-shadow: var(--shadow-pop);
   max-width: 88vw;
   max-height: 84vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  animation: pop-in 300ms var(--ease-out-expo) both;
+  animation: pop-in var(--dur-3) var(--ease-out-expo) both;
 }
 
 .modal__accent {
@@ -119,7 +146,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   border-right-color: color-mix(in srgb, var(--frame) 60%, #fff);
   border-bottom-width: 1px;
   border-bottom-color: color-mix(in srgb, var(--frame) 60%, #fff);
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--shadow-press);
 }
 
 .modal__body {
@@ -130,8 +157,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .modal__foot {
   padding: 13px 20px 17px;
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 8px 10px;
   border-top: 1px solid var(--line);
   background: var(--panel-2);
 }
@@ -145,7 +174,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 @keyframes pop-in {
   from {
     opacity: 0;
-    transform: translateY(16px) scale(0.97);
+    transform: translate(-50%, calc(-50% + 16px)) scale(0.97);
   }
 }
 </style>

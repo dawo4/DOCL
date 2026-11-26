@@ -22,6 +22,8 @@ import { api, type DroppedItem } from "./api";
 import {
   applyTheme,
   initApp,
+  installJava,
+  installJavaFromPreflight,
   launchServer,
   launchVersion,
   loadBackground,
@@ -205,6 +207,45 @@ function retryLaunchWithJava() {
   retry?.();
 }
 
+/// 预检弹窗里「缺少 Java N」对应的大版本号；没有这条预检项时为 null
+const preflightJavaRequired = computed(() => {
+  const issue = store.preflightPrompt?.issues.find((item) => item.id === "java-missing");
+  if (!issue) return null;
+  const match = issue.title.match(/Java (\d+)/);
+  return match ? Number(match[1]) : null;
+});
+
+/// 启动弹窗（LAUNCH_NO_JAVA）里缺的大版本号，从报错文案里取
+const missingJavaRequired = computed(() => {
+  if (store.javaPrompt?.kind !== "missing") return null;
+  const match = store.javaPrompt.message.match(/Java (\d+)/);
+  return match ? Number(match[1]) : null;
+});
+
+const javaInstalling = ref(false);
+
+/// 弹窗里一键装 Java：装完自动重启触发弹窗的那个实例。
+/// 预检弹窗与启动弹窗不会同时出现，两个来源里取到哪个就用哪个
+async function installJavaFromPrompt() {
+  const required = preflightJavaRequired.value ?? missingJavaRequired.value;
+  const versionId = store.preflightPrompt?.versionId ?? store.javaPrompt?.versionId ?? "";
+  if (!required || javaInstalling.value) return;
+  javaInstalling.value = true;
+  try {
+    store.preflightPrompt = null;
+    store.javaPrompt = null;
+    if (versionId) {
+      await installJavaFromPreflight(required, versionId);
+    } else {
+      // 没有版本上下文时只安装，装完让用户自己启动
+      await installJava(required, "mojang", false);
+      notify("Java 已安装，可回到版本列表启动游戏");
+    }
+  } finally {
+    javaInstalling.value = false;
+  }
+}
+
 const preflightRepairing = ref(false);
 
 /// 自检提示里点「仍然启动」
@@ -355,6 +396,15 @@ const currentView = computed(() => views[store.page as Page]);
       <template #footer>
         <WoodButton variant="ghost" size="sm" @click="store.javaPrompt = null">取消</WoodButton>
         <WoodButton
+          v-if="store.javaPrompt.kind === 'missing' && missingJavaRequired"
+          variant="primary"
+          size="sm"
+          :disabled="javaInstalling"
+          @click="installJavaFromPrompt"
+        >
+          {{ javaInstalling ? "安装中…" : `安装 Java ${missingJavaRequired}` }}
+        </WoodButton>
+        <WoodButton
           v-if="store.javaPrompt.retry"
           variant="soft"
           size="sm"
@@ -413,6 +463,15 @@ const currentView = computed(() => views[store.page as Page]);
           {{ preflightRepairing ? "修复中…" : "一键修复" }}
         </WoodButton>
         <WoodButton
+          v-if="preflightJavaRequired"
+          variant="primary"
+          size="sm"
+          :disabled="javaInstalling"
+          @click="installJavaFromPrompt"
+        >
+          {{ javaInstalling ? "安装中…" : `安装 Java ${preflightJavaRequired}` }}
+        </WoodButton>
+        <WoodButton
           v-if="!store.preflightPrompt.blocking"
           variant="primary"
           size="sm"
@@ -451,7 +510,7 @@ const currentView = computed(() => views[store.page as Page]);
 <style scoped>
 .java-prompt__text {
   margin: 0 0 8px;
-  font-size: 13px;
+  font-size: var(--text-lg);
   line-height: 1.7;
   color: var(--ink);
 }
@@ -464,7 +523,7 @@ const currentView = computed(() => views[store.page as Page]);
 .preflight-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
   margin: 0 0 10px;
   padding: 0;
   list-style: none;
@@ -473,7 +532,7 @@ const currentView = computed(() => views[store.page as Page]);
 .preflight-list li {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 9px 11px;
   border: 1px solid var(--line);
   border-radius: 2px;
@@ -504,12 +563,12 @@ const currentView = computed(() => views[store.page as Page]);
 }
 
 .preflight-list__body strong {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--walnut-deep);
 }
 
 .preflight-list__body span {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   line-height: 1.6;
   color: var(--muted);
   word-break: break-all;
@@ -530,7 +589,7 @@ const currentView = computed(() => views[store.page as Page]);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 30px 46px;
   border-radius: 2px;
   border: 2px dashed var(--moss);
@@ -540,18 +599,18 @@ const currentView = computed(() => views[store.page as Page]);
 }
 
 .drop-hint__card strong {
-  font-size: 17px;
+  font-size: var(--text-xl);
   letter-spacing: 0.04em;
 }
 
 .drop-hint__card span {
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--muted);
 }
 
 .drop-enter-active,
 .drop-leave-active {
-  transition: opacity 140ms ease;
+  transition: opacity var(--dur-1) ease;
 }
 
 .drop-enter-from,
@@ -561,7 +620,7 @@ const currentView = computed(() => views[store.page as Page]);
 
 .toast-enter-active,
 .toast-leave-active {
-  transition: opacity 160ms ease;
+  transition: opacity var(--dur-1) ease;
 }
 
 .toast-enter-from,

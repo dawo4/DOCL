@@ -392,7 +392,7 @@ onMounted(() => {
   padding: 18px 20px 14px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .news__head {
@@ -412,7 +412,7 @@ onMounted(() => {
 .news__heading-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .news-tag--stale {
@@ -448,7 +448,7 @@ onMounted(() => {
   border-width: 1px 1px 2px;
   border-color: transparent;
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 600;
   transition: background var(--dur-1) ease, color var(--dur-1) ease,
     border-color var(--dur-1) ease, transform var(--dur-1) ease,
@@ -476,19 +476,19 @@ onMounted(() => {
   border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .news__actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .news__skeleton {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .news__skeleton-row {
@@ -501,16 +501,16 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
   padding: 12px 4px;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--text-base);
 }
 
 .news__body {
   max-height: 172px;
   overflow: hidden;
-  transition: max-height 420ms var(--ease-out-expo);
+  transition: max-height var(--dur-3) var(--ease-out-expo);
 }
 
 /* 展开态：内容在动态卡片内部滚动，超出部分不再被外层裁掉 */
@@ -524,7 +524,7 @@ onMounted(() => {
 .news__body-inner {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .news__collapsed {
@@ -536,7 +536,7 @@ onMounted(() => {
 .news-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   height: 38px;
   padding: 0 8px;
   border-radius: 0;
@@ -551,7 +551,7 @@ onMounted(() => {
 }
 
 .news-row__date {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
   flex-shrink: 0;
 }
@@ -559,7 +559,7 @@ onMounted(() => {
 .news-row__title {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--walnut-deep);
   overflow: hidden;
@@ -570,13 +570,13 @@ onMounted(() => {
 .news__more {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   align-self: flex-start;
   height: 28px;
   padding: 0 8px;
   border-radius: 3px;
   color: var(--moss);
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 600;
 }
 
@@ -598,7 +598,7 @@ onMounted(() => {
 
 .news-row--rich {
   height: auto;
-  padding: 8px;
+  padding: var(--space-3);
   align-items: center;
 }
 
@@ -632,7 +632,7 @@ onMounted(() => {
 }
 
 .news-row__summary {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -642,15 +642,15 @@ onMounted(() => {
 .news__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: var(--space-4);
   padding-top: 2px;
 }
 
 .news-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px;
+  gap: var(--space-2);
+  padding: var(--space-4);
   border-style: solid;
   border-width: 2px;
   border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
@@ -694,13 +694,13 @@ onMounted(() => {
 .news-card__meta {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 10.5px;
+  gap: var(--space-3);
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
 .news-card__title {
-  font-size: 13.5px;
+  font-size: var(--text-lg);
   font-weight: 700;
   color: var(--walnut-deep);
   line-height: 1.35;
@@ -711,7 +711,7 @@ onMounted(() => {
 }
 
 .news-card__summary {
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--ink-soft);
   line-height: 1.5;
   display: -webkit-box;
@@ -724,22 +724,22 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
   padding-top: 2px;
 }
 
 .news-article-meta {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   margin-bottom: 12px;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .news-article-loading {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .news-article-actions {
@@ -753,7 +753,7 @@ onMounted(() => {
   max-height: 56vh;
   overflow-y: auto;
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--text-lg);
   line-height: 1.7;
   color: var(--ink-soft);
   white-space: pre-wrap;

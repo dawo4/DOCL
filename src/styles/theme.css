@@ -34,6 +34,42 @@
   --shadow-2: 0 1px 0 rgba(255, 255, 255, 0.7) inset, 0 10px 22px rgba(80, 58, 32, 0.075);
   --shadow-3: 0 1px 0 rgba(255, 255, 255, 0.75) inset, 0 16px 34px rgba(70, 48, 26, 0.1);
 
+  /* ---------- 层级：页面底 / 卡片 / 浮层 ---------- */
+  /* 背景 */
+  --surface-page: var(--paper);
+  --surface-card: var(--panel);
+  --surface-pop: var(--panel);
+  /* 阴影：卡片只靠描边分层，浮层才投影 */
+  --shadow-card: inset 0 0 0 1px color-mix(in srgb, var(--panel) 46%, #fff);
+  --shadow-pop: 0 14px 30px rgba(50, 34, 18, 0.24);
+  /* 小提示气泡：反色底，阴影比浮层轻 */
+  --shadow-tip: 0 6px 18px color-mix(in srgb, var(--ink) 26%, transparent);
+  /* 浮雕描边：四边颜色不同，统一从这里取值 */
+  --edge-card: 2px solid var(--frame);
+  --edge-card-t: color-mix(in srgb, var(--frame) 66%, #fff);
+  --edge-card-l: color-mix(in srgb, var(--frame) 66%, #fff);
+  --edge-card-r: color-mix(in srgb, var(--frame) 74%, #000);
+  --edge-card-b: color-mix(in srgb, var(--frame) 74%, #000);
+  --edge-card-t-hover: color-mix(in srgb, var(--frame) 74%, #fff);
+  --edge-card-l-hover: color-mix(in srgb, var(--frame) 74%, #fff);
+  --edge-card-r-hover: color-mix(in srgb, var(--frame) 82%, #000);
+  --edge-card-b-hover: color-mix(in srgb, var(--frame) 82%, #000);
+  --edge-pop: 2px solid var(--frame);
+  --edge-pop-t: var(--edge-card-t);
+  --edge-pop-l: var(--edge-card-l);
+  --edge-pop-r: var(--edge-card-r);
+  --edge-pop-b: var(--edge-card-b);
+
+  /* ---------- 交互三态 ---------- */
+  /* 悬停底色（各主题覆盖 --hover） */
+  --state-hover-bg: var(--hover);
+  /* 按下的内阴影，统一按键「陷进去」的手感 */
+  --shadow-press: var(--shadow-press);
+  /* 选中 / 输入槽的浅凹槽 */
+  --shadow-inset-soft: var(--shadow-inset-soft);
+  /* 禁用态统一透明度 */
+  --opacity-disabled: 0.45;
+
   --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
   --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
@@ -55,16 +91,52 @@
   --btn-border: #4f2c15;
   --btn-fg: #fff8ea;
 
+  /* 时长阶梯：0 即时反馈，1 微交互，2 状态切换，3 容器进场 */
+  --dur-0: 90ms;
   --dur-1: 120ms;
   --dur-2: 240ms;
   --dur-3: 380ms;
   --dur-4: 640ms;
 
+  /* 字号阶梯：只放 6 档 + 页面大标题，避免各页面各写一套 px */
+  --text-xs: 10.5px;
+  --text-sm: 11.5px;
+  --text-base: 12.5px;
+  --text-lg: 13.5px;
+  --text-xl: 17px;
+  --text-2xl: 22px;
+  --text-3xl: 27px;
+  --leading-tight: 1.35;
+  --leading: 1.55;
+  --leading-loose: 1.72;
+
+  /* 间距节奏：4px 基准，页面 / 卡片用语义变量，密度切换时只改语义变量 */
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 10px;
+  --space-5: 12px;
+  --space-6: 16px;
+  --space-7: 20px;
+  --space-8: 24px;
+  --space-page-y: 28px;
+  --space-page-x: 40px;
+  --space-page-bottom: 44px;
+  --space-page-gap: 20px;
+  --space-card-y: 20px;
+  --space-card-x: 22px;
+  /* 设置类表单行：上下留白与标签/控件间距 */
+  --space-row: 12px;
+  --space-row-gap: 20px;
+
   /* 底部状态栏已移除，保留变量供浮层定位使用 */
   --statusbar: 0px;
+  /* 顶部标题栏高度，页面按视口计算可用高度时复用 */
+  --topbar-h: 54px;
 
   font-family: var(--font-ui);
   color: var(--ink);
+  /* 根字号保持 14px，不跟随文字阶梯缩放 */
   font-size: 14px;
   line-height: 1.62;
   color-scheme: light;
@@ -135,7 +207,7 @@ a {
 }
 
 :focus-visible {
-  outline: 2px solid rgba(94, 123, 73, 0.55);
+  outline: 2px solid color-mix(in srgb, var(--moss) 62%, transparent);
   outline-offset: 2px;
   border-radius: 2px;
 }
@@ -178,7 +250,7 @@ a {
   border-bottom-color: var(--scroll-lo);
   background-color: var(--scroll-face);
   background-clip: padding-box;
-  transition: background-color 150ms ease;
+  transition: background-color var(--dur-1) ease;
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -211,11 +283,16 @@ a {
   z-index: 1;
 }
 
+/* 弹窗打开时锁住页面滚动（弹窗内容自身仍可滚），避免背景跟着动 */
+.modal-open .main {
+  overflow: hidden;
+}
+
 .main {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 28px 40px 44px;
+  padding: var(--space-page-y) var(--space-page-x) var(--space-page-bottom);
   position: relative;
   z-index: 1;
 }
@@ -231,7 +308,7 @@ a {
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: var(--space-page-gap);
 }
 
 /* 页面切换 */
@@ -240,7 +317,7 @@ a {
 }
 
 .page-leave-active {
-  animation: page-out 170ms ease-in both;
+  animation: page-out var(--dur-1) ease-in both;
 }
 
 /* 页面进入动画不能动 opacity：祖先 opacity < 1 时浏览器会隔离背景，
@@ -270,20 +347,20 @@ a {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 16px;
+  gap: var(--space-6);
 }
 
 .page-head__actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   flex-shrink: 0;
 }
 
 /* 标题做「压印」：上缘受光、下缘留影，和浮雕按键同一套光照方向 */
 .page-title {
   font-family: var(--font-ui);
-  font-size: 27px;
+  font-size: var(--text-3xl);
   font-weight: 800;
   letter-spacing: -0.02em;
   color: var(--walnut-deep);
@@ -294,8 +371,8 @@ a {
 
 .page-sub {
   color: var(--muted);
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: var(--text-base);
+  line-height: var(--leading);
   margin-top: 5px;
   max-width: 62ch;
 }
@@ -305,14 +382,15 @@ a {
   font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--walnut-deep);
+  font-variant-numeric: tabular-nums;
 }
 
 /* 小节标题前加一块像素方点，和卡片的方块语言保持一致 */
 .section-title {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 14.5px;
+  gap: var(--space-3);
+  font-size: var(--text-lg);
   font-weight: 800;
   color: var(--walnut-deep);
   letter-spacing: 0.01em;
@@ -337,42 +415,44 @@ a {
 }
 
 .small {
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .mono {
   font-family: var(--font-mono);
+  /* 内存、版本号、统计数字按等宽数字对齐 */
+  font-variant-numeric: tabular-nums;
 }
 
 .row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .row-between {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-6);
 }
 
 .stack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .grid-2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: var(--space-6);
 }
 
 .grid-3 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  gap: var(--space-6);
 }
 
 /* 分隔线做成刻槽：暗线在上、受光边在下 */
@@ -385,16 +465,16 @@ a {
 
 /* 卡片：2px 实框 + 直角；左上亮、右下暗，大框和按键用同一套浮雕逻辑 */
 .card {
-  background: var(--panel);
-  border: 2px solid var(--frame);
-  border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
-  border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
-  border-right-color: color-mix(in srgb, var(--frame) 74%, #000);
-  border-bottom-color: color-mix(in srgb, var(--frame) 74%, #000);
+  background: var(--surface-card);
+  border: var(--edge-card);
+  border-top-color: var(--edge-card-t);
+  border-left-color: var(--edge-card-l);
+  border-right-color: var(--edge-card-r);
+  border-bottom-color: var(--edge-card-b);
   border-radius: 2px;
   position: relative;
   /* 框内再压一道受光细边，像实体板的倒角 */
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel) 46%, #fff);
+  box-shadow: var(--shadow-card);
 }
 
 /* 大块容器统一走直角描边，不用柔和投影区分层级 */
@@ -405,14 +485,14 @@ a {
 
 .card--hover:hover {
   transform: translate3d(0, -2px, 0);
-  border-top-color: color-mix(in srgb, var(--frame) 74%, #fff);
-  border-left-color: color-mix(in srgb, var(--frame) 74%, #fff);
-  border-right-color: color-mix(in srgb, var(--frame) 82%, #000);
-  border-bottom-color: color-mix(in srgb, var(--frame) 82%, #000);
+  border-top-color: var(--edge-card-t-hover);
+  border-left-color: var(--edge-card-l-hover);
+  border-right-color: var(--edge-card-r-hover);
+  border-bottom-color: var(--edge-card-b-hover);
 }
 
 .card-pad {
-  padding: 20px 22px;
+  padding: var(--space-card-y) var(--space-card-x);
 }
 
 /* 标签 */
@@ -422,7 +502,7 @@ a {
   height: 22px;
   padding: 0 8px;
   border-radius: 3px;
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 700;
   letter-spacing: 0.04em;
   white-space: nowrap;
@@ -457,13 +537,13 @@ a {
 }
 
 .field-label {
-  font-size: 13px;
+  font-size: var(--text-lg);
   font-weight: 700;
   color: var(--ink-soft);
 }
 
 .field-hint {
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--muted);
 }
 
@@ -512,10 +592,150 @@ a {
   }
 }
 
+/* ---------- 通用状态：空 / 载入 / 失败 ---------- */
+/* 一块区域内没有任何内容时的占位，图标 + 标题 + 说明 + 可选操作 */
+.state {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-8) var(--space-6);
+  color: var(--muted);
+}
+
+.state--card {
+  border: 1px dashed var(--line-strong);
+  background: var(--panel-2);
+}
+
+.state--inline {
+  padding: var(--space-5) 0;
+}
+
+.state--center {
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.state__icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  background: var(--moss-soft);
+  color: var(--moss);
+}
+
+.state__text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.state__title {
+  color: var(--walnut-deep);
+  font-size: var(--text-lg);
+  font-weight: 700;
+}
+
+.state__hint {
+  color: var(--muted);
+  font-size: var(--text-base);
+  line-height: var(--leading);
+}
+
+.state__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+/* 失败态：图标与描边转成危险色，仍保留重试操作 */
+.state--error .state__icon {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.state--error .state__title {
+  color: var(--danger);
+}
+
+/* 载入态：骨架块 + 一行说明，避免各页面写成不同样子的「正在读取…」 */
+.loading-block {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) 0;
+  color: var(--muted);
+  font-size: var(--text-base);
+}
+
+.loading-block__bar {
+  width: 96px;
+  height: 8px;
+  flex-shrink: 0;
+  overflow: hidden;
+  position: relative;
+  background: var(--paper-2);
+}
+
+.loading-block__bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 253, 246, 0.72),
+    transparent
+  );
+  animation: shimmer 1.4s var(--ease-in-out) infinite;
+}
+
+.loading-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) 0;
+}
+
+.loading-rows__row {
+  height: 12px;
+  overflow: hidden;
+  position: relative;
+  background: var(--paper-2);
+}
+
+.loading-rows__row::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 253, 246, 0.72),
+    transparent
+  );
+  animation: shimmer 1.4s var(--ease-in-out) infinite;
+}
+
+.loading-rows__row:nth-child(2) {
+  width: 72%;
+}
+
+.loading-rows__row:nth-child(3) {
+  width: 86%;
+}
+
 /* 侧栏分组标题（联机页等复用） */
 .side-label {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-xs);
   letter-spacing: 0.24em;
   color: var(--muted);
   padding: 0 12px 6px;
@@ -535,10 +755,10 @@ a {
   color: var(--paper);
   padding: 10px 18px;
   border-radius: 4px;
-  font-size: 13px;
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.22);
+  font-size: var(--text-lg);
+  box-shadow: var(--shadow-pop);
   z-index: 90;
-  animation: toast-in 260ms var(--ease-out-expo) both;
+  animation: toast-in var(--dur-2) var(--ease-out-expo) both;
   max-width: 70vw;
   border-style: solid;
   border-width: 1px 1px 3px;
@@ -1196,29 +1416,25 @@ a {
   --font-display: "KaiTi", "STKaiti", "楷体", serif;
 }
 
-/* 界面密度 */
-.app[data-density="compact"] .main {
-  padding: 20px 30px 32px;
+/* 界面密度：只改语义间距变量，页面 / 卡片 / 分组自动跟随 */
+.app[data-density="compact"] {
+  --space-page-y: 20px;
+  --space-page-x: 30px;
+  --space-page-bottom: 32px;
+  --space-page-gap: 16px;
+  --space-card-y: 14px;
+  --space-card-x: 16px;
+  --space-row: 8px;
 }
 
-.app[data-density="compact"] .page {
-  gap: 16px;
-}
-
-.app[data-density="compact"] .card-pad {
-  padding: 14px 16px;
-}
-
-.app[data-density="comfy"] .main {
-  padding: 38px 54px 58px;
-}
-
-.app[data-density="comfy"] .page {
-  gap: 28px;
-}
-
-.app[data-density="comfy"] .card-pad {
-  padding: 24px 26px;
+.app[data-density="comfy"] {
+  --space-page-y: 38px;
+  --space-page-x: 54px;
+  --space-page-bottom: 58px;
+  --space-page-gap: 28px;
+  --space-card-y: 24px;
+  --space-card-x: 26px;
+  --space-row: 16px;
 }
 
 .wallpaper__tint {
@@ -1290,6 +1506,23 @@ a {
   transform: none !important;
 }
 
+/* 低内存模式：入场与位移动画一并关掉，只保留颜色变化 */
+.low-memory .reveal,
+.low-memory .modal,
+.low-memory .toast,
+.low-memory .page-enter-active,
+.low-memory .page-leave-active {
+  animation: none !important;
+}
+
+.low-memory .card--hover:hover,
+.low-memory .btn:hover:not(:disabled),
+.low-memory .btn:active:not(:disabled),
+.low-memory .icon-btn:hover:not(:disabled),
+.low-memory .icon-btn:active:not(:disabled) {
+  transform: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1297,5 +1530,14 @@ a {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  /* 位移类动画直接取消，避免瞬移仍被感知 */
+  .reveal,
+  .modal,
+  .toast,
+  .page-enter-active,
+  .page-leave-active {
+    animation: none !important;
   }
 }

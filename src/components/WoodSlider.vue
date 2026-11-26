@@ -50,6 +50,12 @@ function onInput(event: Event) {
   cursor: pointer;
 }
 
+/* 键盘聚焦时补一圈描边，否则 outline:none 后完全看不到焦点 */
+.slider:focus-visible {
+  box-shadow: inset 0 1px 2px rgba(40, 28, 16, 0.14),
+    0 0 0 2px color-mix(in srgb, var(--moss) 38%, transparent);
+}
+
 /* 滑块做成带底部厚度的小按键，和按钮、开关保持一致 */
 .slider::-webkit-slider-thumb {
   -webkit-appearance: none;

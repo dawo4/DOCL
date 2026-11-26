@@ -13,6 +13,7 @@ import {
   type DeviceCode,
   type Favorite,
   type CfProject,
+  type ImportFailure,
   type InstalledVersion,
   type InstanceMeta,
   type JavaInfo,
@@ -59,6 +60,10 @@ export interface DownloadJob {
   retryKind?: "downloads" | "deps";
   /// 缺前置任务重试所需的信息
   retryContext?: { instanceId: string; path: string };
+  /// 整合包导入没装上的文件（带项目信息）：任务卡片上可逐个补下或去项目页手动下载
+  failures?: ImportFailure[];
+  /// 任务结束后的说明，例如加载器暂不支持、内存建议
+  notes?: string[];
 }
 
 export const store = reactive({
@@ -130,6 +135,8 @@ export const store = reactive({
     message: string;
     required?: number;
     current?: number;
+    /// 触发这次启动的版本：弹窗里一键装完 Java 后重启它
+    versionId?: string;
     /// 「仍然启动」时重跑这次启动（跳过预检）
     retry?: () => void;
   },
@@ -882,6 +889,13 @@ export async function downloadModpack(
   return result ?? null;
 }
 
+/// 失败项的一行摘要：只列名字，原因在任务卡片的失败清单里逐条显示
+function failureNames(failures: ImportFailure[]): string {
+  const names = Array.from(new Set(failures.map((item) => item.name)));
+  const shown = names.slice(0, 4).join("、");
+  return `${failures.length} 个文件未完成：${names.length > 4 ? `${shown} 等` : shown}`;
+}
+
 export async function importModpack(
   path: string,
   options: import("./api").ModpackImportOptions,
@@ -899,16 +913,20 @@ export async function importModpack(
         await refreshInstalled();
         await refreshConfig();
         await refreshInstanceMetas();
+        // 加载器暂不支持、内存建议不算「失败」，但对用户有用，留在任务卡片上
+        job.notes = [...result.warnings, ...result.hints];
         notify(
-          result.failed.length
-            ? `已导入 ${result.display_name}，${result.failed.length} 个文件未能下载`
+          result.failures.length
+            ? `已导入 ${result.display_name}，${result.failures.length} 个文件未完成`
             : `已导入 ${result.display_name}`
         );
-        if (result.failed.length) {
-          const shown = result.failed.slice(0, 5).join("；");
+        if (result.failures.length) {
           job.partial = true;
-          job.error =
-            result.failed.length > 5 ? `${shown} 等 ${result.failed.length} 个` : shown;
+          job.error = failureNames(result.failures);
+          // 带项目信息才有逐个补下与项目页入口（Modrinth 清单不带项目 ID，只能整批补下）
+          if (result.failures.some((item) => item.project_id > 0)) {
+            job.failures = result.failures;
+          }
         }
         return result;
       },
@@ -916,25 +934,77 @@ export async function importModpack(
   );
 }
 
-/// 只重试某个任务上一批失败的文件，不必重新导入整个整合包
+/// 整批补下某个任务上一批失败的文件，不必重新导入整个整合包
 export function retryFailedDownloads(sourceJob?: string) {
   return enqueueJob({
-    title: "重试失败文件",
+    title: "补下失败文件",
     stage: "repair",
     message: "准备重试失败文件…",
-    errorPrefix: "重试失败",
+    errorPrefix: "补下失败",
     key: `retry:${sourceJob ?? "latest"}`,
     run: async (jobId, job) => {
       const result = await api.retryFailedDownloads(sourceJob, jobId);
+      const source = sourceJob ? jobById(sourceJob) : null;
+      // 整合包的失败项已转到本次任务名下（后端也是这么记的），原卡片不再重复列出
+      const moved = !!source?.failures?.length;
+      if (moved && source) {
+        source.failures = undefined;
+        source.status = "done";
+        source.partial = false;
+        source.error = result.failed.length
+          ? `还有 ${result.failed.length} 个文件未补齐，见下方的「补下失败文件」任务`
+          : "之前未完成的文件已补齐";
+        // 实例目录里多了文件，已打开的实例页要刷新
+        store.contentRevision += 1;
+      }
       if (result.failed.length) {
         job.partial = true;
-        job.error =
-          `仍有 ${result.failed.length} 个文件未能下载：` +
-          result.failed.slice(0, 5).join("；");
-        notify(`仍有 ${result.failed.length} 个文件未能下载`, "err");
+        job.error = failureNames(result.failures);
+        if (moved) job.failures = result.failures;
+        notify(`仍有 ${result.failed.length} 个文件未能补齐`, "err");
       } else {
         notify("失败文件已全部补齐");
       }
+    },
+  });
+}
+
+/// 单个补下整合包清单里的一个文件：任务卡片失败清单上的「重试」。
+/// 成功后把它从原卡片的清单里划掉，全部补齐时卡片恢复成已完成。
+export function retryFailedFile(source: DownloadJob, failure: ImportFailure) {
+  return enqueueJob({
+    title: `补下 · ${failure.name}`,
+    stage: "repair",
+    message: "准备重新获取下载地址…",
+    errorPrefix: "补下失败",
+    key: `retry-file:${source.id}:${failure.project_id}-${failure.file_id}`,
+    run: async (jobId, job) => {
+      const result = await api.modpackRetryFile(
+        source.id,
+        failure.project_id,
+        failure.file_id,
+        jobId
+      );
+      if (!result.failures.length) {
+        const rest = (source.failures ?? []).filter(
+          (item) => item.project_id !== failure.project_id || item.file_id !== failure.file_id
+        );
+        source.failures = rest;
+        if (!rest.length) {
+          source.status = "done";
+          source.partial = false;
+          source.error = null;
+        } else {
+          source.error = failureNames(rest);
+        }
+        store.contentRevision += 1;
+        notify(`已补上 ${failure.name}`);
+      } else {
+        job.partial = true;
+        job.error = `${result.failures[0].name}：${result.failures[0].reason}`;
+        notify(job.error, "err");
+      }
+      return result;
     },
   });
 }
@@ -1065,7 +1135,7 @@ export async function updateModpack(
   );
 }
 
-export async function installJava(major: number, source = "mojang") {
+export async function installJava(major: number, source = "mojang", setAsDefault = true) {
   const result = await enqueueJob<import("./api").JavaInfo>({
     title: `Java ${major}`,
     stage: "java",
@@ -1074,13 +1144,25 @@ export async function installJava(major: number, source = "mojang") {
     errorPrefix: "安装 Java 失败",
     key: `java:${major}:${source}`,
     run: async (jobId) => {
-      const info = await api.installJava(major, source, jobId);
+      const info = await api.installJava(major, source, setAsDefault, jobId);
       await refreshJava();
       await refreshConfig();
       return info;
     },
   });
   return result ?? null;
+}
+
+/// 启动弹窗 / 预检弹窗里的一键安装 Java：装好指定大版本后自动重新启动该实例。
+/// 不把新装的 Java 设为全局默认——用户没有要求改其他实例的运行时。
+export async function installJavaFromPreflight(required: number, versionId: string) {
+  const info = await installJava(required, "mojang", false);
+  if (!info) return null;
+  notify(`Java ${required} 已安装，正在重新启动…`);
+  // 弹窗关闭期间用户可能已经手动启动了别的实例，此时不再抢跑
+  if (store.gameRunning) return info;
+  await launchVersion(versionId, { skipJavaCheck: true, skipPreflight: false });
+  return info;
 }
 
 export async function cancelInstall(jobId?: string) {
@@ -1262,6 +1344,7 @@ export async function launchVersion(
       store.javaPrompt = {
         kind: "missing",
         message: message.replace("LAUNCH_NO_JAVA:", ""),
+        versionId: target,
       };
     } else {
       notify(`启动失败：${message}`, "err");
@@ -1330,6 +1413,7 @@ export async function launchServer(
       store.javaPrompt = {
         kind: "missing",
         message: message.replace("LAUNCH_NO_JAVA:", ""),
+        versionId: target,
       };
     } else {
       notify(`连接失败：${message}`, "err");

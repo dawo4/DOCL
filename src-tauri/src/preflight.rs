@@ -307,10 +307,69 @@ pub fn check(cfg: &Config, version_id: &str) -> PreflightReport {
         );
     }
 
+    // 9. 加载器：整合包声明的加载器启动器装不了，实例只能挂在原版上。
+    //    能进游戏但模组一个都不加载，启动前要说清楚，但不拦着。
+    let (_, declared) = install::context_from(version_id, &merged.detail, &merged.chain);
+    let profile_loader = install::loader_of_profile(merged.detail.main_class.as_deref(), |prefix| {
+        merged
+            .detail
+            .libraries
+            .iter()
+            .any(|lib| lib.name.to_ascii_lowercase().starts_with(prefix))
+    });
+    if let Some(detail) = unsupported_loader_issue(&declared, &profile_loader) {
+        push(
+            &mut issues,
+            "unsupported-loader",
+            "加载器暂不支持",
+            detail,
+            false,
+            false,
+        );
+    }
+
+    // 10. Java 运行时：版本要求的 Java 大版本本机没有时提示并给出一键安装入口。
+    //     find_java 会给每个候选 Java 进程跑一次 -version，偏慢；启动前只在这里跑一次，
+    //     不要在版本列表这类高频路径里调用
+    let required = merged.detail.required_java();
+    let java_available = crate::launch::find_java(cfg, required).is_ok();
+    if let Some(issue) = java_missing_issue(required, java_available) {
+        issues.push(issue);
+    }
+
     PreflightReport {
         version_id: version_id.into(),
         issues,
     }
+}
+
+/// 「要求的 Java 大版本本机没有」的预检项：不阻断启动，弹窗里提供一键安装。
+/// 抽成纯函数便于测试；`java_available` 由调用方用 `launch::find_java` 判定。
+fn java_missing_issue(required: u32, java_available: bool) -> Option<PreflightIssue> {
+    if java_available {
+        return None;
+    }
+    Some(PreflightIssue {
+        id: "java-missing".into(),
+        title: format!("缺少 Java {required}"),
+        detail: format!(
+            "当前实例需要 Java {required}，本机没有可用的运行时。可以在弹窗里一键安装 Java {required}。"
+        ),
+        blocking: false,
+        fixable: false,
+    })
+}
+
+/// 实例声明的加载器启动器装不了、而版本清单本身又是原版时给出的说明。
+/// 清单自带该加载器（例如从别的启动器导入的完整实例）时不提示：那种情况可能本来就能启动。
+fn unsupported_loader_issue(declared: &str, profile_loader: &str) -> Option<String> {
+    if profile_loader != "vanilla" || install::is_supported_loader(declared) {
+        return None;
+    }
+    Some(format!(
+        "该实例需要{}，启动器目前无法自动安装。现在启动能进游戏，但模组不会加载；文件已完整保留，也可以换用其他启动器打开这个实例目录。",
+        install::loader_display_name(declared)
+    ))
 }
 
 #[cfg(test)]
@@ -343,5 +402,28 @@ mod tests {
         assert!(memory_verdict(4096, 16384).is_none());
         // 读不到物理内存时不做判断，避免误报
         assert!(memory_verdict(65536, 0).is_none());
+    }
+
+    /// 整合包要 Cleanroom、实例却是原版：提示但不拦；清单自带加载器或加载器受支持时不提示
+    #[test]
+    fn unsupported_loader_only_warns_when_instance_is_vanilla() {
+        let detail = unsupported_loader_issue("cleanroom", "vanilla").expect("应当给出说明");
+        assert!(detail.contains("Cleanroom"), "{detail}");
+        assert!(unsupported_loader_issue("cleanroom", "cleanroom").is_none());
+        assert!(unsupported_loader_issue("forge", "vanilla").is_none());
+        assert!(unsupported_loader_issue("vanilla", "vanilla").is_none());
+    }
+
+    /// 缺 Java 的预检项不阻断启动，文案里带版本号供前端渲染「安装 Java N」按钮
+    #[test]
+    fn java_missing_issue_is_non_blocking_with_install_hint() {
+        let issue = java_missing_issue(25, false).expect("缺少时应当给出提示");
+        assert_eq!(issue.id, "java-missing");
+        assert!(!issue.blocking);
+        assert!(!issue.fixable);
+        assert!(issue.title.contains("25"), "{}", issue.title);
+        assert!(issue.detail.contains("Java 25"), "{}", issue.detail);
+        // Java 可用时不提示
+        assert!(java_missing_issue(25, true).is_none());
     }
 }

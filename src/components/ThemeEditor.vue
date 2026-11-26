@@ -150,7 +150,7 @@ function save() {
 .editor__preview-side {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   width: 26%;
   padding: 10px 8px;
   background: color-mix(in srgb, var(--pv-panel) 86%, var(--pv-paper));
@@ -185,13 +185,13 @@ function save() {
 
 .editor__preview-text {
   color: var(--pv-text);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .editor__preview-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   margin-top: 2px;
 }
 
@@ -199,7 +199,7 @@ function save() {
   padding: 3px 10px;
   border-radius: 2px;
   background: var(--pv-primary);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   font-weight: 700;
   border-bottom: 2px solid color-mix(in srgb, var(--pv-primary) 60%, #000);
 }
@@ -209,18 +209,18 @@ function save() {
   border-radius: 2px;
   border: 1px solid var(--pv-accent);
   color: var(--pv-accent);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   font-weight: 700;
 }
 
 .editor__name {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .editor__name-label {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   font-weight: 700;
   color: var(--ink-soft);
 }
@@ -228,7 +228,7 @@ function save() {
 .editor__slots {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 /* 每个色槽一行：点击整行展开调色盘 */
@@ -246,7 +246,7 @@ function save() {
 .slot__row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   width: 100%;
   padding: 7px 10px;
   text-align: left;
@@ -255,7 +255,7 @@ function save() {
 .slot__label {
   width: 64px;
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 700;
   color: var(--ink-soft);
 }
@@ -276,7 +276,7 @@ function save() {
 .slot__hex {
   width: 70px;
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -286,19 +286,19 @@ function save() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
 .slot__pop {
-  padding: 10px;
+  padding: var(--space-4);
   border-top: 1px dashed var(--line);
   background: var(--paper-2);
 }
 
 .editor__note {
   margin: 0;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 </style>

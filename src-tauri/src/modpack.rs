@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
 use zip::ZipArchive;
 
@@ -45,6 +45,10 @@ pub struct PackPreview {
     pub server_skips: u32,
     /// 压缩包特征更像服务端整合包（libraries/server.properties，且没有客户端 versions）
     pub server_like: bool,
+    /// 清单里标记为可选的文件数；默认不装，导入表单里可以勾选
+    pub optional_count: u32,
+    /// 加载器启动器能否自动安装；false 时按原版导入并保留全部文件
+    pub loader_supported: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -64,12 +68,28 @@ pub struct ImportOptions {
     pub server: bool,
 }
 
+/// 整合包清单里没装上的单个文件。
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportFailure {
+    /// 所属的 CurseForge 项目；Modrinth 清单不带项目信息时为 0
+    pub project_id: i64,
+    pub file_id: i64,
+    /// 给用户认的名字：项目名，拿不到时退回文件名或 ID
+    pub name: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ImportResult {
     pub instance_id: String,
     pub display_name: String,
     pub installed_files: u32,
-    pub failed: Vec<String>,
+    /// 清单里没装上的文件：可以逐个补下，也可以去项目页手动下载
+    pub failures: Vec<ImportFailure>,
+    /// 不属于单个文件的提醒：加载器暂不支持、清单写入失败等
+    pub warnings: Vec<String>,
+    /// 导入完成后的使用建议，例如内存分配
+    pub hints: Vec<String>,
 }
 
 /* ---------- 用新版整合包文件更新实例 ---------- */
@@ -1051,8 +1071,7 @@ struct ParsedPack {
 }
 
 fn open_zip(path: &str) -> Result<ZipArchive<std::fs::File>> {
-    let file = std::fs::File::open(path).with_context(|| format!("无法打开整合包：{path}"))?;
-    ZipArchive::new(file).context("压缩包损坏或格式不支持")
+    crate::ziputil::open(std::path::Path::new(path))
 }
 
 fn zip_names(archive: &mut ZipArchive<std::fs::File>) -> Vec<String> {
@@ -1100,15 +1119,62 @@ fn slugify(value: &str) -> String {
     }
 }
 
+/// 清单里的加载器 ID 拆成「名称 + 版本」。
+/// `fabric-loader-0.15.11` 的版本是 `0.15.11`：不能从第一个连字符就切，
+/// 否则会拿 `loader-0.15.11` 去请求加载器配置，整包导入直接失败。
+/// 认不出的加载器保留原名字母（小写），由调用方决定是跳过安装还是提示，不能悄悄当成原版。
 fn detect_loader(id: &str) -> (String, Option<String>) {
-    let lower = id.to_lowercase();
-    for name in ["neoforge", "forge", "quilt", "fabric"] {
-        if lower.starts_with(name) {
-            let version = id.split_once('-').map(|(_, rest)| rest.to_string());
-            return (name.to_string(), version);
+    let id = id.trim();
+    let (head, version) = match id.split_once('-') {
+        Some((head, rest)) => {
+            // fabric-loader-0.15.11 / quilt-loader-0.21.0：名字里的 `-loader` 不是分隔符
+            let (head, rest) = if let Some(version) = rest.strip_prefix("loader-") {
+                (format!("{head}-loader"), version)
+            } else if rest == "loader" {
+                (format!("{head}-loader"), "")
+            } else {
+                (head.to_string(), rest)
+            };
+            (
+                head.to_ascii_lowercase(),
+                (!rest.is_empty()).then(|| rest.to_string()),
+            )
         }
+        None => (id.to_ascii_lowercase(), None),
+    };
+    let name = match head.as_str() {
+        "minecraftforge" | "forge" => "forge",
+        "neoforge" => "neoforge",
+        "fabric-loader" | "fabric" => "fabric",
+        "quilt-loader" | "quilt" => "quilt",
+        "cleanroom" => "cleanroom",
+        "liteloader" => "liteloader",
+        _ => return (unknown_loader_name(&head), version),
+    };
+    (name.to_string(), version)
+}
+
+/// 未知加载器的内部名只留小写字母数字，例如 `rift-1.0.4-1.13` → `rift`；
+/// 连名字都提取不出来时统一叫 unknown，交给界面显示「未知加载器」。
+fn unknown_loader_name(head: &str) -> String {
+    let name: String = head
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect();
+    if name.is_empty() {
+        "unknown".into()
+    } else {
+        name
     }
-    ("vanilla".into(), None)
+}
+
+/// 整合包声明的加载器启动器装不了时，导入前后给用户看的同一句话。
+fn unsupported_loader_warning(loader: &str) -> String {
+    format!(
+        "该整合包使用{}加载器，启动器暂不支持自动安装。文件会全部导入并保留，但直接启动不会加载模组",
+        install::loader_display_name(loader)
+    )
 }
 
 fn parse_pack(path: &str, server: bool) -> Result<ParsedPack> {
@@ -1157,6 +1223,10 @@ fn parse_pack(path: &str, server: bool) -> Result<ParsedPack> {
         if manifest.files.is_empty() {
             warnings.push("清单里没有可下载文件".into());
         }
+        let loader_supported = install::is_supported_loader(&loader);
+        if !loader_supported {
+            warnings.push(unsupported_loader_warning(&loader));
+        }
         return Ok(ParsedPack {
             preview: PackPreview {
                 format: "curseforge".into(),
@@ -1174,6 +1244,8 @@ fn parse_pack(path: &str, server: bool) -> Result<ParsedPack> {
                 suggested_id,
                 server_skips: 0,
                 server_like: false,
+                optional_count: manifest.files.iter().filter(|file| !file.required).count() as u32,
+                loader_supported,
             },
             source: SourceData::Curse {
                 game_version: manifest.minecraft.version,
@@ -1206,7 +1278,20 @@ fn parse_pack(path: &str, server: bool) -> Result<ParsedPack> {
                     .get(*key)
                     .map(|version| (key.replace("-loader", ""), Some(version.clone())))
             })
-            .unwrap_or_else(|| ("vanilla".into(), None));
+            .unwrap_or_else(|| {
+                // 其余依赖键（例如 liteloader）按未知加载器原样报出，不归成原版
+                index
+                    .dependencies
+                    .iter()
+                    .find(|(key, _)| key.as_str() != "minecraft")
+                    .map(|(key, version)| {
+                        (
+                            unknown_loader_name(&key.replace("-loader", "").to_ascii_lowercase()),
+                            Some(version.clone()),
+                        )
+                    })
+                    .unwrap_or_else(|| ("vanilla".into(), None))
+            });
         let name = if index.name.is_empty() {
             zip_name.clone()
         } else {
@@ -1215,6 +1300,10 @@ fn parse_pack(path: &str, server: bool) -> Result<ParsedPack> {
         let mut warnings = Vec::new();
         if game_version.is_empty() {
             warnings.push("缺少 Minecraft 版本信息".into());
+        }
+        let loader_supported = install::is_supported_loader(&loader);
+        if !loader_supported {
+            warnings.push(unsupported_loader_warning(&loader));
         }
         let mut files = Vec::new();
         let mut tasks = Vec::new();
@@ -1285,6 +1374,8 @@ fn parse_pack(path: &str, server: bool) -> Result<ParsedPack> {
                 suggested_id,
                 server_skips,
                 server_like: false,
+                optional_count: tasks.iter().filter(|(_, _, _, _, optional)| *optional).count() as u32,
+                loader_supported,
             },
             source: SourceData::Modrinth {
                 game_version,
@@ -1329,7 +1420,17 @@ fn parse_pack(path: &str, server: bool) -> Result<ParsedPack> {
             override_bytes += entry.size();
         }
     }
-    let warnings = vec!["通用压缩包没有加载器信息，需要选择父版本".to_string()];
+    let mut warnings = vec!["通用压缩包没有加载器信息，需要选择父版本".to_string()];
+    let pack_loader = generic_loader(&mut archive, &names, &prefix);
+    let loader_supported = pack_loader
+        .as_ref()
+        .map(|(loader, _)| install::is_supported_loader(loader))
+        .unwrap_or(true);
+    if let Some((loader, _)) = &pack_loader {
+        if !loader_supported {
+            warnings.push(unsupported_loader_warning(loader));
+        }
+    }
     let display_name = zip_name;
     let server_like = looks_like_server(&names, &prefix);
     Ok(ParsedPack {
@@ -1338,8 +1439,11 @@ fn parse_pack(path: &str, server: bool) -> Result<ParsedPack> {
             name: display_name.clone(),
             version: String::new(),
             game_version: detected.clone().unwrap_or_default(),
-            loader: "vanilla".into(),
-            loader_version: None,
+            loader: pack_loader
+                .as_ref()
+                .map(|(loader, _)| loader.clone())
+                .unwrap_or_else(|| "vanilla".into()),
+            loader_version: pack_loader.as_ref().and_then(|(_, version)| version.clone()),
             detected_parent: detected.clone(),
             file_count,
             download_bytes: 0,
@@ -1349,12 +1453,115 @@ fn parse_pack(path: &str, server: bool) -> Result<ParsedPack> {
             suggested_id: slugify(&display_name),
             server_skips: 0,
             server_like,
+            optional_count: 0,
+            loader_supported,
         },
         source: SourceData::Generic {
             prefix,
             detected_parent: detected,
         },
     })
+}
+
+/// 通用压缩包里的加载器线索：`versions/<id>/<id>.json` 的主类与库坐标，
+/// 以及 MultiMC / Prism 实例的 `mmc-pack.json` + `patches/*.json`。
+/// 这里只负责认出加载器并如实显示；组件合并与依赖安装属于实例导入，另行处理。
+fn generic_loader(
+    archive: &mut ZipArchive<std::fs::File>,
+    names: &[String],
+    prefix: &str,
+) -> Option<(String, Option<String>)> {
+    // Prism / MultiMC：补丁里的主类最准。Cleanroom 沿用 net.minecraftforge 这个 uid，只能靠主类区分
+    let patches = format!("{prefix}patches/");
+    let patch_names: Vec<String> = names
+        .iter()
+        .filter(|name| name.starts_with(&patches) && name.ends_with(".json"))
+        .cloned()
+        .collect();
+    for name in &patch_names {
+        let Ok(bytes) = read_entry(archive, name) else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        let loader = profile_loader(&json);
+        if loader != "vanilla" {
+            return Some((loader, None));
+        }
+    }
+    if let Ok(bytes) = read_entry(archive, &format!("{prefix}mmc-pack.json")) {
+        if let Ok(json) = serde_json::from_slice::<Value>(&bytes) {
+            if let Some(found) = mmc_loader(&json) {
+                return Some(found);
+            }
+        }
+    }
+    // 自带 versions/ 的包（其他启动器导出、服务端包）：逐个看版本清单
+    for name in names {
+        let rel = name.strip_prefix(prefix).unwrap_or(name);
+        let Some(rest) = rel.strip_prefix("versions/") else {
+            continue;
+        };
+        let mut parts = rest.split('/');
+        let id = parts.next().unwrap_or_default();
+        if parts.next() != Some(&format!("{id}.json")) {
+            continue;
+        }
+        let Ok(bytes) = read_entry(archive, name) else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        let loader = profile_loader(&json);
+        if loader != "vanilla" {
+            return Some((loader, None));
+        }
+    }
+    None
+}
+
+/// 从一份版本清单 JSON 里读主类与库坐标来判断加载器。
+/// MultiMC 的叠加补丁用 `+mainClass` / `+libraries`，两种键都认。
+fn profile_loader(json: &Value) -> String {
+    let main_class = json
+        .get("mainClass")
+        .or_else(|| json.get("+mainClass"))
+        .and_then(Value::as_str);
+    let libraries: Vec<String> = ["libraries", "+libraries"]
+        .iter()
+        .filter_map(|key| json.get(*key).and_then(Value::as_array))
+        .flatten()
+        .filter_map(|lib| lib.get("name").and_then(Value::as_str))
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
+    install::loader_of_profile(main_class, |prefix| {
+        libraries.iter().any(|name| name.starts_with(prefix))
+    })
+}
+
+/// `mmc-pack.json` 的组件列表 → 加载器。原版与 LWJGL 是基础组件，跳过。
+fn mmc_loader(pack: &Value) -> Option<(String, Option<String>)> {
+    let components = pack.get("components")?.as_array()?;
+    for component in components {
+        let uid = text_field(component, "uid");
+        let version = component
+            .get("version")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let name = match uid.as_str() {
+            "net.minecraftforge" => "forge".to_string(),
+            "net.neoforged" => "neoforge".to_string(),
+            "org.quiltmc.quilt-loader" => "quilt".to_string(),
+            "net.fabricmc.fabric-loader" => "fabric".to_string(),
+            "com.mumfrey.liteloader" => "liteloader".to_string(),
+            "net.minecraft" | "org.lwjgl" | "org.lwjgl3" => continue,
+            _ => unknown_loader_name(uid.rsplit('.').next().unwrap_or(&uid)),
+        };
+        return Some((name, version));
+    }
+    None
 }
 
 pub fn inspect(path: &str) -> Result<PackPreview> {
@@ -1654,15 +1861,15 @@ pub fn scan_broken_files(root: &Path) -> (u32, Vec<BrokenFile>) {
 }
 
 /// 导入后自检 mods 目录：损坏的 jar 按本次导入的下载地址单文件补下
-/// （download::refetch 内部最多 3 次换源重试），仍不可用则记入 failed。
+/// （download::refetch 内部最多 3 次换源重试），返回仍然不可用的「文件名 + 原因」。
 async fn repair_broken_jars(
     client: &reqwest::Client,
     cfg: &Config,
     root: &Path,
     tasks: &[FileTask],
-    failed: &mut Vec<String>,
     progress: &ProgressState,
-) {
+) -> Vec<(String, String)> {
+    let mut broken_after = Vec::new();
     for path in broken_jars(&root.join("mods")) {
         // 用户取消导入后不必再逐个补下
         if progress.is_cancelled() {
@@ -1682,14 +1889,15 @@ async fn repair_broken_jars(
                     .find(|item| item.dest.file_name() == path.file_name())
             });
         let Some(task) = task else {
-            failed.push(format!("{name}：文件损坏且没有下载地址，请手动替换"));
+            broken_after.push((name, "文件损坏且没有下载地址，请手动替换".into()));
             continue;
         };
         let _ = download::refetch(client, task, cfg.use_mirror()).await;
         if jar_is_broken(&path) {
-            failed.push(format!("{name}：文件损坏，自动补下失败，请删除后重新导入"));
+            broken_after.push((name, "文件损坏，自动补下失败，请删除后重新导入".into()));
         }
     }
+    broken_after
 }
 
 async fn ensure_vanilla(
@@ -1742,6 +1950,474 @@ async fn ensure_loader(
         install::install_loader(app, client, cfg, game_version, loader, loader_version, progress)
             .await?;
     Ok(version.id)
+}
+
+/// 整合包声明的加载器，以及用户在导入表单里改过的版本
+struct LoaderPlan<'a> {
+    game_version: &'a str,
+    loader: &'a str,
+    /// 清单里写的加载器版本
+    pack_version: &'a Option<String>,
+    /// 表单里填的版本，优先于清单
+    preferred: Option<String>,
+}
+
+/// 表单里填了加载器版本就用它，否则按清单
+fn loader_plan<'a>(
+    game_version: &'a str,
+    loader: &'a str,
+    pack_version: &'a Option<String>,
+    options: &ImportOptions,
+) -> LoaderPlan<'a> {
+    LoaderPlan {
+        game_version,
+        loader,
+        pack_version,
+        preferred: options
+            .loader_version
+            .clone()
+            .filter(|value| !value.trim().is_empty()),
+    }
+}
+
+/// 按整合包声明的加载器准备父版本。启动器装不了的加载器不去装：
+/// 实例挂在原版上，文件照常导入，并把原因作为第三项带回，由调用方放进提醒。
+/// 返回（父版本 ID，实际采用的加载器版本，给用户的提醒）。
+async fn ensure_pack_loader(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &Config,
+    plan: LoaderPlan<'_>,
+    progress: Arc<ProgressState>,
+) -> Result<(String, Option<String>, Option<String>)> {
+    let LoaderPlan {
+        game_version,
+        loader,
+        pack_version,
+        preferred,
+    } = plan;
+    if !install::is_supported_loader(loader) {
+        return Ok((
+            game_version.to_string(),
+            None,
+            Some(unsupported_loader_warning(loader)),
+        ));
+    }
+    let requested = normalize_loader_version(
+        game_version,
+        loader,
+        preferred.or_else(|| pack_version.clone()),
+    );
+    let parent = ensure_loader(
+        app,
+        client,
+        cfg,
+        game_version,
+        loader,
+        requested.as_deref(),
+        progress,
+    )
+    .await?;
+    Ok((parent, requested, None))
+}
+
+/// 实例描述里的加载器一栏：装不了的标注出来，版本列表里一眼能看出这个实例不能直接玩
+fn loader_tag(loader: &str) -> String {
+    if install::is_supported_loader(loader) {
+        loader.to_string()
+    } else {
+        format!("{}（暂不支持）", install::loader_display_name(loader))
+    }
+}
+
+/// 一个待下载的 CurseForge 文件，连同它在清单里的身份与落盘位置
+#[derive(Clone)]
+struct Planned {
+    task: FileTask,
+    project_id: i64,
+    file_id: i64,
+    /// 相对实例目录的路径，写进整合包清单用
+    relative: String,
+}
+
+/// 把一个 CurseForge 文件安排到实例里的位置：光影、资源包按项目大类分目录
+fn curse_task(
+    file: &curseforge::FileDownload,
+    file_id: i64,
+    class_id: Option<i64>,
+    root: &Path,
+) -> Planned {
+    let sub = pack_subdir(class_id, &file.name, &file.modules);
+    // 与更新路径保持一致：文件名为空时用下载直链里的文件名
+    let file_name = download_file_name(file);
+    Planned {
+        task: FileTask {
+            dest: root.join(sub).join(&file_name),
+            url: file.url.clone(),
+            sha1: file.sha1.clone(),
+            size: file.size,
+            label: file.name.clone(),
+        },
+        project_id: file.project_id,
+        file_id,
+        relative: format!("{sub}/{file_name}"),
+    }
+}
+
+/// 「取文件信息」阶段失败的原因。
+/// 403 基本是国内直连 CurseForge 接口被 Cloudflare 拦截，不是作者限制下载
+/// （那种情况接口会给空 downloadUrl，由 CDN 兜底），提示要指向代理。
+fn resolve_failure_reason(error: &anyhow::Error) -> &'static str {
+    let text = error.to_string();
+    if text.contains("403") {
+        "无法访问 CurseForge 接口（国内网络需开启系统代理后重试）"
+    } else if text.contains("404") {
+        "镜像未收录该文件（开启系统代理后重试即可补齐）"
+    } else {
+        "获取下载信息失败，开启代理后重试即可补齐"
+    }
+}
+
+/// 「取文件信息」阶段失败的文件。顺带查一次项目名，让用户知道缺的是哪个 Mod（失败时才查）。
+async fn resolve_failure(
+    client: &reqwest::Client,
+    project_id: i64,
+    file_id: i64,
+    error: &anyhow::Error,
+) -> ImportFailure {
+    let name = curseforge::projects(client, &[project_id])
+        .await
+        .into_iter()
+        .next()
+        .map(|project| project.name)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| format!("项目 {project_id} / 文件 {file_id}"));
+    ImportFailure {
+        project_id,
+        file_id,
+        name,
+        reason: resolve_failure_reason(error).into(),
+    }
+}
+
+/// 下载阶段的失败项：按下载标签找回清单里的 projectID / fileID
+fn push_download_failures(
+    failures: &mut Vec<ImportFailure>,
+    planned: &[Planned],
+    failed: Vec<(String, String)>,
+) {
+    for (label, reason) in failed {
+        let found = planned.iter().find(|item| item.task.label == label);
+        failures.push(ImportFailure {
+            project_id: found.map(|item| item.project_id).unwrap_or(0),
+            file_id: found.map(|item| item.file_id).unwrap_or(0),
+            name: label,
+            reason,
+        });
+    }
+}
+
+/// 导入后自检发现的损坏 jar：能对上清单文件的按文件上报（可补下），对不上的归入提醒
+fn push_broken_files(
+    failures: &mut Vec<ImportFailure>,
+    warnings: &mut Vec<String>,
+    planned: &[Planned],
+    broken: Vec<(String, String)>,
+) {
+    for (name, reason) in broken {
+        let found = planned.iter().find(|item| {
+            item.task
+                .dest
+                .file_name()
+                .map(|value| value.to_string_lossy() == name)
+                .unwrap_or(false)
+        });
+        match found {
+            Some(item) => failures.push(ImportFailure {
+                project_id: item.project_id,
+                file_id: item.file_id,
+                name,
+                reason,
+            }),
+            None => warnings.push(format!("{name}：{reason}")),
+        }
+    }
+}
+
+/* ---------- 解析阶段失败的补下 ---------- */
+
+/// 解析阶段就失败的文件没有下载地址，进不了下载面板的失败批次；
+/// 按任务记下来，之后在任务卡片上批量补下或单项重试时重新解析。
+#[derive(Clone)]
+pub(crate) struct PendingSpecs {
+    pub(crate) instance_id: String,
+    pub(crate) specs: Vec<(i64, i64)>,
+}
+
+fn pending_slot() -> &'static Mutex<HashMap<String, PendingSpecs>> {
+    static SLOT: OnceLock<Mutex<HashMap<String, PendingSpecs>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 锁被污染（别处持锁时 panic）时照样取出数据：这里只是进程内的备忘，不该因此拒绝补下
+fn lock_pending() -> std::sync::MutexGuard<'static, HashMap<String, PendingSpecs>> {
+    pending_slot().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 新任务开始前只清掉它自己上一轮的记录
+pub fn reset_pending_specs(job: &str) {
+    lock_pending().remove(job);
+}
+
+pub fn add_pending_specs(
+    job: &str,
+    instance_id: &str,
+    specs: impl IntoIterator<Item = (i64, i64)>,
+) {
+    let specs: Vec<(i64, i64)> = specs.into_iter().collect();
+    if specs.is_empty() {
+        // 没有待补文件就不建条目：空条目会让补下流程误判成「有解析失败要处理」
+        return;
+    }
+    let mut slot = lock_pending();
+    let entry = slot.entry(job.to_string()).or_insert_with(|| PendingSpecs {
+        instance_id: instance_id.to_string(),
+        specs: Vec::new(),
+    });
+    for spec in specs {
+        if !entry.specs.contains(&spec) {
+            entry.specs.push(spec);
+        }
+    }
+}
+
+/// 取走某个任务名下的全部待补文件（批量补下用）
+pub fn take_pending_specs(job: &str) -> Option<PendingSpecs> {
+    lock_pending().remove(job)
+}
+
+/// 单项补下只读不取：失败时原条目要留在原任务上，卡片才不会丢了重试入口
+pub fn pending_specs(job: &str) -> Option<PendingSpecs> {
+    lock_pending().get(job).cloned()
+}
+
+pub fn remove_pending_spec(job: &str, project_id: i64, file_id: i64) {
+    let mut slot = lock_pending();
+    let now_empty = if let Some(entry) = slot.get_mut(job) {
+        entry.specs.retain(|spec| *spec != (project_id, file_id));
+        entry.specs.is_empty()
+    } else {
+        false
+    };
+    // 最后一个也补上了：连条目一起清掉，避免留下空壳
+    if now_empty {
+        slot.remove(job);
+    }
+}
+
+/// 把补下成功的文件追加进实例的整合包清单，之后用新版整合包更新时不会被当成包外文件
+fn add_pack_paths(root: &Path, paths: &[String]) -> Result<()> {
+    let path = root.join(".docl-pack.json");
+    let Ok(bytes) = std::fs::read(&path) else {
+        // 不是整合包实例，没有清单可写
+        return Ok(());
+    };
+    let mut record: Value = serde_json::from_slice(&bytes)?;
+    let files = record
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("整合包清单格式异常"))?
+        .entry("files")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if !files.is_array() {
+        bail!("整合包清单的 files 不是列表");
+    }
+    let list = files.as_array_mut().expect("上面已确认是列表");
+    let mut known: HashSet<String> = list
+        .iter()
+        .filter_map(|item| item.get("path").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    for item in paths {
+        if known.insert(item.clone()) {
+            list.push(serde_json::json!({ "path": item }));
+        }
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(&record)?)?;
+    Ok(())
+}
+
+/// 补下整合包清单里的文件：重新解析地址，按项目大类落进实例。
+/// 返回仍然没装上的项，由调用方决定记到哪个任务名下。
+pub async fn install_specs(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &Config,
+    instance_id: &str,
+    specs: &[(i64, i64)],
+    progress: Arc<ProgressState>,
+) -> Vec<ImportFailure> {
+    let root = instance::game_dir(cfg, instance_id);
+    let prefer_mirror = cfg.use_mirror();
+    let mut failures: Vec<ImportFailure> = Vec::new();
+    let mut planned: Vec<Planned> = Vec::new();
+    let total = specs.len();
+
+    // 与导入时一样并发解析：整批失败后一次补几十个文件，串行会等很久。
+    // 迭代器按值产出：引用模式 + async 块会触发编译器的高阶生命周期推断缺陷
+    let client_ref = client.clone();
+    let mut resolved = stream::iter(specs.iter().copied().map(|(project_id, file_id)| {
+        let client = client_ref.clone();
+        async move {
+            let outcome =
+                curseforge::file_download(&client, project_id, file_id, prefer_mirror).await;
+            (project_id, file_id, outcome)
+        }
+    }))
+    .buffer_unordered(8);
+    let mut done = 0usize;
+    while let Some((project_id, file_id, outcome)) = resolved.next().await {
+        done += 1;
+        progress.set_detail(format!("正在获取文件地址 {done}/{total}…"));
+        // 用户取消后没处理的一律按「已取消」带回，不能从待补清单里消失
+        if progress.is_cancelled() {
+            failures.push(ImportFailure {
+                project_id,
+                file_id,
+                name: format!("项目 {project_id} / 文件 {file_id}"),
+                reason: "已取消".into(),
+            });
+            continue;
+        }
+        match outcome {
+            Ok(file) => {
+                // Mod 一定是 jar，其余才需要查项目大类
+                let class_id = if file.name.to_lowercase().ends_with(".jar") {
+                    None
+                } else {
+                    curseforge::project_class_id(client, file.project_id, prefer_mirror).await
+                };
+                planned.push(curse_task(&file, file_id, class_id, &root));
+            }
+            Err(err) => failures.push(resolve_failure(client, project_id, file_id, &err).await),
+        }
+    }
+
+    let mut installed = Vec::new();
+    if !planned.is_empty() {
+        download::begin_stage(
+            app,
+            &progress,
+            format!("正在补下 {} 个文件…", planned.len()),
+        );
+        let tasks: Vec<FileTask> = planned.iter().map(|item| item.task.clone()).collect();
+        let outcome = download::run_tasks_reporting(
+            app,
+            client,
+            tasks,
+            (cfg.concurrency as usize).clamp(1, download::MAX_CONCURRENCY),
+            cfg.use_mirror(),
+            progress.clone(),
+        )
+        .await;
+        match outcome {
+            Ok(outcome) => {
+                push_download_failures(&mut failures, &planned, outcome.failed);
+            }
+            // 被取消或整体失败：没落盘的都算未完成，原因照实带回
+            Err(err) => {
+                let reason = err.to_string();
+                for item in planned.iter().filter(|item| !item.task.dest.exists()) {
+                    failures.push(ImportFailure {
+                        project_id: item.project_id,
+                        file_id: item.file_id,
+                        name: item.task.label.clone(),
+                        reason: reason.clone(),
+                    });
+                }
+            }
+        }
+        installed.extend(
+            planned
+                .iter()
+                .filter(|item| item.task.dest.exists())
+                .map(|item| item.relative.clone()),
+        );
+    }
+
+    if !installed.is_empty() {
+        if let Err(error) = add_pack_paths(&root, &installed) {
+            failures.push(ImportFailure {
+                project_id: 0,
+                file_id: 0,
+                name: "整合包清单".into(),
+                reason: format!("文件已补齐，但写入清单失败：{error}"),
+            });
+        }
+    }
+    failures
+}
+
+/// 失败项里能对应到 CurseForge 清单文件的那些（projectID / fileID）
+pub(crate) fn failure_specs(failures: &[ImportFailure]) -> Vec<(i64, i64)> {
+    failures
+        .iter()
+        .filter(|item| item.project_id > 0)
+        .map(|item| (item.project_id, item.file_id))
+        .collect()
+}
+
+/* ---------- 导入后的使用建议 ---------- */
+
+/// 导入完成后的使用建议：按模组数量估算内存需求，对照这个实例实际生效的分配。
+fn import_hints(cfg: &Config, instance_id: &str) -> Vec<String> {
+    let effective = instance::apply(cfg, instance_id);
+    let mods = instance::game_dir(cfg, instance_id).join("mods");
+    memory_hint(
+        count_mod_jars(&mods),
+        effective.memory_auto,
+        effective.memory_mb,
+    )
+    .into_iter()
+    .collect()
+}
+
+/// 模组越多越吃内存。自动分配会随可用内存浮动，只做说明；
+/// 手动分配低于建议值时才提醒，免得每次导入都弹一句废话。
+fn memory_hint(mod_count: usize, memory_auto: bool, memory_mb: u32) -> Option<String> {
+    let suggested_gb = match mod_count {
+        150.. => 8,
+        100.. => 6,
+        60.. => 4,
+        _ => return None,
+    };
+    if memory_auto {
+        Some(format!(
+            "共 {mod_count} 个模组，建议可用内存不低于 {suggested_gb} GB（当前为自动分配）"
+        ))
+    } else if memory_mb < suggested_gb * 1024 {
+        Some(format!(
+            "共 {mod_count} 个模组，建议在实例设置里把内存调到 {suggested_gb} GB（当前 {memory_mb} MB）"
+        ))
+    } else {
+        None
+    }
+}
+
+fn count_mod_jars(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .map(|ext| ext.eq_ignore_ascii_case("jar"))
+                        .unwrap_or(false)
+                })
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 fn extract_entries(
@@ -2540,7 +3216,8 @@ pub async fn import(
         .unwrap_or_else(|| preview.suggested_id.clone());
     let instance_id = unique_instance_id(cfg, &base_id);
 
-    let mut failed: Vec<String> = Vec::new();
+    let mut failures: Vec<ImportFailure> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     let mut installed_files = 0u32;
 
     let (_, game_version, loader) = match &parsed.source {
@@ -2552,40 +3229,32 @@ pub async fn import(
             overrides,
         } => {
             ensure_vanilla(app, client, cfg, game_version, progress.clone()).await?;
-            let requested = normalize_loader_version(
-                game_version,
-                loader,
-                options
-                    .loader_version
-                    .clone()
-                    .filter(|value| !value.trim().is_empty())
-                    .or_else(|| loader_version.clone()),
-            );
-            let parent = ensure_loader(
+            let (parent, requested, note) = ensure_pack_loader(
                 app,
                 client,
                 cfg,
-                game_version,
-                loader,
-                requested.as_deref(),
+                loader_plan(game_version, loader, loader_version, options),
                 progress.clone(),
             )
             .await?;
+            warnings.extend(note);
 
-            let dir = write_instance_json(cfg, &instance_id, &parent)?;
+            write_instance_json(cfg, &instance_id, &parent)?;
             instance::save(
                 cfg,
                 &instance_id,
                 &InstanceMeta {
                     display_name: Some(display_name.clone()),
-                    description: format!("从 CurseForge 整合包导入 · {game_version} · {loader}"),
+                    description: format!(
+                        "从 CurseForge 整合包导入 · {game_version} · {}",
+                        loader_tag(loader)
+                    ),
                     icon: "grass".into(),
                     category: "modpack".into(),
                     isolated: Some(true),
                     ..Default::default()
                 },
             )?;
-            let _ = dir;
 
             let natives = install::natives_dir(cfg, &parent);
             if natives.exists() {
@@ -2593,14 +3262,16 @@ pub async fn import(
                 copy_dir_all(&natives, &target)?;
             }
 
-            // 解析每个文件的下载地址
-            let specs: Vec<(i64, i64, bool)> = files
+            // 解析每个文件的下载地址。可选文件只在勾选了「安装可选文件」时才会进来，
+            // 进来的都是用户要的，失败一律照实上报
+            let specs: Vec<(i64, i64)> = files
                 .iter()
                 .cloned()
                 .filter(|(_, _, required)| *required || options.install_optional)
+                .map(|(project_id, file_id, _)| (project_id, file_id))
                 .collect();
             let total_specs = specs.len();
-            let project_ids: Vec<i64> = specs.iter().map(|(id, _, _)| *id).collect();
+            let project_ids: Vec<i64> = specs.iter().map(|(id, _)| *id).collect();
             download::begin_stage(
                 app,
                 &progress,
@@ -2609,47 +3280,17 @@ pub async fn import(
             let client_ref = client.clone();
             // API 源顺序跟随全局下载源设置：优先镜像时先试国内 MCIM
             let prefer_mirror = cfg.use_mirror();
-            let mut tasks: Vec<FileTask> = Vec::new();
-            let mut results: Vec<Result<Option<curseforge::FileDownload>>> = Vec::new();
-            let mut stream = stream::iter(specs.into_iter().map(|(project_id, file_id, required)| {
+            let mut stream = stream::iter(specs.into_iter().map(|(project_id, file_id)| {
                 let client = client_ref.clone();
                 async move {
-                    match curseforge::file_download(&client, project_id, file_id, prefer_mirror).await {
-                        Ok(pair) => Ok(Some(pair)),
-                        Err(err) => {
-                            if required {
-                                // 带上 ID，失败时用户能定位到具体文件。
-                                // 这里是「取文件信息」阶段：403 基本是国内直连 CurseForge 接口被 Cloudflare 拦截，
-                                // 不是作者限制下载（那种情况接口会给空 downloadUrl，由 CDN 兜底），提示要指向代理。
-                                let text = err.to_string();
-                                let reason = if text.contains("403") {
-                                    "无法访问 CurseForge 接口（国内网络需开启系统代理后重新导入）"
-                                } else if text.contains("404") {
-                                    "镜像未收录该文件（开启系统代理后重新导入即可补齐）"
-                                } else {
-                                    "获取下载信息失败，开启代理后重新导入可重试"
-                                };
-                                // 顺带查一次项目名，让用户知道缺的是哪个 Mod（失败时才查）
-                                let name = curseforge::projects(&client, &[project_id])
-                                    .await
-                                    .into_iter()
-                                    .next()
-                                    .map(|project| project.name)
-                                    .unwrap_or_default();
-                                if name.is_empty() {
-                                    Err(anyhow!("{project_id}/{file_id}：{reason}"))
-                                } else {
-                                    Err(anyhow!("{name}（{project_id}/{file_id}）：{reason}"))
-                                }
-                            } else {
-                                Ok(None)
-                            }
-                        }
-                    }
+                    let outcome =
+                        curseforge::file_download(&client, project_id, file_id, prefer_mirror).await;
+                    (project_id, file_id, outcome)
                 }
             }))
             // 403 来自上游网络而非并发压力（PCL 同样高并发无此问题），保持原并发
             .buffer_unordered(8);
+            let mut results = Vec::new();
             let mut resolved = 0usize;
             while let Some(result) = stream.next().await {
                 results.push(result);
@@ -2664,45 +3305,39 @@ pub async fn import(
             let class_ids = curseforge::project_class_ids(client, &project_ids, prefer_mirror).await;
             let root = instance::game_dir(cfg, &instance_id);
             let mut pack_paths: Vec<String> = Vec::new();
-            for result in results {
-                match result {
-                    Ok(Some(file)) => {
-                        let class_id = match class_ids.get(&file.project_id).copied() {
-                            Some(id) => Some(id),
-                            // 批量接口缺项时才逐个查，且只查非 jar 文件（Mod 一定是 jar）
-                            None if !file.name.to_lowercase().ends_with(".jar") => {
-                                curseforge::project_class_id(
-                                    client,
-                                    file.project_id,
-                                    prefer_mirror,
-                                )
-                                .await
-                            }
-                            None => None,
-                        };
-                        let sub = pack_subdir(class_id, &file.name, &file.modules);
-                        let dir = root.join(sub);
-                        std::fs::create_dir_all(&dir)?;
-                        // 与更新路径保持一致：文件名为空时用下载直链里的文件名
-                        let file_name = download_file_name(&file);
-                        pack_paths.push(format!("{sub}/{file_name}"));
-                        tasks.push(FileTask {
-                            dest: dir.join(file_name),
-                            url: file.url,
-                            sha1: file.sha1,
-                            size: file.size,
-                            label: file.name,
-                        });
+            let mut planned: Vec<Planned> = Vec::new();
+            for (project_id, file_id, outcome) in results {
+                let file = match outcome {
+                    Ok(file) => file,
+                    Err(err) => {
+                        failures
+                            .push(resolve_failure(client, project_id, file_id, &err).await);
+                        continue;
                     }
-                    Ok(None) => failed.push("可选文件下载地址缺失".into()),
-                    Err(err) => failed.push(err.to_string()),
-                }
+                };
+                let class_id = match class_ids.get(&file.project_id).copied() {
+                    Some(id) => Some(id),
+                    // 批量接口缺项时才逐个查，且只查非 jar 文件（Mod 一定是 jar）
+                    None if !file.name.to_lowercase().ends_with(".jar") => {
+                        curseforge::project_class_id(
+                            client,
+                            file.project_id,
+                            prefer_mirror,
+                        )
+                        .await
+                    }
+                    None => None,
+                };
+                let item = curse_task(&file, file_id, class_id, &root);
+                pack_paths.push(item.relative.clone());
+                planned.push(item);
             }
+            let tasks: Vec<FileTask> = planned.iter().map(|item| item.task.clone()).collect();
             if !tasks.is_empty() {
                 download::begin_stage(app, &progress, "正在下载整合包内容…");
                 let count = tasks.len() as u32;
                 // 整合包动辄几百个文件，个别文件超时不该让整个导入失败：
-                // 收集失败项，导入仍算完成，由下载面板提供「重试失败文件」
+                // 收集失败项，导入仍算完成，由下载面板提供「补下失败文件」
                 let outcome = download::run_tasks_reporting(
                     app,
                     client,
@@ -2712,14 +3347,13 @@ pub async fn import(
                     progress.clone(),
                 )
                 .await?;
-                let failed_count = outcome.failed.len() as u32;
-                installed_files += count.saturating_sub(failed_count);
-                for (label, reason) in outcome.failed {
-                    failed.push(format!("{label}：{reason}"));
-                }
+                installed_files += count.saturating_sub(outcome.failed.len() as u32);
+                push_download_failures(&mut failures, &planned, outcome.failed);
             }
             download::begin_stage(app, &progress, "正在校验下载文件…");
-            repair_broken_jars(client, cfg, &root, &tasks, &mut failed, progress.as_ref()).await;
+            let broken =
+                repair_broken_jars(client, cfg, &root, &tasks, progress.as_ref()).await;
+            push_broken_files(&mut failures, &mut warnings, &planned, broken);
 
             download::begin_stage(app, &progress, "正在解压整合包覆盖文件…");
             let path_owned = path.to_string();
@@ -2746,7 +3380,7 @@ pub async fn import(
                 requested.as_deref(),
                 &pack_paths,
             ) {
-                failed.push(format!("写入整合包清单失败：{error}"));
+                warnings.push(format!("写入整合包清单失败：{error}"));
             }
 
             (parent, game_version.clone(), loader.clone())
@@ -2759,25 +3393,15 @@ pub async fn import(
             files,
         } => {
             ensure_vanilla(app, client, cfg, game_version, progress.clone()).await?;
-            let requested = normalize_loader_version(
-                game_version,
-                loader,
-                options
-                    .loader_version
-                    .clone()
-                    .filter(|value| !value.trim().is_empty())
-                    .or_else(|| loader_version.clone()),
-            );
-            let parent = ensure_loader(
+            let (parent, requested, note) = ensure_pack_loader(
                 app,
                 client,
                 cfg,
-                game_version,
-                loader,
-                requested.as_deref(),
+                loader_plan(game_version, loader, loader_version, options),
                 progress.clone(),
             )
             .await?;
+            warnings.extend(note);
 
             write_instance_json(cfg, &instance_id, &parent)?;
             instance::save(
@@ -2785,7 +3409,10 @@ pub async fn import(
                 &instance_id,
                 &InstanceMeta {
                     display_name: Some(display_name.clone()),
-                    description: format!("从 Modrinth 整合包导入 · {game_version} · {loader}"),
+                    description: format!(
+                        "从 Modrinth 整合包导入 · {game_version} · {}",
+                        loader_tag(loader)
+                    ),
                     icon: "grass".into(),
                     category: "modpack".into(),
                     isolated: Some(true),
@@ -2798,14 +3425,19 @@ pub async fn import(
             }
 
             let root = instance::game_dir(cfg, &instance_id);
-            let mut tasks = Vec::new();
+            let mut planned: Vec<Planned> = Vec::new();
             let mut pack_paths = Vec::new();
             for (file_path, url, sha1, size, optional) in files {
                 // 可选文件也记入清单，避免下次更新时被当成「已移除」
                 pack_paths.push(file_path.clone());
                 if url.is_empty() {
                     if !optional || options.install_optional {
-                        failed.push(format!("缺少下载地址：{file_path}"));
+                        failures.push(ImportFailure {
+                            project_id: 0,
+                            file_id: 0,
+                            name: file_path.clone(),
+                            reason: "清单里没有下载地址".into(),
+                        });
                     }
                     continue;
                 }
@@ -2815,19 +3447,26 @@ pub async fn import(
                 let Some(relative) = safe_relative(file_path) else {
                     continue;
                 };
-                tasks.push(FileTask {
-                    url: url.clone(),
-                    dest: root.join(relative),
-                    sha1: sha1.clone(),
-                    size: *size,
-                    label: file_path.clone(),
+                planned.push(Planned {
+                    task: FileTask {
+                        url: url.clone(),
+                        dest: root.join(relative),
+                        sha1: sha1.clone(),
+                        size: *size,
+                        label: file_path.clone(),
+                    },
+                    // Modrinth 清单不带项目 ID，只能按路径补下
+                    project_id: 0,
+                    file_id: 0,
+                    relative: file_path.clone(),
                 });
             }
+            let tasks: Vec<FileTask> = planned.iter().map(|item| item.task.clone()).collect();
             if !tasks.is_empty() {
                 download::begin_stage(app, &progress, "正在下载整合包内容…");
                 let count = tasks.len() as u32;
                 // 整合包动辄几百个文件，个别文件超时不该让整个导入失败：
-                // 收集失败项，导入仍算完成，由下载面板提供「重试失败文件」
+                // 收集失败项，导入仍算完成，由下载面板提供「补下失败文件」
                 let outcome = download::run_tasks_reporting(
                     app,
                     client,
@@ -2837,14 +3476,13 @@ pub async fn import(
                     progress.clone(),
                 )
                 .await?;
-                let failed_count = outcome.failed.len() as u32;
-                installed_files += count.saturating_sub(failed_count);
-                for (label, reason) in outcome.failed {
-                    failed.push(format!("{label}：{reason}"));
-                }
+                installed_files += count.saturating_sub(outcome.failed.len() as u32);
+                push_download_failures(&mut failures, &planned, outcome.failed);
             }
             download::begin_stage(app, &progress, "正在校验下载文件…");
-            repair_broken_jars(client, cfg, &root, &tasks, &mut failed, progress.as_ref()).await;
+            let broken =
+                repair_broken_jars(client, cfg, &root, &tasks, progress.as_ref()).await;
+            push_broken_files(&mut failures, &mut warnings, &planned, broken);
 
             download::begin_stage(app, &progress, "正在解压整合包覆盖文件…");
             let path_owned = path.to_string();
@@ -2869,7 +3507,7 @@ pub async fn import(
                 requested.as_deref(),
                 &pack_paths,
             ) {
-                failed.push(format!("写入整合包清单失败：{error}"));
+                warnings.push(format!("写入整合包清单失败：{error}"));
             }
 
             (parent, game_version.clone(), loader.clone())
@@ -2933,12 +3571,19 @@ pub async fn import(
 
             // 本地压缩包导入没有原始下载地址，只能报告损坏文件
             let instance_root = instance::game_dir(cfg, &instance_id);
-            repair_broken_jars(client, cfg, &instance_root, &[], &mut failed, progress.as_ref())
-                .await;
+            let broken =
+                repair_broken_jars(client, cfg, &instance_root, &[], progress.as_ref()).await;
+            push_broken_files(&mut failures, &mut warnings, &[], broken);
 
-            // 通用整合包沿用父实例的版本与加载器，父实例可能是 Forge/NeoForge 实例
-            let (game_version, loader) = install::instance_context(cfg, &parent)
+            // 通用整合包沿用父实例的版本与加载器，父实例可能是 Forge/NeoForge 实例；
+            // 包里的加载器启动器装不了时如实记下，版本列表与启动前提示都靠它
+            let (game_version, parent_loader) = install::instance_context(cfg, &parent)
                 .unwrap_or_else(|_| (parent.clone(), "vanilla".to_string()));
+            let loader = if preview.loader_supported {
+                parent_loader
+            } else {
+                preview.loader.clone()
+            };
             (parent, game_version, loader)
         }
     };
@@ -2949,8 +3594,8 @@ pub async fn import(
     match tokio::task::spawn_blocking(move || sync_content_dirs(&root_for_sync)).await {
         Ok(Ok(())) => {}
         // 解压大存档可能很慢，放到阻塞线程池，避免卡住界面
-        Ok(Err(error)) => failed.push(format!("整理存档内容失败：{error}")),
-        Err(error) => failed.push(format!("整理存档内容失败：{error}")),
+        Ok(Err(error)) => warnings.push(format!("整理存档内容失败：{error}")),
+        Err(error) => warnings.push(format!("整理存档内容失败：{error}")),
     }
 
     // 导入完成后做 PCL 式自包含：合并 json + jar 进实例，清掉独占的父版本目录。
@@ -2964,22 +3609,332 @@ pub async fn import(
         progress.set_message(format!("自包含合并失败（实例仍可用）：{error}"));
     }
 
+    // 解析阶段失败的文件没有下载地址，进不了下载面板的重试批次；
+    // 记到任务名下，任务卡片上可以整批补下，也可以逐个重试
+    add_pending_specs(&progress.job, &instance_id, failure_specs(&failures));
+
+    let hints = import_hints(cfg, &instance_id);
     Ok(ImportResult {
         instance_id,
         display_name,
         installed_files,
-        failed,
+        failures,
+        warnings,
+        hints,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        broken_jars, global_datapack_dir, infer_subdir, mrpack_candidate, old_pack_manifest,
-        pack_subdir, plan_update, sha1_file, sync_content_dirs, write_pack_record, UpdateFile,
+        add_pack_paths, broken_jars, detect_loader, extract_entries, generic_loader,
+        global_datapack_dir, infer_subdir, memory_hint, mmc_loader, mrpack_candidate,
+        normalize_loader_version, old_pack_manifest, pack_subdir, parse_pack, plan_update,
+        sha1_file, sync_content_dirs, unsupported_loader_warning, write_pack_record, PackPreview,
+        UpdateFile,
     };
+    use crate::download::ProgressState;
     use std::io::Write;
     use std::path::PathBuf;
+
+    /// 在临时目录里打一个 zip，条目按「路径 → 内容」顺序写入
+    fn make_zip_bytes(label: &str, entries: &[(&str, &[u8])]) -> PathBuf {
+        let dir = temp_dir(label);
+        let path = dir.join("pack.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for (name, body) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(body).unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    fn make_zip(label: &str, entries: &[(&str, &str)]) -> PathBuf {
+        let bytes: Vec<(&str, &[u8])> = entries.iter().map(|(name, body)| (*name, body.as_bytes())).collect();
+        make_zip_bytes(label, &bytes)
+    }
+
+    /// 通用压缩包里识别出的加载器
+    fn loader_of(path: &std::path::Path, prefix: &str) -> Option<(String, Option<String>)> {
+        let mut archive = super::open_zip(path.to_str().unwrap()).unwrap();
+        let names = super::zip_names(&mut archive);
+        generic_loader(&mut archive, &names, prefix)
+    }
+
+    /// 清单里的加载器 ID 要拆对：`fabric-loader-0.15.11` 的版本是 `0.15.11`。
+    /// 以前从第一个连字符切，会把 `loader-0.15.11` 当版本号去请求加载器配置，整包导入失败。
+    #[test]
+    fn splits_loader_id_and_version() {
+        assert_eq!(
+            detect_loader("forge-47.4.20"),
+            ("forge".into(), Some("47.4.20".into()))
+        );
+        assert_eq!(
+            detect_loader("fabric-loader-0.15.11"),
+            ("fabric".into(), Some("0.15.11".into()))
+        );
+        assert_eq!(
+            detect_loader("quilt-loader-0.21.0"),
+            ("quilt".into(), Some("0.21.0".into()))
+        );
+        // 老包用过 minecraftforge 这个前缀
+        assert_eq!(
+            detect_loader("minecraftforge-14.23.5.2855"),
+            ("forge".into(), Some("14.23.5.2855".into()))
+        );
+        assert_eq!(detect_loader("forge"), ("forge".into(), None));
+        // 只写名字不写版本
+        assert_eq!(detect_loader("fabric-loader"), ("fabric".into(), None));
+        assert_eq!(detect_loader("quilt-loader"), ("quilt".into(), None));
+        // 带游戏版本的全坐标要去掉前缀
+        let (loader, version) = detect_loader("forge-1.20.1-47.4.20");
+        assert_eq!(
+            normalize_loader_version("1.20.1", &loader, version),
+            Some("47.4.20".into())
+        );
+    }
+
+    /// 认不出的加载器保留真名，不能悄悄当成原版
+    #[test]
+    fn keeps_unknown_loader_names() {
+        assert_eq!(
+            detect_loader("cleanroom-0.7.14-alpha"),
+            ("cleanroom".into(), Some("0.7.14-alpha".into()))
+        );
+        assert_eq!(
+            detect_loader("liteloader-1.12.2-SNAPSHOT"),
+            ("liteloader".into(), Some("1.12.2-SNAPSHOT".into()))
+        );
+        assert_eq!(
+            detect_loader("rift-1.0.4-1.13"),
+            ("rift".into(), Some("1.0.4-1.13".into()))
+        );
+        assert!(!crate::install::is_supported_loader("cleanroom"));
+        assert!(unsupported_loader_warning("cleanroom").contains("Cleanroom"));
+    }
+
+    /// GTO 形态的 CurseForge 包：Forge 47.4.20、169 个必需文件 + 若干可选，
+    /// overrides 里带 config/openloader。解析计数要对，覆盖文件要原样落盘。
+    #[test]
+    fn parses_gto_shaped_pack_and_extracts_overrides() {
+        let mut files = String::new();
+        for index in 0..169 {
+            files.push_str(&format!(
+                r#"{{"projectID": 1000,"fileID": {},"required": true}},"#,
+                500_000 + index
+            ));
+        }
+        for index in 0..3 {
+            files.push_str(&format!(
+                r#"{{"projectID": 2000,"fileID": {},"required": false}},"#,
+                600_000 + index
+            ));
+        }
+        let manifest = format!(
+            r#"{{"minecraft":{{"version":"1.20.1","modLoaders":[{{"id":"forge-47.4.20","primary":true}}]}},
+"manifestType":"minecraftModpack","manifestVersion":1,
+"name":"GregTech Odyssey","version":"0.5.6-beta","overrides":"overrides",
+"files":[{}]}}"#,
+            files.trim_end_matches(',')
+        );
+        // 老配置文件常见 GBK：「中文」= D6 D0 CE C4。必须按字节原样落盘，不能被当成文本改写
+        let gbk_toml: &[u8] = b"# \xD6\xD0\xCE\xC4\r\n[legacy]\r\n";
+        let path = make_zip_bytes(
+            "gto",
+            &[
+                ("manifest.json", manifest.as_bytes()),
+                ("overrides/config/forge-common.toml", gbk_toml),
+                (
+                    "overrides/config/openloader/resources/gto/data/gto/recipes/gregtech.json",
+                    br#"{"type":"minecraft:crafting_shaped"}"#,
+                ),
+                ("overrides/config/gregtech.toml", b"ticks { }\n"),
+                ("overrides/config/paxi/datapacks/gto.zip", b"PK\x05\x06"),
+            ],
+        );
+        let parsed = parse_pack(path.to_str().unwrap(), false).unwrap();
+        let preview = &parsed.preview;
+        assert_eq!(preview.format, "curseforge");
+        assert_eq!(preview.name, "GregTech Odyssey");
+        assert_eq!(preview.version, "0.5.6-beta");
+        assert_eq!(preview.game_version, "1.20.1");
+        assert_eq!(preview.loader, "forge");
+        assert_eq!(preview.loader_version.as_deref(), Some("47.4.20"));
+        assert!(preview.loader_supported);
+        assert_eq!(preview.file_count, 172);
+        assert_eq!(preview.optional_count, 3);
+        assert!(preview.warnings.is_empty(), "{:?}", preview.warnings);
+
+        let dest = temp_dir("gto-out");
+        let progress = ProgressState::new("install");
+        let written =
+            extract_entries(path.to_str().unwrap(), "overrides/", &dest, false, &progress).unwrap();
+        assert_eq!(written, 4);
+        let openloader = dest
+            .join("config/openloader/resources/gto/data/gto/recipes/gregtech.json");
+        assert!(openloader.is_file(), "config/openloader 必须落到实例目录");
+        assert_eq!(
+            std::fs::read(dest.join("config/forge-common.toml")).unwrap(),
+            gbk_toml
+        );
+        assert!(dest.join("config/paxi/datapacks/gto.zip").is_file());
+        assert!(!dest.join("manifest.json").exists(), "清单本身不能进实例目录");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    /// 用了启动器装不了的加载器：预览如实报出名字并说明，不归成原版
+    #[test]
+    fn reports_unsupported_loader_in_manifests() {
+        let curse = make_zip(
+            "cleanroom-cf",
+            &[
+                (
+                    "manifest.json",
+                    r#"{"minecraft":{"version":"1.12.2","modLoaders":[{"id":"cleanroom-0.7.14-alpha","primary":true}]},"name":"CR","version":"1","overrides":"overrides","files":[{"projectID":1,"fileID":2,"required":true}]}"#,
+                ),
+            ],
+        );
+        let preview = parse_pack(curse.to_str().unwrap(), false).unwrap().preview;
+        assert_eq!(preview.loader, "cleanroom");
+        assert!(!preview.loader_supported);
+        assert!(preview.warnings.iter().any(|item| item.contains("Cleanroom")));
+
+        let mrpack = make_zip(
+            "liteloader-mr",
+            &[(
+                "modrinth.index.json",
+                r#"{"name":"LL","versionId":"1.0","dependencies":{"minecraft":"1.12.2","liteloader":"1.12.2-SNAPSHOT"},"files":[]}"#,
+            )],
+        );
+        let preview = parse_pack(mrpack.to_str().unwrap(), false).unwrap().preview;
+        assert_eq!(preview.loader, "liteloader");
+        assert!(!preview.loader_supported);
+        assert_eq!(preview.loader_version.as_deref(), Some("1.12.2-SNAPSHOT"));
+
+        let _ = std::fs::remove_dir_all(curse.parent().unwrap());
+        let _ = std::fs::remove_dir_all(mrpack.parent().unwrap());
+    }
+
+    /// 通用压缩包也要认加载器：自带 versions/ 的看主类，Prism / MultiMC 实例看补丁与组件
+    #[test]
+    fn generic_zip_reports_embedded_loader() {
+        let self_contained = make_zip(
+            "generic-version",
+            &[
+                (
+                    "versions/Cleanroom/Cleanroom.json",
+                    r#"{"id":"Cleanroom","mainClass":"top.outlands.foundation.boot.Foundation","libraries":[{"name":"com.cleanroommc:cleanroom-loader:0.7.14-alpha"}]}"#,
+                ),
+                ("mods/a.jar", "jar"),
+            ],
+        );
+        assert_eq!(
+            loader_of(&self_contained, ""),
+            Some(("cleanroom".into(), None))
+        );
+
+        // Cleanroom 的 MultiMC 实例沿用 net.minecraftforge 这个 uid，只能靠补丁里的主类区分
+        let mmc = make_zip(
+            "generic-mmc",
+            &[
+                (
+                    "instance/mmc-pack.json",
+                    r#"{"formatVersion":1,"components":[{"uid":"net.minecraft","version":"1.12.2"},{"uid":"org.lwjgl3","version":"3.4.3"},{"uid":"net.minecraftforge","version":"0.7.14-alpha"}]}"#,
+                ),
+                (
+                    "instance/patches/net.minecraftforge.json",
+                    r#"{"name":"Cleanroom","mainClass":"top.outlands.foundation.boot.Foundation","libraries":[{"name":"com.cleanroommc:cleanroom-loader:0.7.14-alpha"}]}"#,
+                ),
+            ],
+        );
+        assert_eq!(
+            loader_of(&mmc, "instance/").map(|(loader, _)| loader),
+            Some("cleanroom".into())
+        );
+
+        // 普通 Forge 实例：补丁是 launchwrapper + forge 库
+        let forge = make_zip(
+            "generic-forge",
+            &[(
+                "patches/net.minecraftforge.json",
+                r#"{"mainClass":"net.minecraft.launchwrapper.Launch","libraries":[{"name":"net.minecraftforge:forge:1.12.2-14.23.5.2860"}]}"#,
+            )],
+        );
+        assert_eq!(
+            loader_of(&forge, "").map(|(loader, _)| loader),
+            Some("forge".into())
+        );
+
+        // 没有补丁时退回组件表；对不上任何已知加载器的主类记成 unknown
+        let components = serde_json::json!({"components":[{"uid":"net.minecraftforge","version":"14.23.5.2860"}]});
+        assert_eq!(
+            mmc_loader(&components),
+            Some(("forge".into(), Some("14.23.5.2860".into())))
+        );
+        let weird = make_zip(
+            "generic-unknown",
+            &[(
+                "versions/Weird/Weird.json",
+                r#"{"id":"Weird","mainClass":"com.example.launch.Boot"}"#,
+            )],
+        );
+        assert_eq!(
+            loader_of(&weird, "").map(|(loader, _)| loader),
+            Some("unknown".into())
+        );
+
+        for path in [self_contained, mmc, forge, weird] {
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        }
+    }
+
+    /// 内存建议按模组数量分档：小包不啰嗦，手动分配够了也不提
+    #[test]
+    fn memory_hint_scales_with_mod_count() {
+        assert!(memory_hint(30, false, 1024).is_none());
+        assert!(memory_hint(80, false, 2048).unwrap().contains("4 GB"));
+        assert!(memory_hint(120, false, 8192).is_none(), "分配够了就不必再提");
+        assert!(memory_hint(200, true, 0).unwrap().contains("8 GB"));
+    }
+
+    /// 补下成功的文件要追加进整合包清单，且不能重复
+    #[test]
+    fn appends_retried_files_to_pack_record() {
+        let root = temp_dir("pack-add");
+        std::fs::create_dir_all(&root).unwrap();
+        write_pack_record(
+            &root,
+            &PackPreview::default(),
+            "1.20.1",
+            "forge",
+            Some("47.4.20"),
+            &["mods/a.jar".into()],
+        )
+        .unwrap();
+        add_pack_paths(&root, &["mods/b.jar".into(), "mods/a.jar".into()]).unwrap();
+        add_pack_paths(&root, &["mods/b.jar".into()]).unwrap();
+        let record: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join(".docl-pack.json")).unwrap(),
+        )
+        .unwrap();
+        let paths: Vec<&str> = record["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["path"].as_str())
+            .collect();
+        assert_eq!(paths, vec!["mods/a.jar", "mods/b.jar"]);
+        // 不是整合包实例（没有清单）时静默跳过
+        let plain = temp_dir("pack-plain");
+        add_pack_paths(&plain, &["mods/b.jar".into()]).unwrap();
+        assert!(!plain.join(".docl-pack.json").exists());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&plain);
+    }
 
     /// CurseForge 清单只有 projectID，光影/资源包/数据包/地图要落到对应目录
     #[test]

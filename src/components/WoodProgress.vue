@@ -34,7 +34,7 @@ const width = computed(() => (props.indeterminate ? 38 : Math.min(100, Math.max(
   border-radius: 1px;
   background: var(--moss);
   box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.18);
-  transition: width 260ms var(--ease-out-quart);
+  transition: width var(--dur-2) var(--ease-out-quart);
 }
 
 .bar__fill--indeterminate {

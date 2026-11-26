@@ -3,6 +3,7 @@ use crate::download::{self, FileTask, ProgressState};
 use crate::models::*;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -314,7 +315,8 @@ pub fn detect(cfg: &Config) -> Vec<JavaInfo> {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_vendor, pick_for_major, JavaInfo};
+    use super::{detect_vendor, pick_for_major, pick_runtime_component, JavaInfo};
+    use crate::models::{RuntimeEntry, RuntimeManifestRef, RuntimeVersion};
 
     fn java(major: u32) -> JavaInfo {
         JavaInfo {
@@ -324,6 +326,17 @@ mod tests {
             source: "test".into(),
             kind: "JDK".into(),
             vendor: "Eclipse Temurin".into(),
+        }
+    }
+
+    fn runtime_entry(version: &str) -> RuntimeEntry {
+        RuntimeEntry {
+            manifest: RuntimeManifestRef {
+                url: format!("https://example.com/{version}.json"),
+            },
+            version: RuntimeVersion {
+                name: version.to_string(),
+            },
         }
     }
 
@@ -348,6 +361,33 @@ mod tests {
         // 没有精确版本时向上兼容，但 Java 8 时代不允许高版本顶替
         assert_eq!(pick_for_major(&list, 16).map(|info| info.major), Some(17));
         assert!(pick_for_major(&[java(21)], 8).is_none());
+    }
+
+    /// 选组件必须可复现：HashMap 迭代顺序不定，「先到先得」会让同一次安装
+    /// 随机装到不同组件。规则是稳定组件（不含 snapshot）优先、组内按名字典序，
+    /// 且 minecraft-java-exe 这类启动器外壳要排除。
+    #[test]
+    fn picks_stable_runtime_component_deterministically() {
+        let mut windows: std::collections::HashMap<String, Vec<RuntimeEntry>> =
+            std::collections::HashMap::new();
+        windows.insert("java-runtime-snapshot".into(), vec![runtime_entry("21.0.3")]);
+        windows.insert("minecraft-java-exe".into(), vec![runtime_entry("21.0.9")]);
+        windows.insert("java-runtime-epsilon".into(), vec![runtime_entry("21.0.9")]);
+        let picked = pick_runtime_component(&windows, 21).expect("应当找到匹配组件");
+        assert_eq!(picked.0, "java-runtime-epsilon");
+
+        // 两个稳定组件都匹配时取字典序第一个
+        let mut two: std::collections::HashMap<String, Vec<RuntimeEntry>> =
+            std::collections::HashMap::new();
+        two.insert("java-runtime-epsilon".into(), vec![runtime_entry("21.0.9")]);
+        two.insert("java-runtime-alpha".into(), vec![runtime_entry("21.0.1")]);
+        assert_eq!(
+            pick_runtime_component(&two, 21).expect("应当找到匹配组件").0,
+            "java-runtime-alpha"
+        );
+
+        // 没有匹配的大版本返回 None，交由调用方报错
+        assert!(pick_runtime_component(&windows, 17).is_none());
     }
 }
 
@@ -408,6 +448,38 @@ pub async fn available_runtime_majors(cfg: &Config) -> Result<Vec<u32>> {
     Ok(majors)
 }
 
+/// 在官方运行时清单里为某个大版本挑选组件，返回（组件名，manifest 地址）。
+///
+/// 清单是 `HashMap<String, Vec<RuntimeEntry>>`，迭代顺序每次进程都不同；
+/// 「先到先得」会让同一次安装随机选到不同组件。这里固定规则：
+/// 只考虑 `jre-*` / `java-runtime-*`（`minecraft-java-exe` 是启动器外壳，不能跑游戏），
+/// 稳定组件（不含 snapshot）优先，同组内按组件名字典序，保证结果可复现。
+pub(crate) fn pick_runtime_component(
+    windows: &HashMap<String, Vec<RuntimeEntry>>,
+    major: u32,
+) -> Option<(&String, &String)> {
+    let mut candidates: Vec<(&String, &String)> = Vec::new();
+    for (component, entries) in windows {
+        if !(component.starts_with("jre-") || component.starts_with("java-runtime")) {
+            continue;
+        }
+        for entry in entries {
+            if parse_major(&entry.version.name) == major {
+                candidates.push((component, &entry.manifest.url));
+            }
+        }
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates.sort_by(|a, b| {
+        let a_snapshot = a.0.contains("snapshot");
+        let b_snapshot = b.0.contains("snapshot");
+        a_snapshot.cmp(&b_snapshot).then_with(|| a.0.cmp(b.0))
+    });
+    candidates.into_iter().next()
+}
+
 /// 第三方发行版固定提供这些大版本；Mojang 官方目录另行动态读取。
 pub fn vendor_majors(source: &str) -> Vec<u32> {
     match source {
@@ -430,20 +502,11 @@ pub async fn install_runtime(
         .windows_x64
         .ok_or_else(|| anyhow!("官方未提供 Windows x64 Java 运行时"))?;
 
-    let mut best: Option<(String, String)> = None;
-    for (component, entries) in &windows {
-        for entry in entries {
-            if parse_major(&entry.version.name) != major {
-                continue;
-            }
-            if best.is_none() {
-                best = Some((component.clone(), entry.manifest.url.clone()));
-            }
-        }
-    }
-    let Some((component, manifest_url)) = best else {
+    let Some((component, manifest_url)) = pick_runtime_component(&windows, major) else {
         bail!("未找到适配 Java {major} 的官方运行时");
     };
+    let component = component.clone();
+    let manifest_url = manifest_url.clone();
 
     progress.set_message(format!("正在下载 Java {major} 运行时…"));
     let manifest: RuntimeManifest =

@@ -660,6 +660,24 @@ async fn cursemaven_download(
     })
 }
 
+/// 按 fileId 分段拼出官方 CDN 直链。文件名里的空格、`#`、`?` 必须转义：
+/// 不转义会被当成片段或查询串，地址直接失效，而失败现象和作者限制下载一模一样。
+fn cdn_url(file_id: i64, file_name: &str) -> Option<String> {
+    let name = file_name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    // 结尾不能带 `/`：path_segments_mut().push 会再补一个，拼出 `//` 这种无效地址
+    let mut url = reqwest::Url::parse(&format!(
+        "https://edge.forgecdn.net/files/{}/{}",
+        file_id / 1000,
+        file_id % 1000
+    ))
+    .ok()?;
+    url.path_segments_mut().ok()?.push(name);
+    Some(url.to_string())
+}
+
 /// 读取文件详情并取出下载直链。
 /// 403/404 属于服务端明确拒绝，原地重试没有意义，像 PCL 一样直接换源：
 /// 先试配置偏好的源，失败再换另一个；每个源内部仍有一次重试。
@@ -693,17 +711,8 @@ pub async fn file_download(
     // 官方 CDN 对这情况返回 404，镜像能取到，交给下载层的镜像轮换处理。
     let download_url = match file.download_url.filter(|url| !url.trim().is_empty()) {
         Some(url) => url,
-        None => {
-            if file_name.trim().is_empty() {
-                return Err(anyhow!("作者未开放第三方下载，且接口未返回文件名"));
-            }
-            format!(
-                "https://edge.forgecdn.net/files/{}/{}/{}",
-                file.id / 1000,
-                file.id % 1000,
-                file_name
-            )
-        }
+        None => cdn_url(file.id, &file_name)
+            .ok_or_else(|| anyhow!("作者未开放第三方下载，且接口未返回文件名"))?,
     };
     let name = if file_name.is_empty() {
         format!("{mod_id}-{file_id}.jar")
@@ -1125,5 +1134,40 @@ Found: https://edge.forgecdn.net/files/7125/700/indestructible-20.13.0.jar\n\
             "https://mod.mcimirror.top/files/7125/700/indestructible-20.13.0.jar"
         ));
         assert!(!super::trusted_cdn_url("https://evil.example.com/steal.jar"));
+    }
+
+    /// downloadUrl 为空时按 fileId 拼直链：普通文件名原样，没有文件名就不给假地址
+    #[test]
+    fn builds_cdn_url_from_file_id() {
+        assert_eq!(
+            super::cdn_url(4728761, "gto-seal-runtime-1.20.1-1.0.0.jar").as_deref(),
+            Some("https://edge.forgecdn.net/files/4728/761/gto-seal-runtime-1.20.1-1.0.0.jar")
+        );
+        assert!(super::cdn_url(4728761, "  ").is_none());
+    }
+
+    /// 文件名里的空格、#、? 和中文必须转义，否则会被截成片段或查询串
+    #[test]
+    fn escapes_special_characters_in_cdn_url() {
+        let url = super::cdn_url(5_500_001, "GT Seal #1 (final)?.jar").unwrap();
+        assert!(url.ends_with("/files/5500/1/GT%20Seal%20%231%20(final)%3F.jar"), "{url}");
+        let unicode = super::cdn_url(5_500_001, "模组.jar").unwrap();
+        assert!(unicode.ends_with("/%E6%A8%A1%E7%BB%84.jar"), "{unicode}");
+    }
+
+    /// 官方 CDN 对这类直链返回 403/404 时要能换到 MCIM 镜像：
+    /// 候选里必须同时有官方与镜像，且路径一致
+    #[test]
+    fn cdn_url_has_mirror_candidate_for_403() {
+        let official = super::cdn_url(4728761, "gto-seal-runtime-1.20.1-1.0.0.jar").unwrap();
+        for use_mirror in [true, false] {
+            let list = crate::sources::candidates(&official, use_mirror);
+            assert_eq!(list[0], official, "forgecdn 官方通常更快，应排在前面");
+            let mirror = list
+                .iter()
+                .find(|item| item.contains("mod.mcimirror.top"))
+                .expect("必须有 MCIM 镜像候选");
+            assert!(mirror.ends_with("/files/4728/761/gto-seal-runtime-1.20.1-1.0.0.jar"));
+        }
     }
 }

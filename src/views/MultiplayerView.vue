@@ -1,4 +1,4 @@
-﻿﻿﻿﻿<script setup lang="ts">
+﻿﻿﻿﻿﻿<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
@@ -18,6 +18,7 @@ import AppIcon from "../components/AppIcon.vue";
 import IconButton from "../components/IconButton.vue";
 import WoodButton from "../components/WoodButton.vue";
 import WoodInput from "../components/WoodInput.vue";
+import WoodModal from "../components/WoodModal.vue";
 import WoodSelect from "../components/WoodSelect.vue";
 import WoodToggle from "../components/WoodToggle.vue";
 import {
@@ -67,10 +68,56 @@ const serverForm = reactive({
   motd: "DOCL 本地服务器",
   maxPlayers: 10,
   viewDistance: 8,
-  onlineMode: true,
+  // 离线账号无法通过正版验证，默认关闭；界面会同时给出公网风险提示
+  onlineMode: selectedAccount.value?.kind !== "offline",
   whiteList: false,
   eula: false,
+  playerName: selectedAccount.value?.name ?? "",
 });
+/// 控制台输入的本地预检结果：jvm / cjk / unknown，只在输入有问题时显示提示
+const consoleHint = ref<"" | "jvm" | "cjk" | "unknown">("");
+
+// 改动输入后收起上一次提示，避免旧提示一直挂着
+watch(consoleInput, () => {
+  if (consoleHint.value) consoleHint.value = "";
+});
+const reportOpen = ref(false);
+const reportText = ref("");
+const reportBusy = ref(false);
+/// 当前登录的是离线账号：开正版验证会被服务端拒绝
+const accountIsOffline = computed(() => selectedAccount.value?.kind === "offline");
+
+watch(
+  selectedAccount,
+  (account) => {
+    if (account && !serverForm.playerName) serverForm.playerName = account.name;
+  },
+  { immediate: true }
+);
+
+/// 会接收中文参数的聊天类指令；其它指令带中文基本是误把说明一起粘进来
+const CHAT_COMMANDS = new Set([
+  "say",
+  "tell",
+  "msg",
+  "w",
+  "me",
+  "title",
+  "tellraw",
+  "teammsg",
+  "broadcast",
+]);
+
+function consoleIssue(line: string): "" | "jvm" | "cjk" | "unknown" {
+  if (/^-(?:[xX]|XX:|D)/.test(line)) return "jvm";
+  if (/[^\x00-\x7F]/.test(line)) {
+    const first = line.replace(/^\//, "").split(/\s+/)[0]?.toLowerCase() ?? "";
+    if (!CHAT_COMMANDS.has(first)) return "cjk";
+  }
+  if (serverStatus.value?.loader === "vanilla" && /^spark\b/i.test(line)) return "unknown";
+  return "";
+}
+
 
 const tc = ref<TcStatus | null>(null);
 const tcPreparing = ref(false);
@@ -588,6 +635,15 @@ async function startServer() {
     notify("没有可用于开服的版本", "err");
     return;
   }
+  if (serverForm.whiteList && !serverForm.playerName.trim()) {
+    // 不硬拦：允许先开服再在控制台 whitelist add，但必须让用户知道现在谁都进不来
+    const ok = await confirm(
+      "已开启白名单但没填「你的游戏 ID」，开服后暂时没有人能进入。\n" +
+        "可以开服后在控制台执行 whitelist add <名字>，或现在回去填上。是否继续开服？",
+      { title: "白名单为空", kind: "warning" }
+    );
+    if (!ok) return;
+  }
   serverBusy.value = true;
   try {
     serverStatus.value = await api.serverStart(serverVersionId.value, {
@@ -598,6 +654,7 @@ async function startServer() {
       online_mode: serverForm.onlineMode,
       white_list: serverForm.whiteList,
       accept_eula: true,
+      player_name: serverForm.playerName.trim(),
     });
     notify("服务端已启动，正在等待就绪");
   } catch (err) {
@@ -620,11 +677,155 @@ async function stopServer() {
 async function sendConsole() {
   const line = consoleInput.value.trim();
   if (!line) return;
+  const issue = consoleIssue(line);
+  consoleHint.value = issue;
+  // JVM 参数和中文指令 100% 是误操作，直接拦截；其它只提示，用户装了插件仍可发送
+  if (issue === "jvm") {
+    notify("这是 Java 虚拟机参数，需要在设置里填写", "err");
+    return;
+  }
+  if (issue === "cjk") {
+    notify("控制台只接受英文服务端指令，含中文会被服务端拒绝", "err");
+    return;
+  }
   try {
     await api.serverCommand(line);
     consoleInput.value = "";
   } catch (err) {
     notify(`发送失败：${String(err)}`, "err");
+  }
+}
+
+function openPerformanceSettings() {
+  store.page = "settings";
+  store.settingsFocus = "performance";
+}
+
+interface ConsoleNote {
+  level: "info" | "warn" | "error";
+  text: string;
+  action?: { label: string; kind: "whitelist" | "settings"; name?: string };
+}
+
+/// 已知日志的注解：把 “警告原文” 翻译成 “发生了什么 + 该点哪里”
+function consoleNote(line: string): ConsoleNote | null {
+  if (/Can't keep up!.*Running \d+ms or \d+ ticks behind/i.test(line)) {
+    return {
+      level: "info",
+      text: "启动或保存区块瞬间的阻塞，原版服务端正常现象，无需处理；若正好此刻登录，稍等重进即可。",
+    };
+  }
+  if (/SERVER IS RUNNING IN OFFLINE\/INSECURE MODE/i.test(line)) {
+    return {
+      level: "info",
+      text: "离线模式已生效。自己或局域网游玩没问题，开公网请改回正版验证。",
+    };
+  }
+  if (/handleDisconnection\(\) called twice/i.test(line)) {
+    return { level: "info", text: "无害提示，可忽略。" };
+  }
+  if (/lost connection: Disconnected/i.test(line)) {
+    return {
+      level: "warn",
+      text: "客户端主动断开。若本机或朋友反复被踢，先检查：离线账号遇上正版验证（需停服后关闭），或客户端与服务端版本不一致。",
+    };
+  }
+  if (/not white-listed on this server/i.test(line)) {
+    const name =
+      /Disconnecting\s+(\w+)/i.exec(line)?.[1] ??
+      /^\[[^\]]+\]\s+(\w+)\s+\/\d/i.exec(line)?.[1];
+    return {
+      level: "error",
+      text: "该账号不在白名单，服务器把连接拒绝了。",
+      action: name
+        ? { label: `加入白名单：${name}`, kind: "whitelist", name }
+        : undefined,
+    };
+  }
+  if (/Address already in use|Failed to bind to port|BindException/i.test(line)) {
+    return {
+      level: "error",
+      text: "端口被占用：可能已有一个服务端在运行，换一个端口后重启即可。",
+    };
+  }
+  if (/UnsupportedClassVersionError|class file version/i.test(line)) {
+    return {
+      level: "error",
+      text: "Java 版本过低，加载器或游戏需要更高版本。",
+      action: { label: "打开设置", kind: "settings" },
+    };
+  }
+  if (/OutOfMemoryError|Java heap space/i.test(line)) {
+    return {
+      level: "error",
+      text: "内存不足。原版服务端主要吃单线程 CPU，调内存收益有限，但过小会直接崩溃。",
+      action: { label: "打开设置", kind: "settings" },
+    };
+  }
+  if (/Unknown or incomplete command/i.test(line)) {
+    return {
+      level: "warn",
+      text: "控制台只接受服务端指令；Java 参数请在「设置 → 性能与参数」里填写。",
+    };
+  }
+  return null;
+}
+
+/// 日志行内容不变时注解也不会变；后端每 1.5 秒回传全量日志，
+/// 逐行跑正则太浪费，这里按行缓存，只有新行才重新匹配。
+const consoleNoteCache = new Map<string, ConsoleNote | null>();
+
+function cachedNote(line: string): ConsoleNote | null {
+  const key = `${serverStatus.value?.loader ?? ""}\u0000${line}`;
+  const hit = consoleNoteCache.get(key);
+  if (hit !== undefined) return hit;
+  const note = consoleNote(line);
+  // 日志最多 400 行，超出后整体清空，避免长时间运行时无限增长
+  if (consoleNoteCache.size > 1200) consoleNoteCache.clear();
+  consoleNoteCache.set(key, note);
+  return note;
+}
+
+const consoleLines = computed(() =>
+  (serverStatus.value?.log ?? []).map((line) => ({ line, note: cachedNote(line) }))
+);
+
+function runNoteAction(action: NonNullable<ConsoleNote["action"]>) {
+  if (action.kind === "whitelist" && action.name) {
+    void addWhitelist(action.name);
+    return;
+  }
+  openPerformanceSettings();
+}
+
+async function addWhitelist(name: string) {
+  try {
+    await api.serverCommand(`whitelist add ${name}`);
+    notify(`已发送：whitelist add ${name}`);
+    setTimeout(() => void refreshServer(), 800);
+  } catch (err) {
+    notify(`加入白名单失败：${String(err)}`, "err");
+  }
+}
+
+async function makeReport() {
+  reportBusy.value = true;
+  try {
+    reportText.value = await api.serverDiagnostic();
+    reportOpen.value = true;
+  } catch (err) {
+    notify(`生成诊断报告失败：${String(err)}`, "err");
+  } finally {
+    reportBusy.value = false;
+  }
+}
+
+async function copyReport() {
+  try {
+    await navigator.clipboard.writeText(reportText.value);
+    notify("诊断报告已复制，可直接发给客服或其它 AI");
+  } catch (err) {
+    notify(`复制失败，请手动全选复制：${String(err)}`, "err");
   }
 }
 
@@ -941,8 +1142,12 @@ onBeforeUnmount(() => {
         {{ hallError }}
         <WoodButton variant="ghost" size="sm" @click="refreshHall">重试</WoodButton>
       </div>
-      <div v-else-if="!hall.length" class="mp-empty">
-        大厅暂时没有房间，稍后再刷新。
+      <div v-else-if="!hall.length" class="state state--inline">
+        <span class="state__icon"><AppIcon name="globe" :size="18" /></span>
+        <div class="state__text">
+          <p class="state__title">大厅暂时没有房间</p>
+          <p class="state__hint">稍后再刷新，或自己开一个房间等朋友进来。</p>
+        </div>
       </div>
       <div v-else class="mp-list">
         <div v-for="room in hall" :key="room.room" class="mp-room">
@@ -1355,16 +1560,54 @@ onBeforeUnmount(() => {
           </span>
         </div>
 
+        <div class="mp-ready">
+          <span v-if="!serverStatus.online_mode" class="mp-badge mp-badge--warn">
+            离线模式
+          </span>
+          <span v-else class="mp-badge">正版验证</span>
+          <span v-if="serverStatus.white_list.length" class="mp-badge">
+            白名单：{{ serverStatus.white_list.join("、") }}
+          </span>
+          <span v-else-if="serverStatus.attached" class="mp-badge mp-badge--warn">
+            白名单为空
+          </span>
+        </div>
+
         <div v-if="serverStatus.attached" class="mp-attached">
           <AppIcon name="alert" :size="14" />
           这个服务端是上次退出启动器前启动的。控制台输出和命令输入无法恢复，但端口、地址和停止操作仍然有效。
         </div>
 
         <template v-else>
+          <div class="mp-console__bar">
+            <span class="muted small">控制台只接受服务端指令，Java 参数请到设置里填写</span>
+            <WoodButton variant="ghost" size="sm" :disabled="reportBusy" @click="makeReport">
+              {{ reportBusy ? "生成中…" : "生成诊断报告" }}
+            </WoodButton>
+          </div>
           <div ref="consoleEl" class="mp-console">
-            <div v-for="(line, index) in serverStatus.log" :key="index" class="mp-console__line">
-              {{ line }}
-            </div>
+            <template v-for="(item, index) in consoleLines" :key="index">
+              <div
+                class="mp-console__line"
+                :class="item.note ? `mp-console__line--${item.note.level}` : ''"
+              >
+                {{ item.line }}
+              </div>
+              <div
+                v-if="item.note"
+                class="mp-console__note"
+                :class="`mp-console__note--${item.note.level}`"
+              >
+                <span>{{ item.note.text }}</span>
+                <button
+                  v-if="item.note.action"
+                  class="mp-console__act"
+                  @click="runNoteAction(item.note.action!)"
+                >
+                  {{ item.note.action.label }}
+                </button>
+              </div>
+            </template>
           </div>
 
           <div class="mp-direct">
@@ -1376,6 +1619,24 @@ onBeforeUnmount(() => {
             />
             <WoodButton variant="soft" size="md" @click="sendConsole">发送</WoodButton>
           </div>
+          <p v-if="consoleHint" class="mp-hint mp-hint--warn mp-console__hint">
+            <template v-if="consoleHint === 'jvm'">
+              「{{ consoleInput }}」是 Java 虚拟机参数，需要写到「设置 → 性能与参数 → Java 虚拟机参数」，重启服务端后生效。
+            </template>
+            <template v-else-if="consoleHint === 'cjk'">
+              控制台只能输入英文服务端指令；要发中文聊天内容请用 say / tell。
+            </template>
+            <template v-else>
+              spark 不是原版服务端指令；如果确实装了 spark 插件，可以继续发送。
+            </template>
+            <button
+              v-if="consoleHint === 'jvm'"
+              class="mp-console__act"
+              @click="openPerformanceSettings"
+            >
+              去设置
+            </button>
+          </p>
         </template>
       </template>
 
@@ -1435,6 +1696,10 @@ onBeforeUnmount(() => {
                 @update:model-value="serverForm.viewDistance = Number($event) || 8"
               />
             </div>
+            <div class="mp-field">
+              <span class="mp-field__label">你的游戏 ID</span>
+              <WoodInput v-model="serverForm.playerName" placeholder="开启白名单时自动加入" />
+            </div>
           </div>
 
           <div class="mp-toggles">
@@ -1451,6 +1716,16 @@ onBeforeUnmount(() => {
               <WoodToggle v-model="serverForm.eula" />
             </div>
           </div>
+
+          <p v-if="serverForm.onlineMode && accountIsOffline" class="muted small mp-hint mp-hint--warn">
+            当前登录的是离线账号，开启正版验证后会被服务端拒绝。自己或朋友都离线玩时，请关闭「正版验证」。
+          </p>
+          <p v-if="!serverForm.onlineMode" class="muted small mp-hint mp-hint--warn">
+            已关闭正版验证：任何知道地址的人都能用任意 ID 进入。只建议自己或同一局域网内使用，开公网请改回正版验证。
+          </p>
+          <p v-if="serverForm.whiteList && !serverForm.playerName.trim()" class="muted small mp-hint mp-hint--warn">
+            已开启白名单但没填「你的游戏 ID」，空白的白名单会让所有人都进不来。填上后开服会自动加入，注意大小写要和游戏内登录名完全一致。
+          </p>
 
           <p v-if="selectedServerLoader === 'quilt'" class="muted small mp-hint">
             Quilt 服务端暂未支持，请改用 Fabric / Forge / NeoForge。
@@ -1476,27 +1751,43 @@ onBeforeUnmount(() => {
       </div>
     </div>
   </div>
+
+  <WoodModal
+    v-if="reportOpen"
+    title="服务端诊断报告"
+    :width="640"
+    @close="reportOpen = false"
+  >
+    <p class="muted small mp-report__hint">
+      已包含版本、内存、关键配置、白名单和最近 40 行日志。复制后可直接发给客服或其它 AI，省去反复追问。
+    </p>
+    <textarea class="mp-report" readonly :value="reportText" />
+    <template #footer>
+      <WoodButton variant="ghost" size="sm" @click="reportOpen = false">关闭</WoodButton>
+      <WoodButton variant="primary" size="sm" @click="copyReport">复制全部</WoodButton>
+    </template>
+  </WoodModal>
 </template>
 
 <style scoped>
 .multi {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-6);
 }
 
 .mp-layout {
   display: grid;
   grid-template-columns: 208px minmax(0, 1fr);
-  gap: 16px;
+  gap: var(--space-6);
   align-items: start;
 }
 
 .mp-side {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 10px;
+  gap: var(--space-6);
+  padding: var(--space-4);
   /* 和实例页一致：整列当一只托盘，外框 2px，里面衬一圈受光细边 */
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel) 46%, #fff);
 }
@@ -1525,7 +1816,7 @@ onBeforeUnmount(() => {
   padding: 0 10px;
   border-radius: 0;
   color: var(--ink-soft);
-  font-size: 12.5px;
+  font-size: var(--text-base);
   font-weight: 600;
   text-align: left;
   transition: background var(--dur-1) ease, color var(--dur-1) ease,
@@ -1597,7 +1888,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-6);
   padding: 10px 16px;
 }
 
@@ -1609,7 +1900,7 @@ onBeforeUnmount(() => {
 }
 
 .mp-context__text strong {
-  font-size: 13px;
+  font-size: var(--text-lg);
   font-weight: 700;
   color: var(--walnut-deep);
 }
@@ -1617,21 +1908,21 @@ onBeforeUnmount(() => {
 .mp-bar__right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-5);
   flex-wrap: wrap;
 }
 
 .mp-panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .mp-panel__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .mp-hint {
@@ -1641,7 +1932,7 @@ onBeforeUnmount(() => {
 .mp-alert {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 9px 12px;
   border-radius: 0;
   border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--line-strong));
@@ -1649,7 +1940,7 @@ onBeforeUnmount(() => {
   /* 告警条做成浅凹槽：内容嵌在面板里，而不是浮在上面 */
   box-shadow: inset 0 1px 2px rgba(90, 40, 30, 0.12);
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .mp-empty {
@@ -1658,7 +1949,7 @@ onBeforeUnmount(() => {
   gap: 9px;
   padding: 22px 4px;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--text-base);
 }
 
 .mp-empty--card {
@@ -1688,7 +1979,7 @@ onBeforeUnmount(() => {
 }
 
 .mp-empty__text strong {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   font-weight: 700;
   color: var(--walnut-deep);
 }
@@ -1697,7 +1988,7 @@ onBeforeUnmount(() => {
 .tc-panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
   padding: 0 16px 16px;
   border-radius: 0;
   overflow: hidden;
@@ -1707,7 +1998,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
   flex-shrink: 0;
   height: 44px;
   margin: 0 -16px;
@@ -1716,7 +2007,7 @@ onBeforeUnmount(() => {
 }
 
 .tc-head__title {
-  font-size: 13px;
+  font-size: var(--text-lg);
   font-weight: 700;
   color: var(--walnut-deep);
 }
@@ -1724,8 +2015,8 @@ onBeforeUnmount(() => {
 .tc-head__state {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 10.5px;
+  gap: var(--space-3);
+  font-size: var(--text-xs);
   letter-spacing: 0.08em;
   color: var(--muted);
 }
@@ -1749,32 +2040,32 @@ onBeforeUnmount(() => {
   padding-top: 12px;
   max-width: 72ch;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   line-height: 1.6;
 }
 
 .tc-state {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 14px;
   border: 1px solid var(--line-strong);
   background: rgba(var(--glass-rgb), 0.28);
   box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.08);
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .tc-alert {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--line-strong));
   background: var(--danger-soft);
   box-shadow: inset 0 1px 2px rgba(90, 40, 30, 0.12);
   color: var(--danger);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .tc-alert__text {
@@ -1786,50 +2077,50 @@ onBeforeUnmount(() => {
 .tc-form {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .tc-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .tc-field__label {
   color: var(--ink-soft);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 600;
 }
 
 .tc-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .tc-hint {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-sm);
   line-height: 1.6;
 }
 
 .tc-state--col {
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .tc-state__line {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .tc-recents {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
   margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--line);
@@ -1839,23 +2130,23 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .tc-recents__title {
   color: var(--ink-soft);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 600;
 }
 
 .tc-recent {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 6px 8px;
   border: 1px solid var(--line);
   background: rgba(var(--glass-rgb), 0.22);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .tc-recent__name {
@@ -1876,7 +2167,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-6);
   padding: 14px;
   border: 1px solid var(--line);
   background: rgba(var(--glass-rgb), 0.28);
@@ -1904,19 +2195,19 @@ onBeforeUnmount(() => {
 }
 
 .tc-scan__text strong {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--walnut-deep);
 }
 
 .tc-scan__text span {
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
 .tc-room {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 14px;
   border: 1px solid var(--line-strong);
   background: rgba(var(--glass-rgb), 0.28);
@@ -1934,7 +2225,7 @@ onBeforeUnmount(() => {
   padding: 4px 0;
   border-bottom: 1px solid var(--line-strong);
   color: var(--walnut-deep);
-  font-size: 22px;
+  font-size: var(--text-2xl);
   font-weight: 700;
   letter-spacing: 0.08em;
   user-select: text;
@@ -1949,7 +2240,7 @@ onBeforeUnmount(() => {
 .tc-members {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .tc-member {
@@ -1957,7 +2248,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--line);
   background: transparent;
   color: var(--ink-soft);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
 }
 
 .tc-idle {
@@ -1971,13 +2262,13 @@ onBeforeUnmount(() => {
   padding-top: 10px;
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
 }
 
 .tc-credit button {
   margin-left: 6px;
   color: var(--moss);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
 }
 
 .tc-credit button:hover {
@@ -2008,13 +2299,13 @@ onBeforeUnmount(() => {
 .mp-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .mp-room {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-5);
   padding: 9px 12px;
   border-radius: 0;
   border-style: solid;
@@ -2073,7 +2364,7 @@ onBeforeUnmount(() => {
 }
 
 .mp-room__text strong {
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--walnut-deep);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2081,7 +2372,7 @@ onBeforeUnmount(() => {
 }
 
 .mp-room__text span {
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2089,7 +2380,7 @@ onBeforeUnmount(() => {
 }
 
 .mp-room__time {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
   flex-shrink: 0;
 }
@@ -2097,7 +2388,7 @@ onBeforeUnmount(() => {
 .mp-direct {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .mp-direct .input {
@@ -2108,7 +2399,7 @@ onBeforeUnmount(() => {
 .mp-server__state {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   min-width: 0;
 }
 
@@ -2132,7 +2423,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 8px 10px;
   border-radius: 0;
   border: 1px dashed var(--line-strong);
@@ -2154,7 +2445,7 @@ onBeforeUnmount(() => {
 }
 
 .mp-address__item strong {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--walnut-deep);
 }
 
@@ -2165,13 +2456,13 @@ onBeforeUnmount(() => {
 .mp-attached {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 10px 12px;
   border-radius: 0;
   border: 1px dashed var(--line-strong);
   background: var(--panel-2);
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: var(--text-base);
   line-height: 1.55;
 }
 
@@ -2189,7 +2480,7 @@ onBeforeUnmount(() => {
   box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.1);
   padding: 9px 12px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-sm);
   line-height: 1.55;
   color: var(--ink-soft);
   user-select: text;
@@ -2198,6 +2489,129 @@ onBeforeUnmount(() => {
 .mp-console__line {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.mp-console__line--info {
+  color: var(--muted);
+}
+
+.mp-console__line--warn {
+  color: color-mix(in srgb, var(--amber) 55%, var(--walnut-deep));
+}
+
+.mp-console__line--error {
+  color: var(--danger);
+}
+
+/* 已知日志的中文注解：紧贴在原行下面，像给日志加了一条脚注 */
+.mp-console__note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 2px 0 7px;
+  padding: 5px 9px;
+  border-left: 2px solid var(--line-strong);
+  background: color-mix(in srgb, var(--panel-2) 72%, transparent);
+  color: var(--ink-soft);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.mp-console__note--warn {
+  border-left-color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 14%, var(--panel-2));
+}
+
+.mp-console__note--error {
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+  color: color-mix(in srgb, var(--danger) 82%, var(--ink));
+}
+
+.mp-console__act {
+  padding: 1px 7px;
+  border: 1px dashed currentColor;
+  border-radius: 0;
+  color: var(--moss);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  transition: background var(--dur-1) ease;
+}
+
+.mp-console__act:hover {
+  background: var(--moss-soft);
+}
+
+.mp-console__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+  margin: 12px 0 6px;
+}
+
+.mp-console__hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* 开服准备状态：离线模式 / 白名单是否已经把人装进去 */
+.mp-ready {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.mp-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 0;
+  border: 1px solid color-mix(in srgb, var(--moss) 32%, var(--line-strong));
+  background: var(--moss-soft);
+  color: var(--moss);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.mp-badge--warn {
+  border-color: color-mix(in srgb, var(--amber) 46%, var(--line-strong));
+  background: color-mix(in srgb, var(--amber) 18%, var(--panel-2));
+  color: color-mix(in srgb, var(--amber) 48%, var(--walnut-deep));
+}
+
+.mp-hint--warn {
+  padding: 7px 10px;
+  border-left: 2px solid var(--amber);
+  background: color-mix(in srgb, var(--amber) 12%, var(--panel-2));
+  color: color-mix(in srgb, var(--amber) 48%, var(--walnut-deep));
+  line-height: 1.55;
+}
+
+.mp-report__hint {
+  margin: 0 0 10px;
+}
+
+.mp-report {
+  width: 100%;
+  height: 46vh;
+  min-height: 260px;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: 0;
+  border: 1px solid var(--line-strong);
+  background: var(--paper-2);
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  user-select: text;
 }
 
 .mp-form {
@@ -2218,14 +2632,14 @@ onBeforeUnmount(() => {
 }
 
 .mp-field__label {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
 .mp-field__row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   min-width: 0;
 }
 
@@ -2242,25 +2656,25 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-6);
 }
 
 .mp-tc-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .mp-tc-room {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .mp-room-code {
-  font-size: 23px;
+  font-size: var(--text-2xl);
   letter-spacing: 0.08em;
   color: var(--walnut-deep);
   background: var(--panel-2);
@@ -2278,7 +2692,7 @@ onBeforeUnmount(() => {
 .mp-members {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .mp-member {
@@ -2290,14 +2704,14 @@ onBeforeUnmount(() => {
   border-radius: 0;
   background: var(--moss-soft);
   color: var(--moss);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 600;
 }
 
 .mp-credit {
   padding-top: 10px;
   border-top: 1px dashed var(--line);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
@@ -2311,8 +2725,8 @@ onBeforeUnmount(() => {
 .mp-toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12.5px;
+  gap: var(--space-3);
+  font-size: var(--text-base);
   color: var(--ink-soft);
 }
 

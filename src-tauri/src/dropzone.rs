@@ -1,7 +1,6 @@
 use serde::Serialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use zip::ZipArchive;
 
 /// 拖入窗口的文件或文件夹，识别出的分类与给用户看的说明。
 #[derive(Debug, Clone, Serialize)]
@@ -57,8 +56,7 @@ fn has_file(names: &[String], file: &str) -> bool {
 }
 
 fn archive_names(path: &Path) -> Option<Vec<String>> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut archive = ZipArchive::new(file).ok()?;
+    let mut archive = crate::ziputil::open(path).ok()?;
     let mut names = Vec::new();
     for index in 0..archive.len() {
         if let Ok(entry) = archive.by_index(index) {
@@ -71,8 +69,7 @@ fn archive_names(path: &Path) -> Option<Vec<String>> {
 }
 
 fn read_entry_ending(path: &Path, suffix: &str) -> Option<String> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut archive = ZipArchive::new(file).ok()?;
+    let mut archive = crate::ziputil::open(path).ok()?;
     for index in 0..archive.len() {
         let Ok(mut entry) = archive.by_index(index) else {
             continue;

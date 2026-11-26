@@ -1,6 +1,6 @@
 use crate::config::{self, Config};
 use crate::install;
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -766,6 +766,266 @@ pub fn list_files(cfg: &Config, version_id: &str, kind: &str) -> Result<Vec<Inst
     Ok(files)
 }
 
+/// 可编辑的文本后缀：贴图、声音等二进制文件不列出来，避免 config 树被资源文件淹没
+const CONFIG_TEXT_EXT: &[&str] = &[
+    "toml", "json", "json5", "cfg", "conf", "config", "properties", "txt", "yml", "yaml",
+    "ini", "mcmeta", "snbt", "lang", "hjson", "xml", "csv", "tsv", "md",
+];
+/// 单个配置文件最多 2 MB，再大基本是数据文件，塞进编辑器只会卡死界面
+const CONFIG_MAX_BYTES: u64 = 2 * 1024 * 1024;
+const CONFIG_MAX_ENTRIES: usize = 3000;
+const CONFIG_MAX_DEPTH: usize = 8;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigEntry {
+    /// 相对 config 目录的路径，统一用 `/`
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigText {
+    pub content: String,
+    /// "utf-8" 或 "gbk"：写回时按原编码保存
+    pub encoding: String,
+    pub size: u64,
+}
+
+fn config_root(cfg: &Config, version_id: &str) -> Result<PathBuf> {
+    let dir = game_dir(cfg, version_id).join("config");
+    if !dir.is_dir() {
+        bail!("这个实例还没有 config 目录，先启动一次游戏再来");
+    }
+    Ok(dir)
+}
+
+fn is_config_text(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| CONFIG_TEXT_EXT.contains(&ext.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// 列出 config 目录下的文本文件（含子目录），限制深度与条数防止超大整合包卡死。
+pub fn config_tree(cfg: &Config, version_id: &str) -> Result<Vec<ConfigEntry>> {
+    fn walk(dir: &Path, prefix: &str, depth: usize, out: &mut Vec<ConfigEntry>) {
+        if depth > CONFIG_MAX_DEPTH || out.len() >= CONFIG_MAX_ENTRIES {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut items: Vec<_> = entries.flatten().collect();
+        // 目录在前、文件在后，同级按名字排序
+        items.sort_by_key(|entry| {
+            let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+            (!is_dir, entry.file_name())
+        });
+        for entry in items {
+            if out.len() >= CONFIG_MAX_ENTRIES {
+                return;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            // 不跟随符号链接，避免把 config 之外的目录带进来
+            if kind.is_symlink() {
+                continue;
+            }
+            let rel = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if kind.is_dir() {
+                out.push(ConfigEntry {
+                    path: rel.clone(),
+                    name,
+                    is_dir: true,
+                    size: 0,
+                });
+                walk(&entry.path(), &rel, depth + 1, out);
+            } else if kind.is_file() && is_config_text(&name) {
+                let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+                out.push(ConfigEntry {
+                    path: rel,
+                    name,
+                    is_dir: false,
+                    size,
+                });
+            }
+        }
+    }
+
+    let root = config_root(cfg, version_id)?;
+    let mut out = Vec::new();
+    walk(&root, "", 0, &mut out);
+    Ok(out)
+}
+
+/// 把前端传来的相对路径解析成 config 目录内的真实文件，拒绝越界与目录。
+fn config_file(cfg: &Config, version_id: &str, rel: &str) -> Result<PathBuf> {
+    let root = config_root(cfg, version_id)?;
+    let rel_path = Path::new(rel);
+    if rel.trim().is_empty() || rel_path.is_absolute() {
+        bail!("无效的文件路径");
+    }
+    if rel_path
+        .components()
+        .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        bail!("无效的文件路径");
+    }
+    let root = std::fs::canonicalize(&root).context("config 目录不可访问")?;
+    let path = std::fs::canonicalize(root.join(rel_path)).context("文件不存在")?;
+    if !path.starts_with(&root) {
+        bail!("文件不在 config 目录内");
+    }
+    if !path.is_file() {
+        bail!("不是可编辑的文件");
+    }
+    Ok(path)
+}
+
+/// 老配置常用系统 ANSI 代码页（简体中文下即 GBK）保存，UTF-8 解不开时用它兜底。
+#[cfg(windows)]
+fn decode_ansi(bytes: &[u8]) -> Option<String> {
+    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_ACP};
+    unsafe {
+        let len = MultiByteToWideChar(
+            CP_ACP,
+            0,
+            bytes.as_ptr(),
+            bytes.len() as i32,
+            std::ptr::null_mut(),
+            0,
+        );
+        if len <= 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; len as usize];
+        let written = MultiByteToWideChar(
+            CP_ACP,
+            0,
+            bytes.as_ptr(),
+            bytes.len() as i32,
+            buf.as_mut_ptr(),
+            len,
+        );
+        if written <= 0 {
+            return None;
+        }
+        String::from_utf16(&buf[..written as usize]).ok()
+    }
+}
+
+#[cfg(not(windows))]
+fn decode_ansi(_bytes: &[u8]) -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
+fn encode_ansi(text: &str) -> Option<Vec<u8>> {
+    use windows_sys::Win32::Globalization::{WideCharToMultiByte, CP_ACP};
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    unsafe {
+        let len = WideCharToMultiByte(
+            CP_ACP,
+            0,
+            wide.as_ptr(),
+            wide.len() as i32,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        );
+        if len <= 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; len as usize];
+        let written = WideCharToMultiByte(
+            CP_ACP,
+            0,
+            wide.as_ptr(),
+            wide.len() as i32,
+            buf.as_mut_ptr(),
+            len,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        );
+        if written <= 0 {
+            return None;
+        }
+        buf.truncate(written as usize);
+        Some(buf)
+    }
+}
+
+#[cfg(not(windows))]
+fn encode_ansi(_text: &str) -> Option<Vec<u8>> {
+    None
+}
+
+pub fn read_config_text(cfg: &Config, version_id: &str, rel: &str) -> Result<ConfigText> {
+    let path = config_file(cfg, version_id, rel)?;
+    let meta = std::fs::metadata(&path)?;
+    if meta.len() > CONFIG_MAX_BYTES {
+        bail!(
+            "文件有 {:.1} MB，超过 2 MB 的配置不在启动器内编辑，请用外部编辑器打开",
+            meta.len() as f64 / 1024.0 / 1024.0
+        );
+    }
+    let mut bytes = std::fs::read(&path)?;
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        bytes.drain(..3);
+    }
+    let size = bytes.len() as u64;
+    let (content, encoding) = match String::from_utf8(bytes.clone()) {
+        Ok(text) => (text, "utf-8"),
+        Err(_) => match decode_ansi(&bytes) {
+            Some(text) => (text, "gbk"),
+            None => bail!("这个文件不是可识别的文本编码，请用外部编辑器打开"),
+        },
+    };
+    Ok(ConfigText {
+        content,
+        encoding: encoding.to_string(),
+        size,
+    })
+}
+
+pub fn write_config_text(
+    cfg: &Config,
+    version_id: &str,
+    rel: &str,
+    content: &str,
+    encoding: &str,
+) -> Result<()> {
+    if content.len() as u64 > CONFIG_MAX_BYTES {
+        bail!("内容超过 2 MB，无法在启动器内保存");
+    }
+    let path = config_file(cfg, version_id, rel)?;
+    let bytes = if encoding.eq_ignore_ascii_case("gbk") {
+        let encoded = encode_ansi(content).ok_or_else(|| anyhow!("按 GBK 编码保存失败"))?;
+        // 往返校验：GBK 表示不了的字符会被静默替换成 '?'，这里宁可报错也不悄悄改坏配置
+        if decode_ansi(&encoded).as_deref() != Some(content) {
+            bail!("内容里有 GBK 无法表示的字符（例如 emoji），请改用 UTF-8 或删除这些字符");
+        }
+        encoded
+    } else {
+        content.as_bytes().to_vec()
+    };
+    std::fs::write(&path, bytes).with_context(|| format!("写入失败：{}", path.display()))?;
+    Ok(())
+}
+
 fn safe_name(name: &str) -> Result<&str> {
     if name.is_empty() || name.contains('/') || name.contains('\\') || name == ".." {
         bail!("无效的文件名");
@@ -992,4 +1252,86 @@ pub fn info(cfg: &Config, version_id: &str) -> Result<InstanceInfo> {
         fullscreen: meta.fullscreen,
         counts,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config(version_id: &str) -> Config {
+        let root = std::env::temp_dir().join(format!(
+            "docl-config-test-{}-{version_id}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("versions").join(version_id).join("config")).unwrap();
+        let cfg = Config {
+            game_dir: root.to_string_lossy().to_string(),
+            version_isolation: true,
+            ..Default::default()
+        };
+        cfg
+    }
+
+    #[test]
+    fn config_text_roundtrip_keeps_encoding() {
+        let id = "cfg-roundtrip";
+        let cfg = test_config(id);
+        let root = Path::new(&cfg.game_dir).join("versions").join(id);
+        std::fs::write(
+            root.join("config").join("jei.toml"),
+            "[general]\n# 中文注释\nmode = true\n",
+        )
+        .unwrap();
+
+        let tree = config_tree(&cfg, id).unwrap();
+        assert!(tree
+            .iter()
+            .any(|entry| entry.path == "jei.toml" && !entry.is_dir));
+
+        let file = read_config_text(&cfg, id, "jei.toml").unwrap();
+        assert_eq!(file.encoding, "utf-8");
+        assert!(file.content.contains("中文注释"));
+
+        let edited = "[general]\n# 改过的注释\nmode = false\n";
+        write_config_text(&cfg, id, "jei.toml", edited, "utf-8").unwrap();
+        assert_eq!(read_config_text(&cfg, id, "jei.toml").unwrap().content, edited);
+
+        let _ = std::fs::remove_dir_all(&cfg.game_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn config_text_handles_gbk_files() {
+        let id = "cfg-gbk";
+        let cfg = test_config(id);
+        let root = Path::new(&cfg.game_dir).join("versions").join(id);
+        let raw = encode_ansi("# 中文注释\n").unwrap();
+        std::fs::write(root.join("config").join("legacy.cfg"), raw).unwrap();
+
+        let file = read_config_text(&cfg, id, "legacy.cfg").unwrap();
+        assert_eq!(file.encoding, "gbk");
+        assert!(file.content.contains("中文注释"));
+
+        write_config_text(&cfg, id, "legacy.cfg", "# 改过的注释\n", "gbk").unwrap();
+        let again = read_config_text(&cfg, id, "legacy.cfg").unwrap();
+        assert_eq!(again.encoding, "gbk");
+        assert!(again.content.contains("改过的注释"));
+
+        let _ = std::fs::remove_dir_all(&cfg.game_dir);
+    }
+
+    #[test]
+    fn config_text_rejects_paths_outside_config() {
+        let id = "cfg-escape";
+        let cfg = test_config(id);
+        let root = Path::new(&cfg.game_dir).join("versions").join(id);
+        std::fs::write(root.join("secret.txt"), "outside").unwrap();
+
+        assert!(read_config_text(&cfg, id, "../secret.txt").is_err());
+        assert!(write_config_text(&cfg, id, "../secret.txt", "x", "utf-8").is_err());
+        assert!(read_config_text(&cfg, id, "C:/Windows/win.ini").is_err());
+
+        let _ = std::fs::remove_dir_all(&cfg.game_dir);
+    }
 }

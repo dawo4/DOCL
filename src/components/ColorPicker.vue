@@ -249,13 +249,13 @@ function onHueUp() {
 .picker {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .picker__head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .picker__chip {
@@ -282,13 +282,13 @@ function onHueUp() {
   box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.08);
   padding: 0 8px;
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .picker__swatches {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .picker__swatch {

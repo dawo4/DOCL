@@ -84,7 +84,7 @@ function close() {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   padding-left: 16px;
   background: var(--bar-a);
   border-bottom: 2px solid var(--frame);
@@ -131,7 +131,7 @@ function close() {
   position: relative;
   z-index: 1;
   font-family: var(--font-display);
-  font-size: 16px;
+  font-size: var(--text-xl);
   font-weight: 700;
   line-height: 1;
   color: #fff8ea;
@@ -144,7 +144,7 @@ function close() {
 
 .brand__name {
   font-family: var(--font-display);
-  font-size: 17px;
+  font-size: var(--text-xl);
   letter-spacing: 0.08em;
   color: var(--walnut-deep);
 }
@@ -153,7 +153,7 @@ function close() {
   display: flex;
   align-items: center;
   height: 100%;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .topnav__item {
@@ -165,10 +165,10 @@ function close() {
   border-radius: 2px;
   border: 1px solid transparent;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--text-lg);
   font-weight: 500;
-  transition: color 150ms ease, background 150ms ease,
-    border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
+  transition: color var(--dur-1) ease, background var(--dur-1) ease,
+    border-color var(--dur-1) ease, transform var(--dur-0) ease, box-shadow var(--dur-0) ease;
 }
 
 .topnav__item:hover {
@@ -191,7 +191,7 @@ function close() {
   border-left-color: color-mix(in srgb, var(--moss) 42%, #000);
   border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
   border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .topbar__drag {
@@ -203,7 +203,7 @@ function close() {
 .topbar__right {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   height: 100%;
 }
 
@@ -299,7 +299,7 @@ function close() {
   border-right-color: color-mix(in srgb, var(--face) 62%, #fff);
   border-bottom-color: color-mix(in srgb, var(--face) 62%, #fff);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.24);
+  box-shadow: var(--shadow-press);
 }
 
 @media (max-width: 1040px) {

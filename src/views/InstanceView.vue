@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { confirm, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
@@ -12,6 +12,7 @@ import {
   type GameOptionsPreset,
   type PackUpdatePreview,
   type InstanceCheck,
+  type ConfigEntry,
   type InstanceFile,
   type InstanceInfo,
   type InstanceMeta,
@@ -28,6 +29,10 @@ import {
   type WorldSummary,
 } from "../api";
 import AppIcon from "../components/AppIcon.vue";
+/// CodeMirror 相关包只在打开配置文件页时按需下载，不进入首屏
+const ConfigCodeEditor = defineAsyncComponent(
+  () => import("../components/ConfigCodeEditor.vue")
+);
 import IconButton from "../components/IconButton.vue";
 import InstanceGlyph from "../components/InstanceGlyph.vue";
 import WoodButton from "../components/WoodButton.vue";
@@ -46,10 +51,17 @@ import {
   reinstallLoader,
   repairInstance,
   restoreRepairBackup,
+  stopGame,
   store,
   updateModpack,
 } from "../store";
-import { ICON_PRESETS, formatBytes, formatDate, kindLabel } from "../utils";
+import {
+  ICON_PRESETS,
+  formatBytes,
+  formatDate,
+  kindLabel,
+  loaderLabel as loaderName,
+} from "../utils";
 
 type Tab =
   | "overview"
@@ -61,7 +73,8 @@ type Tab =
   | "datapacks"
   | "schematics"
   | "saves"
-  | "screenshots";
+  | "screenshots"
+  | "config";
 
 const tabs: { key: Tab; label: string; icon: string }[] = [
   { key: "overview", label: "概览", icon: "cube" },
@@ -74,6 +87,7 @@ const tabs: { key: Tab; label: string; icon: string }[] = [
   { key: "saves", label: "存档", icon: "database" },
   { key: "screenshots", label: "截图", icon: "folder" },
   { key: "gameopts", label: "游戏设置", icon: "sliders" },
+  { key: "config", label: "配置文件", icon: "list" },
 ];
 
 const contentTabs: Tab[] = [
@@ -113,6 +127,61 @@ const seedBusy = ref(false);
 const seedInfo = ref<WorldSeed | null>(null);
 const confirmName = ref<string | null>(null);
 let confirmTimer: number | undefined;
+
+/* ---------- config 文本编辑器 ---------- */
+const configEntries = ref<ConfigEntry[]>([]);
+const configLoading = ref(false);
+const configError = ref("");
+const configQuery = ref("");
+const configPath = ref("");
+const configContent = ref("");
+const configOriginal = ref("");
+const configEncoding = ref("utf-8");
+const configSize = ref(0);
+const configSaving = ref(false);
+/// 低内存模式不加载 CodeMirror，直接用原生 textarea，避免额外的主线程开销
+const plainConfigEditor = computed(() => !!store.config?.low_memory);
+/// 文件内容搜索走编辑器自带面板，这里只负责触发
+const configEditorRef = ref<{ openSearch: () => void } | null>(null);
+const configDirty = computed(() => configContent.value !== configOriginal.value);
+/// 已展开的目录；默认只展开第一层，避免整棵树一次性铺开
+const expandedDirs = ref<Set<string>>(new Set());
+const configSearching = computed(() => configQuery.value.trim().length > 0);
+
+function isDirExpanded(path: string) {
+  return expandedDirs.value.has(path);
+}
+
+function toggleDir(path: string) {
+  const next = new Set(expandedDirs.value);
+  if (next.has(path)) next.delete(path);
+  else next.add(path);
+  expandedDirs.value = next;
+}
+
+/// 某一项是否可见：它的所有父级目录都处于展开状态
+function isConfigVisible(path: string) {
+  const parts = path.split("/");
+  for (let i = 1; i < parts.length; i += 1) {
+    if (!expandedDirs.value.has(parts.slice(0, i).join("/"))) return false;
+  }
+  return true;
+}
+
+const visibleConfigEntries = computed(() => {
+  if (configSearching.value) {
+    const keyword = configQuery.value.trim().toLowerCase();
+    // 搜索时只列匹配的文件，不看折叠状态，也不显示目录
+    return configEntries.value.filter(
+      (entry) => !entry.is_dir && entry.path.toLowerCase().includes(keyword)
+    );
+  }
+  return configEntries.value.filter((entry) => isConfigVisible(entry.path));
+});
+
+function configDepth(path: string) {
+  return path.split("/").length - 1;
+}
 
 const modUpdates = ref<ModUpdateReport | null>(null);
 const updatesLoading = ref(false);
@@ -362,11 +431,7 @@ async function pickIconImage() {
   }
 }
 
-const loaderLabel = computed(() => {
-  const loader = info.value?.loader ?? "vanilla";
-  if (loader === "vanilla") return "原版";
-  return loader.charAt(0).toUpperCase() + loader.slice(1);
-});
+const loaderLabel = computed(() => loaderName(info.value?.loader));
 
 const isContentTab = computed(() => contentTabs.includes(tab.value));
 const contentLabel = computed(
@@ -457,7 +522,21 @@ onMounted(async () => {
   await loadAll();
   await loadCustomIcon();
   await loadOptionsPresets();
+  window.addEventListener("keydown", onConfigFind);
 });
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onConfigFind);
+});
+
+/// 配置文件页按 Ctrl/Cmd + F 直接打开内容搜索，避免落到浏览器默认查找
+function onConfigFind(event: KeyboardEvent) {
+  if (tab.value !== "config") return;
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "f") return;
+  if (!configPath.value || plainConfigEditor.value) return;
+  event.preventDefault();
+  configEditorRef.value?.openSearch();
+}
 
 watch(
   () => store.contentRevision,
@@ -1378,7 +1457,118 @@ function contentIcon() {  switch (tab.value) {
 
 function goTab(next: Tab) {
   tab.value = next;
+  if (next === "config" && !configLoading.value) void loadConfigTree();
 }
+
+/* ---------- config 文本编辑器 ---------- */
+
+async function loadConfigTree() {
+  if (!store.instanceId) return;
+  configLoading.value = true;
+  configError.value = "";
+  try {
+    const list = await api.instanceConfigTree(store.instanceId);
+    configEntries.value = list;
+    // 首次加载默认展开第一层目录；手动刷新时保留用户已展开的状态
+    if (!expandedDirs.value.size) {
+      expandedDirs.value = new Set(
+        list
+          .filter((entry) => entry.is_dir && !entry.path.includes("/"))
+          .map((entry) => entry.path)
+      );
+    }
+  } catch (err) {
+    configEntries.value = [];
+    configError.value = String(err);
+  } finally {
+    configLoading.value = false;
+  }
+}
+
+async function readConfigFile(path: string) {
+  const id = store.instanceId;
+  if (!id) return;
+  // 从搜索结果点开深层文件时，顺手展开它的父级目录，清空搜索后仍能看到位置
+  const parts = path.split("/");
+  if (parts.length > 1) {
+    const next = new Set(expandedDirs.value);
+    for (let i = 1; i < parts.length; i += 1) next.add(parts.slice(0, i).join("/"));
+    expandedDirs.value = next;
+  }
+  try {
+    const file = await api.instanceReadText(id, path);
+    configPath.value = path;
+    configContent.value = file.content;
+    configOriginal.value = file.content;
+    configEncoding.value = file.encoding;
+    configSize.value = file.size;
+  } catch (err) {
+    notify(`打开失败：${String(err)}`, "err");
+  }
+}
+
+async function openConfigFile(entry: ConfigEntry) {
+  if (entry.is_dir || entry.path === configPath.value) return;
+  if (configDirty.value) {
+    const ok = await confirm("当前文件有未保存的修改，切换后会丢失。继续吗？", {
+      title: "未保存的修改",
+      kind: "warning",
+    });
+    if (!ok) return;
+  }
+  await readConfigFile(entry.path);
+}
+
+async function reloadConfigFile() {
+  if (!configPath.value) return;
+  if (configDirty.value) {
+    const ok = await confirm("重新读取会丢弃当前未保存的修改。继续吗？", {
+      title: "重新读取",
+      kind: "warning",
+    });
+    if (!ok) return;
+  }
+  await readConfigFile(configPath.value);
+}
+
+async function saveConfigFile() {
+  const id = store.instanceId;
+  if (!id || !configPath.value || !configDirty.value || configSaving.value) return;
+  configSaving.value = true;
+  try {
+    await api.instanceWriteText(
+      id,
+      configPath.value,
+      configContent.value,
+      configEncoding.value
+    );
+    configOriginal.value = configContent.value;
+    configSize.value = new TextEncoder().encode(configContent.value).length;
+    notify("配置已保存，重启游戏后生效");
+  } catch (err) {
+    notify(`保存失败：${String(err)}`, "err");
+  } finally {
+    configSaving.value = false;
+  }
+}
+
+function openConfigFolder() {
+  if (paths.value) openFolder(`${paths.value.game_dir}/config`);
+}
+
+// 切换实例时清空编辑器状态，避免把上一个实例的内容写进新实例
+watch(
+  () => store.instanceId,
+  () => {
+    configEntries.value = [];
+    expandedDirs.value = new Set();
+    configPath.value = "";
+    configContent.value = "";
+    configOriginal.value = "";
+    configQuery.value = "";
+    if (tab.value === "config") void loadConfigTree();
+  }
+);
 
 /// 汉化资源包入口：CFPA 提供整合包与模组的中文翻译资源
 function openTranslationPacks() {
@@ -1554,6 +1744,13 @@ async function applyPackUpdate() {
 function launch() {
   if (info.value) launchVersion(info.value.id);
 }
+
+/// 按钮在运行时显示「停止游戏」，点击要真正执行停止，
+/// 否则会走到 launchVersion 里弹出「停止请点停止游戏」的绕圈提示
+function launchOrStop() {
+  if (store.gameRunning) void stopGame();
+  else launch();
+}
 </script>
 
 <template>
@@ -1614,7 +1811,7 @@ function launch() {
         <WoodButton
           variant="primary"
           sheen
-          @click="launch"
+          @click="launchOrStop"
         >
           <AppIcon :name="store.gameRunning ? 'stop' : 'play'" :size="15" />
           {{ store.gameRunning ? "停止游戏" : "启动游戏" }}
@@ -2047,6 +2244,166 @@ function launch() {
                   @click="deleteOptionsPreset(preset)"
                 />
               </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 配置文件 -->
+        <section v-else-if="tab === 'config'" class="card card-pad group reveal">
+          <div class="group-head">
+            <div class="group-titles">
+              <div class="section-title">配置文件</div>
+              <p class="muted small">
+                直接编辑 config 下的文本文件；游戏运行时修改可能在退出时被覆盖，建议先退出游戏。Ctrl + S 保存。
+              </p>
+            </div>
+            <span class="group-line" />
+            <div class="row">
+              <IconButton
+                icon="refresh"
+                label="重新读取目录"
+                variant="soft"
+                :size="32"
+                @click="loadConfigTree"
+              />
+              <WoodButton variant="ghost" size="sm" @click="openConfigFolder">
+                <AppIcon name="folder" :size="14" />
+                config 目录
+              </WoodButton>
+            </div>
+          </div>
+
+          <div class="cfg">
+            <div class="cfg__side">
+              <WoodInput v-model="configQuery" placeholder="搜索文件，例如 jei" />
+              <div class="cfg__list">
+                <div v-if="configLoading" class="loading-block">
+                  <span class="loading-block__bar" />
+                  正在读取…
+                </div>
+                <div v-else-if="configError" class="state state--error state--inline">
+                  <span class="state__icon"><AppIcon name="alert" :size="16" /></span>
+                  <div class="state__text">
+                    <p class="state__title">读取失败</p>
+                    <p class="state__hint">{{ configError }}</p>
+                    <div class="state__actions">
+                      <WoodButton variant="soft" size="sm" @click="loadConfigTree">重试</WoodButton>
+                    </div>
+                  </div>
+                </div>
+                <div v-else-if="!configEntries.length" class="state state--inline">
+                  <span class="state__icon"><AppIcon name="folder" :size="16" /></span>
+                  <div class="state__text">
+                    <p class="state__title">没有可编辑的文件</p>
+                    <p class="state__hint">先启动一次游戏生成配置。</p>
+                  </div>
+                </div>
+                <div v-else-if="!visibleConfigEntries.length" class="state state--inline">
+                  <span class="state__icon"><AppIcon name="search" :size="16" /></span>
+                  <div class="state__text">
+                    <p class="state__title">没有匹配的文件</p>
+                    <p class="state__hint">换个关键词试试。</p>
+                  </div>
+                </div>
+                <template v-else>
+                  <template v-for="entry in visibleConfigEntries" :key="entry.path">
+                    <button
+                      v-if="entry.is_dir"
+                      class="cfg__dir"
+                      :style="{
+                        paddingLeft: `${8 + (configSearching ? 0 : configDepth(entry.path)) * 12}px`,
+                      }"
+                      @click="toggleDir(entry.path)"
+                    >
+                      <AppIcon
+                        name="chevron-down"
+                        :size="11"
+                        class="cfg__chev"
+                        :class="{ 'cfg__chev--collapsed': !isDirExpanded(entry.path) }"
+                      />
+                      <AppIcon name="folder" :size="12" />
+                      <span class="cfg__name">{{ entry.name }}</span>
+                    </button>
+                    <button
+                      v-else
+                      class="cfg__file"
+                      :class="{ 'cfg__file--active': entry.path === configPath }"
+                      :style="{
+                        paddingLeft: `${
+                          10 + (configSearching ? 0 : configDepth(entry.path)) * 12
+                        }px`,
+                      }"
+                      @click="openConfigFile(entry)"
+                    >
+                      <AppIcon name="list" :size="12" />
+                      <span class="cfg__name">{{ entry.name }}</span>
+                      <span
+                        v-if="entry.path === configPath && configDirty"
+                        class="cfg__dot"
+                        title="有未保存的修改"
+                      />
+                    </button>
+                  </template>
+                </template>
+              </div>
+            </div>
+
+            <div class="cfg__main">
+              <div class="cfg__bar">
+                <span class="mono cfg__path">
+                  {{ configPath || "从左侧选择一个配置文件" }}
+                </span>
+                <span v-if="configPath" class="muted small cfg__meta">
+                  {{ configEncoding === "gbk" ? "GBK" : "UTF-8" }} · {{ formatBytes(configSize) }}
+                </span>
+                <div class="row cfg__actions">
+                  <WoodButton
+                    v-if="configPath && !plainConfigEditor"
+                    variant="ghost"
+                    size="sm"
+                    title="在文件内容中查找（Ctrl + F）"
+                    @click="configEditorRef?.openSearch()"
+                  >
+                    <AppIcon name="search" :size="13" />
+                    查找
+                  </WoodButton>
+                  <WoodButton
+                    variant="ghost"
+                    size="sm"
+                    :disabled="!configPath || configLoading"
+                    @click="reloadConfigFile"
+                  >
+                    重新读取
+                  </WoodButton>
+                  <WoodButton
+                    variant="primary"
+                    size="sm"
+                    :disabled="!configDirty || configSaving"
+                    @click="saveConfigFile"
+                  >
+                    {{ configSaving ? "保存中…" : "保存" }}
+                  </WoodButton>
+                </div>
+              </div>
+              <ConfigCodeEditor
+                v-if="configPath && !plainConfigEditor"
+                :key="configPath"
+                ref="configEditorRef"
+                v-model="configContent"
+                :path="configPath"
+                :disabled="configSaving"
+                @save="saveConfigFile"
+              />
+              <textarea
+                v-else
+                v-model="configContent"
+                class="cfg__editor"
+                :class="{ 'cfg__editor--empty': !configPath }"
+                :disabled="!configPath"
+                spellcheck="false"
+                :placeholder="configPath ? '' : '选择左侧文件后在这里编辑'"
+                @keydown.ctrl.s.prevent="saveConfigFile"
+              />
             </div>
           </div>
         </section>
@@ -3053,7 +3410,7 @@ function launch() {
 .ins-loading {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .ins-loading .skeleton {
@@ -3064,13 +3421,13 @@ function launch() {
 .ins-layout {
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr);
-  gap: 16px;
+  gap: var(--space-6);
   align-items: start;
 }
 
 /* 侧栏和联机页一致：行距收紧、纯色块高亮，不做按键浮雕 */
 .ins-side {
-  padding: 10px;
+  padding: var(--space-4);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -3089,7 +3446,7 @@ function launch() {
   padding: 0 11px;
   border-radius: 0;
   color: var(--ink-soft);
-  font-size: 13px;
+  font-size: var(--text-lg);
   font-weight: 600;
   text-align: left;
   transition: background var(--dur-1) ease, color var(--dur-1) ease,
@@ -3128,7 +3485,7 @@ function launch() {
 }
 
 .ins-side__count {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
   letter-spacing: 0.08em;
 }
@@ -3144,14 +3501,14 @@ function launch() {
 
 .ins-side__key {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-xs);
   letter-spacing: 0.14em;
   color: var(--muted);
   text-transform: uppercase;
 }
 
 .ins-side__path {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--ink-soft);
   word-break: break-all;
   line-height: 1.5;
@@ -3164,7 +3521,7 @@ function launch() {
 .ins-main {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-6);
   min-width: 0;
 }
 
@@ -3177,7 +3534,7 @@ function launch() {
 .group-head {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-5);
   margin-bottom: 10px;
 }
 
@@ -3196,8 +3553,8 @@ function launch() {
 .setting {
   display: flex;
   align-items: center;
-  gap: 18px;
-  padding: 10px 0;
+  gap: var(--space-row-gap);
+  padding: var(--space-row) 0;
   border-bottom: 1px dashed var(--line);
 }
 
@@ -3209,7 +3566,7 @@ function launch() {
 .setting--stack {
   flex-direction: column;
   align-items: stretch;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .setting--stack .setting__label {
@@ -3229,12 +3586,12 @@ function launch() {
 }
 
 .setting__label strong {
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--walnut-deep);
 }
 
 .setting__label span {
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--muted);
   line-height: 1.45;
 }
@@ -3276,7 +3633,7 @@ function launch() {
   background: var(--panel);
   box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.1);
   color: var(--ink);
-  font-size: 13px;
+  font-size: var(--text-lg);
   line-height: 1.5;
   resize: vertical;
   transition: border-color var(--dur-2) ease, box-shadow var(--dur-2) ease;
@@ -3291,7 +3648,7 @@ function launch() {
 .icon-grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .icon-chip {
@@ -3309,7 +3666,7 @@ function launch() {
   border-bottom-color: color-mix(in srgb, var(--frame) 72%, #000);
   background: var(--panel);
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: var(--text-base);
   transition: border-color var(--dur-2) ease, color var(--dur-2) ease,
     transform var(--dur-2) var(--ease-out-expo);
 }
@@ -3331,7 +3688,7 @@ function launch() {
   border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
   color: var(--walnut-deep);
   transform: translateY(1px);
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .icon-chip__tile {
@@ -3359,7 +3716,7 @@ function launch() {
 .quick-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .detail-grid {
@@ -3385,14 +3742,14 @@ function launch() {
 }
 
 .detail__value {
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--ink);
 }
 
 .count-strip {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 6px;
+  gap: var(--space-2);
   margin-top: 12px;
 }
 
@@ -3422,7 +3779,7 @@ function launch() {
 }
 
 .count__label {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
@@ -3436,14 +3793,14 @@ function launch() {
 .file-search {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   margin: 4px 0;
 }
 
 .world-pick {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   margin: 10px 0 4px;
   padding: 10px 12px;
   border: 1px dashed var(--line);
@@ -3454,7 +3811,7 @@ function launch() {
 .proj-tip {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   margin: 10px 0 4px;
   padding: 10px 12px;
   border: 1px solid var(--line);
@@ -3482,15 +3839,15 @@ function launch() {
 }
 
 .proj-tip__main strong {
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--ink);
 }
 
 .proj-tip__status {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 11px;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -3505,14 +3862,14 @@ function launch() {
 .seed-loading {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 10px 0;
 }
 
 .seed-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .seed-world {
@@ -3522,7 +3879,7 @@ function launch() {
 }
 
 .seed-world strong {
-  font-size: 14px;
+  font-size: var(--text-lg);
   color: var(--ink);
 }
 
@@ -3548,38 +3905,38 @@ function launch() {
 .check-loading {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 10px 0;
 }
 
 .check-body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .check-ok {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   margin: 0;
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--ink);
 }
 
 .repair-err-title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   margin: 4px 0 0;
-  font-size: 12px;
+  font-size: var(--text-base);
   color: #b4483c;
 }
 
 .check-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -3611,13 +3968,13 @@ function launch() {
 }
 
 .repair-option strong {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--walnut-deep);
 }
 
 .repair-option em {
   font-style: normal;
-  font-size: 11px;
+  font-size: var(--text-sm);
   line-height: 1.6;
   color: var(--muted);
 }
@@ -3632,7 +3989,7 @@ function launch() {
 
 .repair-plan__title {
   margin: 0 0 6px;
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--walnut-deep);
 }
 
@@ -3648,11 +4005,11 @@ function launch() {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .repair-plan__head strong {
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--ink);
 }
 
@@ -3664,7 +4021,7 @@ function launch() {
 .repair-plan__files {
   margin: 4px 0 0;
   padding-left: 18px;
-  font-size: 11px;
+  font-size: var(--text-sm);
   line-height: 1.7;
   color: var(--muted);
   word-break: break-all;
@@ -3673,7 +4030,7 @@ function launch() {
 .history-item {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   padding: 9px 11px;
   border: 1px solid var(--line);
   background: var(--panel-2);
@@ -3683,11 +4040,11 @@ function launch() {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .history-item__head strong {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--walnut-deep);
 }
 
@@ -3706,19 +4063,19 @@ function launch() {
 .pack-update-item {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-3);
   word-break: break-all;
 }
 
 .check-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 7px 10px;
   border-radius: 4px;
   border: 1px solid var(--line);
   background: var(--panel-2);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .check-tag {
@@ -3727,7 +4084,7 @@ function launch() {
   border-radius: 3px;
   border: 1px solid var(--line);
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .check-name {
@@ -3740,7 +4097,7 @@ function launch() {
 }
 
 .world-pick__label {
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 700;
   color: var(--ink-soft);
   flex-shrink: 0;
@@ -3762,13 +4119,13 @@ function launch() {
 .file-empty {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-6);
   padding: 24px 10px;
   color: var(--walnut);
 }
 
 .file-empty__title {
-  font-size: 14px;
+  font-size: var(--text-lg);
   font-weight: 800;
   color: var(--walnut-deep);
   margin-bottom: 2px;
@@ -3796,7 +4153,7 @@ function launch() {
 .file-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 8px 9px;
   border-radius: 0;
   /* 屏幕外的行跳过布局与绘制，长列表滚动时内存和帧率都更稳 */
@@ -3854,7 +4211,7 @@ function launch() {
 .shot-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
+  gap: var(--space-5);
   padding-top: 4px;
 }
 
@@ -3919,14 +4276,14 @@ function launch() {
 .shot-card__foot {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 6px 8px 6px 10px;
 }
 
 .shot-card__name {
   flex: 1;
   min-width: 0;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3942,7 +4299,7 @@ function launch() {
 }
 
 .file-row__name {
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3957,7 +4314,7 @@ function launch() {
 }
 
 .file-row__meta {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
@@ -4015,7 +4372,7 @@ function launch() {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .pack-modal__title {
@@ -4029,7 +4386,7 @@ function launch() {
 .pack-modal__body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .pack-field {
@@ -4039,7 +4396,7 @@ function launch() {
 }
 
 .pack-field__label {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
   letter-spacing: 0.04em;
 }
@@ -4047,19 +4404,19 @@ function launch() {
 .export-two {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .export-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
   margin-top: 2px;
 }
 
 .export-link {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--moss);
   padding: 2px 4px;
   border-radius: 4px;
@@ -4077,7 +4434,7 @@ function launch() {
 
 /* 额外包含文件夹区：整体加一条淡边框与常规组区分 */
 .export-groups--extras {
-  padding: 8px;
+  padding: var(--space-3);
   border: 1px dashed var(--line-strong);
   border-radius: 4px;
 }
@@ -4088,20 +4445,20 @@ function launch() {
 
 .export-extra-add {
   display: flex;
-  gap: 6px;
+  gap: var(--space-2);
   margin-top: -6px;
 }
 
 .pack-field__hint {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 
 .export-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 8px 9px;
   border-style: solid;
   border-width: 1px 1px 2px;
@@ -4133,7 +4490,7 @@ function launch() {
   border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
   color: var(--walnut-deep);
   transform: translateY(1px);
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .export-group__box {
@@ -4155,14 +4512,14 @@ function launch() {
 
 .export-group__label {
   flex: 1;
-  font-size: 12.5px;
+  font-size: var(--text-base);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .export-group__meta {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--muted);
   white-space: nowrap;
 }
@@ -4198,12 +4555,12 @@ function launch() {
 
 .pack-modal-enter-active,
 .pack-modal-leave-active {
-  transition: opacity 180ms ease;
+  transition: opacity var(--dur-1) ease;
 }
 
 .pack-modal-enter-active .pack-modal__card,
 .pack-modal-leave-active .pack-modal__card {
-  transition: transform 220ms var(--ease-out-expo);
+  transition: transform var(--dur-2) var(--ease-out-expo);
 }
 
 .pack-modal-enter-from,
@@ -4226,7 +4583,7 @@ function launch() {
   border: 1px dashed var(--line-strong);
   background: var(--panel-2);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .update-state--err {
@@ -4242,7 +4599,7 @@ function launch() {
 .update-panel {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 12px 14px;
   border-radius: 2px;
   border: 2px solid var(--frame);
@@ -4257,7 +4614,7 @@ function launch() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
   flex-wrap: wrap;
 }
 
@@ -4269,7 +4626,7 @@ function launch() {
 }
 
 .update-panel__title strong {
-  font-size: 13px;
+  font-size: var(--text-lg);
   font-weight: 700;
   color: var(--walnut-deep);
 }
@@ -4277,13 +4634,13 @@ function launch() {
 .update-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .update-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 8px 10px;
   border-radius: 4px;
   border: 1px solid var(--line);
@@ -4313,7 +4670,7 @@ function launch() {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--walnut-deep);
 }
 
@@ -4330,7 +4687,7 @@ function launch() {
 }
 
 .update-row__file {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4343,7 +4700,7 @@ function launch() {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   line-height: 1.6;
   color: var(--muted);
 }
@@ -4360,19 +4717,19 @@ function launch() {
 .opts-presets {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .opts-presets__head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
   flex-wrap: wrap;
 }
 
 .opts-presets__head strong {
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--walnut-deep);
 }
 
@@ -4380,7 +4737,7 @@ function launch() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
   padding: 9px 11px;
   border-radius: 0;
   border: 1px solid var(--line);
@@ -4396,7 +4753,7 @@ function launch() {
 }
 
 .opts-preset__info strong {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4412,8 +4769,8 @@ function launch() {
 .save-backups {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px;
+  gap: var(--space-4);
+  padding: var(--space-5);
   border-radius: 2px;
   border: 1px solid var(--line);
   background: var(--panel-2);
@@ -4424,7 +4781,7 @@ function launch() {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .save-backups__titles {
@@ -4434,7 +4791,7 @@ function launch() {
 }
 
 .save-backups__titles strong {
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--walnut-deep);
 }
 
@@ -4445,13 +4802,13 @@ function launch() {
 .save-backups__list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .backup-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 8px 10px;
   border-radius: 2px;
   border: 1px solid var(--line);
@@ -4478,9 +4835,171 @@ function launch() {
 }
 
 .backup-row__main strong {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ---------- config 文本编辑器 ---------- */
+.cfg {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: var(--space-5);
+  margin-top: 12px;
+}
+
+.cfg__side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.cfg__list {
+  flex: 1;
+  min-height: 420px;
+  max-height: 520px;
+  /* 只纵向滚动：缩进与长文件名由 ellipsis 处理，不再撑出横向滚动条 */
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-2);
+  box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.1);
+}
+
+.cfg__dir {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: 26px;
+  padding-right: 8px;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-align: left;
+  overflow: hidden;
+}
+
+.cfg__dir:hover {
+  background: var(--hover);
+  color: var(--ink-soft);
+}
+
+.cfg__chev {
+  flex-shrink: 0;
+  transition: transform var(--dur-1) var(--ease-out-expo);
+}
+
+/* 收起时箭头转向右侧，和常见文件树一致 */
+.cfg__chev--collapsed {
+  transform: rotate(-90deg);
+}
+
+.cfg__file {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: 26px;
+  padding-right: 8px;
+  color: var(--ink-soft);
+  font-size: var(--text-base);
+  text-align: left;
+  overflow: hidden;
+}
+
+.cfg__file:hover {
+  background: var(--hover);
+}
+
+.cfg__file--active {
+  background: var(--moss-soft);
+  color: var(--moss);
+}
+
+.cfg__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cfg__dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--amber);
+}
+
+.cfg__main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.cfg__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.cfg__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cfg__meta,
+.cfg__actions {
+  flex-shrink: 0;
+}
+
+.cfg__editor {
+  width: 100%;
+  height: 480px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--paper-2);
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  user-select: text;
+}
+
+.cfg__editor--empty {
+  background: var(--panel-2);
+}
+
+.cfg__editor:focus {
+  outline: none;
+  border-color: var(--moss);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--moss) 20%, transparent);
+}
+
+@media (max-width: 900px) {
+  .cfg {
+    grid-template-columns: 1fr;
+  }
+
+  .cfg__list {
+    min-height: 160px;
+    max-height: 240px;
+  }
 }
 </style>

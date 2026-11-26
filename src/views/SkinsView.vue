@@ -472,18 +472,34 @@ onMounted(async () => {
         </header>
 
         <section v-show="tab === 'local'" class="lib card">
-          <div v-if="loading" class="lib__empty">
-            <span class="muted small">正在读取皮肤库…</span>
+          <div v-if="loading" class="loading-rows">
+            <span class="loading-rows__row" />
+            <span class="loading-rows__row" />
+            <span class="loading-rows__row" />
           </div>
-          <div v-else-if="error" class="lib__empty">
-            <span class="muted small">{{ error }}</span>
-            <WoodButton variant="ghost" size="sm" @click="loadLibrary">重试</WoodButton>
+          <div v-else-if="error" class="state state--error">
+            <span class="state__icon"><AppIcon name="alert" :size="18" /></span>
+            <div class="state__text">
+              <p class="state__title">皮肤库读取失败</p>
+              <p class="state__hint">{{ error }}</p>
+              <div class="state__actions">
+                <WoodButton variant="soft" size="sm" @click="loadLibrary">重试</WoodButton>
+              </div>
+            </div>
           </div>
-          <div v-else-if="!items.length" class="lib__empty">
-            <span class="muted small">皮肤库还是空的，导入 PNG 或从账号收录一件吧</span>
+          <div v-else-if="!items.length" class="state">
+            <span class="state__icon"><AppIcon name="image" :size="18" /></span>
+            <div class="state__text">
+              <p class="state__title">皮肤库还是空的</p>
+              <p class="state__hint">导入 PNG，或从账号收录一件皮肤。</p>
+            </div>
           </div>
-          <div v-else-if="!filteredItems.length" class="lib__empty">
-            <span class="muted small">没有匹配「{{ keyword }}」的皮肤</span>
+          <div v-else-if="!filteredItems.length" class="state state--inline">
+            <span class="state__icon"><AppIcon name="search" :size="18" /></span>
+            <div class="state__text">
+              <p class="state__title">没有匹配「{{ keyword }}」的皮肤</p>
+              <p class="state__hint">换个关键词试试。</p>
+            </div>
           </div>
 
           <div v-else class="skin-grid">
@@ -545,15 +561,26 @@ onMounted(async () => {
             />
           </header>
 
-      <div v-if="!capeAccountOptions.length" class="lib__empty">
-        <span class="muted small">登录微软或第三方账号后可以查看披风</span>
+      <div v-if="!capeAccountOptions.length" class="state state--inline">
+        <span class="state__icon"><AppIcon name="user" :size="18" /></span>
+        <div class="state__text">
+          <p class="state__title">还没有可用账号</p>
+          <p class="state__hint">登录微软或第三方账号后可以查看披风。</p>
+        </div>
       </div>
-      <div v-else-if="capesLoading" class="lib__empty">
-        <span class="muted small">正在读取披风…</span>
+      <div v-else-if="capesLoading" class="loading-block">
+        <span class="loading-block__bar" />
+        正在读取披风…
       </div>
-      <div v-else-if="capesError" class="lib__empty">
-        <span class="muted small">{{ capesError }}</span>
-        <WoodButton variant="ghost" size="sm" @click="loadCapes">重试</WoodButton>
+      <div v-else-if="capesError" class="state state--error state--inline">
+        <span class="state__icon"><AppIcon name="alert" :size="18" /></span>
+        <div class="state__text">
+          <p class="state__title">披风读取失败</p>
+          <p class="state__hint">{{ capesError }}</p>
+          <div class="state__actions">
+            <WoodButton variant="soft" size="sm" @click="loadCapes">重试</WoodButton>
+          </div>
+        </div>
       </div>
       <div v-else-if="!capes.length" class="lib__empty">
         <span class="muted small">
@@ -776,7 +803,7 @@ onMounted(async () => {
 .skins {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-6);
 }
 
 /* 左预览 + 右卡片库 */
@@ -796,8 +823,8 @@ onMounted(async () => {
 .preview {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px;
+  gap: var(--space-4);
+  padding: var(--space-5);
 }
 
 .preview__viewport {
@@ -828,7 +855,7 @@ onMounted(async () => {
   height: 24px;
   padding: 0 16px;
   border-radius: 2px;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   transition: background var(--dur-1) ease, color var(--dur-1) ease;
 }
@@ -843,7 +870,7 @@ onMounted(async () => {
 .preview__tip {
   margin: 0;
   text-align: center;
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
@@ -856,7 +883,7 @@ onMounted(async () => {
 }
 
 .preview__meta strong {
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--walnut-deep);
   max-width: 100%;
   overflow: hidden;
@@ -867,7 +894,7 @@ onMounted(async () => {
 .stage-main {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-4);
   min-width: 0;
 }
 
@@ -875,7 +902,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--space-4);
   flex-wrap: wrap;
 }
 
@@ -897,11 +924,11 @@ onMounted(async () => {
   border-style: solid;
   border-width: 1px 1px 2px;
   border-color: transparent;
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--ink-soft);
-  transition: background 150ms ease, color 150ms ease,
-    border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
+  transition: background var(--dur-1) ease, color var(--dur-1) ease,
+    border-color var(--dur-1) ease, transform var(--dur-0) ease, box-shadow var(--dur-0) ease;
 }
 
 .tabs__btn:not(.tabs__btn--active):hover {
@@ -924,12 +951,12 @@ onMounted(async () => {
   border-right-color: color-mix(in srgb, var(--face) 34%, #fff);
   border-bottom-color: color-mix(in srgb, var(--face) 34%, #fff);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.14);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .tabs__count {
   margin-left: 5px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 500;
   color: var(--muted);
 }
@@ -937,14 +964,14 @@ onMounted(async () => {
 .stage-tools {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
 .search {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   height: 30px;
   padding: 0 10px;
   border: 1px solid var(--line-strong);
@@ -958,7 +985,7 @@ onMounted(async () => {
   border: none;
   outline: none;
   background: transparent;
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--ink);
 }
 
@@ -966,7 +993,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
   padding: 10px 14px;
   border-bottom: 1px solid var(--line);
 }
@@ -982,7 +1009,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
   flex-wrap: wrap;
   padding: 10px 14px;
   border-bottom: 1px solid var(--line);
@@ -991,45 +1018,45 @@ onMounted(async () => {
 .lib__title {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-3);
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--text-lg);
   font-weight: 700;
   color: var(--walnut-deep);
 }
 
 .lib__count {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   font-weight: 500;
   color: var(--muted);
 }
 
 .lib__actions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .lib__empty {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: var(--space-5);
   padding: 36px 12px;
 }
 
 .skin-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
-  gap: 10px;
-  padding: 12px;
+  gap: var(--space-4);
+  padding: var(--space-5);
 }
 
 .skin {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px;
+  gap: var(--space-2);
+  padding: var(--space-3);
   border: 1px solid var(--line);
   border-radius: 2px;
   background: var(--panel-2);
@@ -1058,7 +1085,7 @@ onMounted(async () => {
   border-radius: 2px;
   background: var(--moss);
   color: #fffdf6;
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 
 .skin__preview {
@@ -1081,7 +1108,7 @@ onMounted(async () => {
 .skin--add {
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--space-3);
   min-height: 186px;
   border-style: dashed;
   border-color: var(--line-strong);
@@ -1102,7 +1129,7 @@ onMounted(async () => {
 }
 
 .skin__name {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   font-weight: 700;
   color: var(--walnut-deep);
   overflow: hidden;
@@ -1111,14 +1138,14 @@ onMounted(async () => {
 }
 
 .skin__tags {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
 .skin__foot {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   margin-top: auto;
   padding-top: 6px;
   border-top: 1px solid var(--line);
@@ -1131,16 +1158,16 @@ onMounted(async () => {
 .cape-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
-  gap: 10px;
-  padding: 12px;
+  gap: var(--space-4);
+  padding: var(--space-5);
 }
 
 .cape {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px;
+  gap: var(--space-2);
+  padding: var(--space-3);
   border: 1px solid var(--line);
   border-radius: 2px;
   background: var(--panel-2);
@@ -1163,7 +1190,7 @@ onMounted(async () => {
   border-radius: 2px;
   background: var(--moss);
   color: #fffdf6;
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 
 .cape__preview {
@@ -1195,7 +1222,7 @@ onMounted(async () => {
 }
 
 .cape__name {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   font-weight: 700;
   color: var(--walnut-deep);
   overflow: hidden;
@@ -1204,7 +1231,7 @@ onMounted(async () => {
 }
 
 .cape__state {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
@@ -1229,11 +1256,11 @@ onMounted(async () => {
 .field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .field__label {
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--ink-soft);
 }
@@ -1257,11 +1284,11 @@ onMounted(async () => {
   border-style: solid;
   border-width: 1px 1px 2px;
   border-color: transparent;
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--ink-soft);
-  transition: background 150ms ease, color 150ms ease,
-    border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
+  transition: background var(--dur-1) ease, color var(--dur-1) ease,
+    border-color var(--dur-1) ease, transform var(--dur-0) ease, box-shadow var(--dur-0) ease;
 }
 
 .seg__btn:not(.seg__btn--active):hover {
@@ -1284,19 +1311,19 @@ onMounted(async () => {
   border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .file-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .file-row__path {
   flex: 1;
   min-width: 0;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1306,8 +1333,8 @@ onMounted(async () => {
 .toggle-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 12.5px;
+  gap: var(--space-4);
+  font-size: var(--text-base);
   color: var(--ink-soft);
 }
 </style>

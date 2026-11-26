@@ -1,6 +1,6 @@
 [package]
 name = "mc-launcher"
-version = "1.7.4"
+version = "1.7.5"
 description = "DOCL - Minecraft 第三方启动器"
 authors = ["deepseekwork"]
 license = "AGPL-3.0-only"
@@ -26,6 +26,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 futures = "0.3"
 sha1 = "0.10"
 sha2 = "0.10"
+crc32fast = "1"
 zip = "2"
 quartz_nbt = "0.2.9"
 png = "0.17"
@@ -37,4 +38,4 @@ uuid = { version = "1", features = ["v4"] }
 md5 = "0.7"
 base64 = "0.22"
 winreg = "0.55"
-windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Globalization"] }

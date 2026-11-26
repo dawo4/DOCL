@@ -76,6 +76,8 @@ export interface ServerOptions {
   online_mode: boolean;
   white_list: boolean;
   accept_eula: boolean;
+  /// 开服人自己的游戏 ID，开启白名单时自动写入
+  player_name: string;
 }
 
 export interface ServerSnapshot {
@@ -91,6 +93,10 @@ export interface ServerSnapshot {
   loader: string;
   dir: string;
   java: string;
+  /// 服务端是否开启正版验证
+  online_mode: boolean;
+  /// 当前白名单里的玩家名
+  white_list: string[];
   log: string[];
 }
 
@@ -484,9 +490,21 @@ export interface SourceProbe {
   error: string;
 }
 
+/// 整合包清单里没装上的单个文件
+export interface ImportFailure {
+  /// 所属的 CurseForge 项目；Modrinth 清单不带项目信息时为 0
+  project_id: number;
+  file_id: number;
+  /// 给用户认的名字：项目名，拿不到时退回文件名或 ID
+  name: string;
+  reason: string;
+}
+
 /// 重试失败文件后的结果
 export interface RetryDownloads {
+  /// 文本摘要（名字：原因）
   failed: string[];
+  failures: ImportFailure[];
 }
 
 /// 本地游玩画像
@@ -662,6 +680,21 @@ export interface InstanceFile {
   modified: number;
   enabled: boolean;
   is_dir: boolean;
+}
+
+/// config 目录里的一个条目，path 为相对 config 的 `/` 分隔路径
+export interface ConfigEntry {
+  path: string;
+  name: string;
+  is_dir: boolean;
+  size: number;
+}
+
+export interface ConfigText {
+  content: string;
+  /// "utf-8" 或 "gbk"
+  encoding: string;
+  size: number;
 }
 
 export interface InstanceModMeta {
@@ -887,6 +920,10 @@ export interface PackPreview {
   server_skips: number;
   /// 压缩包特征更像服务端整合包
   server_like: boolean;
+  /// 清单里标记为可选的文件数；默认不装，导入表单里可以勾选
+  optional_count: number;
+  /// 加载器启动器能否自动安装；false 时按原版导入并保留全部文件
+  loader_supported: boolean;
 }
 
 export interface ModpackImportOptions {
@@ -903,7 +940,12 @@ export interface ModpackImportResult {
   instance_id: string;
   display_name: string;
   installed_files: number;
-  failed: string[];
+  /// 清单里没装上的文件：可以逐个补下，也可以去项目页手动下载
+  failures: ImportFailure[];
+  /// 不属于单个文件的提醒：加载器暂不支持、清单写入失败等
+  warnings: string[];
+  /// 导入完成后的使用建议，例如内存分配
+  hints: string[];
 }
 
 export interface ExportEntry {
@@ -1243,6 +1285,16 @@ export const api = {
     invoke<void>("instance_delete_file", { versionId, kind, name }),
   instanceOpenContent: (versionId: string, kind: string, name: string) =>
     invoke<void>("instance_open_content", { versionId, kind, name }),
+  instanceConfigTree: (versionId: string) =>
+    invoke<ConfigEntry[]>("instance_config_tree", { versionId }),
+  instanceReadText: (versionId: string, path: string) =>
+    invoke<ConfigText>("instance_read_text", { versionId, path }),
+  instanceWriteText: (
+    versionId: string,
+    path: string,
+    content: string,
+    encoding: string
+  ) => invoke<void>("instance_write_text", { versionId, path, content, encoding }),
   instanceThumb: (versionId: string, kind: string, name: string) =>
     invoke<string | null>("instance_thumb", { versionId, kind, name }),
   instanceModMeta: (versionId: string) =>
@@ -1297,6 +1349,8 @@ export const api = {
   probeDownloadSources: () => invoke<SourceProbe[]>("probe_download_sources"),
   retryFailedDownloads: (sourceJob?: string, jobId?: string) =>
     invoke<RetryDownloads>("retry_failed_downloads", { sourceJob, jobId }),
+  modpackRetryFile: (sourceJob: string, projectId: number, fileId: number, jobId?: string) =>
+    invoke<RetryDownloads>("modpack_retry_file", { sourceJob, projectId, fileId, jobId }),
   playStats: () => invoke<PlayStats>("play_stats"),
   updateCheck: (url: string) => invoke<UpdateInfo>("update_check", { url }),
   updateDownload: (url: string, version: string) =>
@@ -1510,8 +1564,8 @@ export const api = {
   addJava: (path: string) => invoke<JavaInfo>("add_java", { path }),
   javaRuntimeMajors: (source: string) =>
     invoke<number[]>("java_runtime_majors", { source }),
-  installJava: (major: number, source: string, jobId?: string) =>
-    invoke<JavaInfo>("install_java", { major, source, jobId }),
+  installJava: (major: number, source: string, setAsDefault?: boolean, jobId?: string) =>
+    invoke<JavaInfo>("install_java", { major, source, setAsDefault, jobId }),
   deleteJava: (path: string) => invoke<boolean>("delete_java", { path }),
   launchVersion: (versionId: string) => invoke<number>("launch_version", { versionId }),
   launchServer: (versionId: string, address: string) =>
@@ -1551,6 +1605,7 @@ export const api = {
   serverPackRemove: (id: string) => invoke<void>("server_pack_remove", { id }),
   serverCommand: (command: string) => invoke<void>("server_command", { command }),
   serverStop: () => invoke<void>("server_stop"),
+  serverDiagnostic: () => invoke<string>("server_diagnostic"),
   terracottaPrepare: () => invoke<TcStatus>("terracotta_prepare"),
   terracottaStatus: () => invoke<TcStatus>("terracotta_status"),
   terracottaHost: (room: string | null, player: string | null) =>

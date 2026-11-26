@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
+﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
@@ -635,50 +635,49 @@ onMounted(() => {
     </template>
 
     <template #footer>
-      <WoodButton
-        v-if="report?.found"
-        variant="ghost"
-        size="sm"
-        :disabled="exporting"
-        @click="exportReport"
-      >
-        <AppIcon name="download" :size="13" />
-        {{ exporting ? "导出中…" : "导出报告" }}
-      </WoodButton>
-      <WoodButton
-        v-if="report?.found"
-        variant="ghost"
-        size="sm"
-        :disabled="sharing"
-        @click="shareConfirmOpen = true"
-      >
-        <AppIcon name="external" :size="13" />
-        {{ sharing ? "上传中…" : "分享日志" }}
-      </WoodButton>
-      <WoodButton
-        v-if="report?.found"
-        variant="ghost"
-        size="sm"
-        @click="openLogDir"
-      >
-        <AppIcon name="folder" :size="13" />
-        打开日志目录
-      </WoodButton>
-      <WoodButton
-        v-if="report?.found"
-        variant="soft"
-        size="sm"
-        :disabled="repairing || loading"
-        @click="openRepairPlan"
-      >
-        <AppIcon name="wrench" :size="13" />
-        {{ repairing ? "修复中…" : "一键修复" }}
-      </WoodButton>
-      <WoodButton variant="soft" size="sm" :disabled="loading" @click="load">
-        <AppIcon name="refresh" :size="13" />
-        重新分析
-      </WoodButton>
-      <WoodButton variant="primary" size="sm" @click="close">关闭</WoodButton>
+      <div class="crash-foot">
+        <div v-if="report?.found" class="crash-foot__group">
+          <WoodButton
+            variant="ghost"
+            size="sm"
+            :disabled="exporting"
+            @click="exportReport"
+          >
+            <AppIcon name="download" :size="13" />
+            {{ exporting ? "导出中…" : "导出报告" }}
+          </WoodButton>
+          <WoodButton
+            variant="ghost"
+            size="sm"
+            :disabled="sharing"
+            @click="shareConfirmOpen = true"
+          >
+            <AppIcon name="external" :size="13" />
+            {{ sharing ? "上传中…" : "分享日志" }}
+          </WoodButton>
+          <WoodButton variant="ghost" size="sm" @click="openLogDir">
+            <AppIcon name="folder" :size="13" />
+            日志目录
+          </WoodButton>
+        </div>
+        <div class="crash-foot__group crash-foot__group--main">
+          <WoodButton
+            v-if="report?.found"
+            variant="soft"
+            size="sm"
+            :disabled="repairing || loading"
+            @click="openRepairPlan"
+          >
+            <AppIcon name="wrench" :size="13" />
+            {{ repairing ? "修复中…" : "一键修复" }}
+          </WoodButton>
+          <WoodButton variant="soft" size="sm" :disabled="loading" @click="load">
+            <AppIcon name="refresh" :size="13" />
+            重新分析
+          </WoodButton>
+          <WoodButton variant="primary" size="sm" @click="close">关闭</WoodButton>
+        </div>
+      </div>
     </template>
   </WoodModal>
 
@@ -788,11 +787,33 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/* 底部工具栏：按钮分组并允许换行，窄窗口下也不会被裁掉 */
+.crash-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  width: 100%;
+}
+
+.crash-foot__group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.crash-foot__group--main {
+  margin-left: auto;
+}
+
 .crash-mod-changes {
   margin: 12px 0 4px;
   padding: 10px 12px;
   border: 1px solid var(--line);
-  background: var(--surface-2);
+  background: var(--panel-2);
 }
 
 .crash-mod-changes :deep(button) {
@@ -801,10 +822,10 @@ onMounted(() => {
 
 .crash-mod-group {
   display: flex;
-  gap: 8px;
+  gap: var(--space-3);
   align-items: flex-start;
   margin-top: 7px;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .crash-mod-group ul {
@@ -830,7 +851,7 @@ onMounted(() => {
   background: none;
   padding: 0;
   color: var(--muted);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   cursor: pointer;
 }
 
@@ -842,10 +863,10 @@ onMounted(() => {
 .crash-ignored {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   margin-top: 8px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .crash-ignored button {
@@ -853,7 +874,7 @@ onMounted(() => {
   background: none;
   padding: 0;
   color: var(--accent, var(--muted));
-  font-size: 11px;
+  font-size: var(--text-sm);
   cursor: pointer;
   text-decoration: underline;
 }
@@ -864,27 +885,27 @@ onMounted(() => {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .repair-plan li {
   padding: 9px 11px;
   border: 1px solid var(--line);
-  background: var(--surface-2);
+  background: var(--panel-2);
 }
 
 .repair-plan__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  font-size: 12.5px;
+  gap: var(--space-3);
+  font-size: var(--text-base);
 }
 
 .repair-plan li p {
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   line-height: 1.55;
 }
 
@@ -896,10 +917,10 @@ onMounted(() => {
 .repair-plan__options {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   padding-top: 10px;
   border-top: 1px solid var(--line);
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--muted);
 }
 
@@ -920,7 +941,7 @@ onMounted(() => {
 
 .repair-plan__files-title {
   margin: 0 0 6px;
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--ink);
 }
 
@@ -936,8 +957,8 @@ onMounted(() => {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
+  gap: var(--space-3);
+  font-size: var(--text-base);
 }
 
 .repair-plan__group p {
@@ -947,7 +968,7 @@ onMounted(() => {
 .repair-plan__file-list {
   margin: 3px 0 0;
   padding-left: 18px;
-  font-size: 11px;
+  font-size: var(--text-sm);
   line-height: 1.7;
   color: var(--muted);
   word-break: break-all;
@@ -956,28 +977,28 @@ onMounted(() => {
 .crash-loading {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 18px 0;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--text-base);
 }
 
 .crash-error {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 10px 12px;
   border-radius: 0;
   border: 1px solid var(--line-strong);
   background: var(--danger-soft);
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .crash-headline {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-5);
   padding: 12px 14px;
   border-radius: 0;
   border: 1px solid var(--line-strong);
@@ -1013,7 +1034,7 @@ onMounted(() => {
 }
 
 .crash-headline__text strong {
-  font-size: 13px;
+  font-size: var(--text-lg);
   font-weight: 700;
   color: var(--walnut-deep);
   overflow-wrap: anywhere;
@@ -1026,14 +1047,14 @@ onMounted(() => {
   border: 1px dashed var(--line-strong);
   background: var(--panel-2);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-base);
   line-height: 1.6;
 }
 
 .crash-context {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-2);
   margin-top: 12px;
 }
 
@@ -1043,7 +1064,7 @@ onMounted(() => {
   border-radius: 0;
   border: 1px solid var(--line);
   background: var(--panel-2);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   overflow-wrap: anywhere;
 }
@@ -1056,17 +1077,17 @@ onMounted(() => {
   background: var(--moss-soft);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .crash-suspects__head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .crash-suspects__head strong {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--moss);
 }
 
@@ -1079,7 +1100,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 8px 10px;
   border-radius: 0;
   background: rgba(255, 255, 255, 0.6);
@@ -1093,7 +1114,7 @@ onMounted(() => {
 }
 
 .crash-suspect__text strong {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--walnut-deep);
   overflow-wrap: anywhere;
 }
@@ -1101,12 +1122,12 @@ onMounted(() => {
 .crash-group {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .crash-group__title {
   margin-top: 2px;
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 700;
   letter-spacing: 0.08em;
   color: var(--muted);
@@ -1115,7 +1136,7 @@ onMounted(() => {
 .crash-matches {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
   margin-top: 14px;
 }
 
@@ -1128,20 +1149,21 @@ onMounted(() => {
 
 .crash-match__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .crash-match__head strong {
-  font-size: 13px;
+  font-size: var(--text-lg);
   font-weight: 700;
   color: var(--walnut-deep);
 }
 
 .crash-match__summary {
   margin: 6px 0 8px;
-  font-size: 12px;
+  font-size: var(--text-base);
   line-height: 1.6;
   color: var(--ink-soft);
 }
@@ -1152,7 +1174,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  font-size: 12px;
+  font-size: var(--text-base);
   line-height: 1.55;
   color: var(--ink-soft);
 }
@@ -1167,7 +1189,7 @@ onMounted(() => {
   border-radius: 0;
   border: 1px dashed var(--line-strong);
   background: var(--paper-2);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   line-height: 1.6;
   color: var(--muted);
   max-height: 120px;
@@ -1183,15 +1205,15 @@ onMounted(() => {
 .crash-links {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-3);
   margin-top: 8px;
 }
 
 .crash-links button {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 11.5px;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
   color: var(--moss);
   text-decoration: underline;
   padding: 0;
@@ -1204,7 +1226,7 @@ onMounted(() => {
 
 .crash-excerpt summary {
   padding-top: 10px;
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--ink-soft);
   cursor: pointer;
@@ -1218,7 +1240,7 @@ onMounted(() => {
   border-radius: 0;
   border: 1px solid var(--line);
   background: var(--paper-2);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   line-height: 1.6;
   color: var(--muted);
   white-space: pre-wrap;

@@ -774,6 +774,38 @@ pub fn instance_open_content(
     instance::open_content(&cfg, &version_id, &kind, &name).map_err(err)
 }
 
+/// 列出实例 config 目录下的可编辑文本文件。
+#[tauri::command]
+pub fn instance_config_tree(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> CmdResult<Vec<instance::ConfigEntry>> {
+    let cfg = state.config.lock().unwrap().clone();
+    instance::config_tree(&cfg, &version_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn instance_read_text(
+    state: State<'_, AppState>,
+    version_id: String,
+    path: String,
+) -> CmdResult<instance::ConfigText> {
+    let cfg = state.config.lock().unwrap().clone();
+    instance::read_config_text(&cfg, &version_id, &path).map_err(err)
+}
+
+#[tauri::command]
+pub fn instance_write_text(
+    state: State<'_, AppState>,
+    version_id: String,
+    path: String,
+    content: String,
+    encoding: String,
+) -> CmdResult<()> {
+    let cfg = state.config.lock().unwrap().clone();
+    instance::write_config_text(&cfg, &version_id, &path, &content, &encoding).map_err(err)
+}
+
 #[tauri::command]
 pub fn instance_import_files(
     state: State<'_, AppState>,
@@ -1246,6 +1278,7 @@ pub async fn modpack_import(
     let cfg = state.config.lock().unwrap().clone();
     let progress = begin_job(&state, job_id, "install", "准备导入整合包…");
     download::reset_failed_batch(&progress.job);
+    modpack::reset_pending_specs(&progress.job);
 
     let result = modpack::import(&app, &state.client, &cfg, &path, &options, progress.clone()).await;
 
@@ -1263,10 +1296,22 @@ pub async fn modpack_import(
     }
 }
 
-/// 只重跑上一批失败的文件，不必重新导入整个整合包
+/// 补下某个任务没装上的文件。`failed` 是文本摘要，`failures` 带项目 ID，
+/// 任务卡片据此提供逐个重试与项目页入口。
 #[derive(serde::Serialize)]
 pub struct RetryDownloadsView {
     failed: Vec<String>,
+    failures: Vec<modpack::ImportFailure>,
+}
+
+impl RetryDownloadsView {
+    fn new(failures: Vec<modpack::ImportFailure>) -> Self {
+        let failed = failures
+            .iter()
+            .map(|item| format!("{}：{}", item.name, item.reason))
+            .collect();
+        Self { failed, failures }
+    }
 }
 
 #[tauri::command]
@@ -1277,30 +1322,142 @@ pub async fn retry_failed_downloads(
     job_id: Option<String>,
 ) -> CmdResult<RetryDownloadsView> {
     // 失败批次按任务存放：指定了原任务就只取它那一批，避免并行时重跑到别人的文件
-    let Some(batch) = download::take_failed_batch(source_job.as_deref()) else {
+    let job = source_job.as_deref();
+    let pending = job.and_then(modpack::take_pending_specs);
+    if pending.is_none() && !download::has_failed_batch(job) {
         return Err(
-            "这个任务没有可补下的下载失败项；如果是缺前置或清单写入失败，请用对应的“重试补前置”或重新导入"
+            "这个任务没有可补下的失败项；如果是缺前置或清单写入失败，请用对应的“重试补前置”或重新导入"
                 .to_string(),
         );
-    };
+    }
+    let cfg = state.config.lock().unwrap().clone();
     let progress = begin_job(&state, job_id, "repair", "准备重试失败文件…");
 
-    let result = download::run_tasks_reporting(
+    let outcome = if let Some(pending) = pending {
+        // 整合包导入可能同时留下「解析失败」（拿不到下载地址）与「下载失败」两类，
+        // 一次补下要把两个池子都跑完：解析失败走重新解析，下载失败按地址重下
+        let spec_failures = modpack::install_specs(
+            &app,
+            &state.client,
+            &cfg,
+            &pending.instance_id,
+            &pending.specs,
+            progress.clone(),
+        )
+        .await;
+        if progress.is_cancelled() {
+            // 用户取消：解析失败的记回原任务，重试按钮会带着原任务 id 再来一遍；
+            // 下载批次还没取走，仍留在原任务名下
+            if let Some(target) = job {
+                modpack::add_pending_specs(
+                    target,
+                    &pending.instance_id,
+                    modpack::failure_specs(&spec_failures),
+                );
+            }
+            finish_job(&state, &app, &progress);
+            return Ok(RetryDownloadsView::new(spec_failures));
+        }
+        // 解析失败先登记到本次补下任务：后面跑下载批次若被取消，
+        // run_tasks_reporting 会把仍失败的任务自动记到本次任务，两类都不会丢
+        modpack::add_pending_specs(
+            &progress.job,
+            &pending.instance_id,
+            modpack::failure_specs(&spec_failures),
+        );
+        let batch = download::take_failed_batch(job);
+        let batch_failures: Vec<modpack::ImportFailure> = match batch {
+            Some(batch) => {
+                download::run_tasks_reporting(
+                    &app,
+                    &state.client,
+                    batch.tasks,
+                    batch.concurrency,
+                    batch.use_mirror,
+                    progress.clone(),
+                )
+                .await
+                .map(|outcome| {
+                    outcome
+                        .failed
+                        .into_iter()
+                        .map(|(name, reason)| modpack::ImportFailure {
+                            project_id: 0,
+                            file_id: 0,
+                            name,
+                            reason,
+                        })
+                        .collect()
+                })
+                .map_err(err)?
+            }
+            None => Vec::new(),
+        };
+        Ok(RetryDownloadsView::new(
+            [spec_failures, batch_failures].concat(),
+        ))
+    } else {
+        let batch = download::take_failed_batch(job).expect("上面已确认有失败批次");
+        download::run_tasks_reporting(
+            &app,
+            &state.client,
+            batch.tasks,
+            batch.concurrency,
+            batch.use_mirror,
+            progress.clone(),
+        )
+        .await
+        .map(|outcome| {
+            RetryDownloadsView::new(
+                outcome
+                    .failed
+                    .into_iter()
+                    .map(|(name, reason)| modpack::ImportFailure {
+                        project_id: 0,
+                        file_id: 0,
+                        name,
+                        reason,
+                    })
+                    .collect(),
+            )
+        })
+        .map_err(err)
+    };
+
+    finish_job(&state, &app, &progress);
+    outcome
+}
+
+/// 单项补下整合包清单里的一个文件：任务卡片上的失败清单逐个重试用。
+/// 只读不取原任务的待补记录，失败时那条记录还留在原处。
+#[tauri::command]
+pub async fn modpack_retry_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source_job: String,
+    project_id: i64,
+    file_id: i64,
+    job_id: Option<String>,
+) -> CmdResult<RetryDownloadsView> {
+    let pending = modpack::pending_specs(&source_job)
+        .filter(|pending| pending.specs.contains(&(project_id, file_id)))
+        .ok_or_else(|| "这个任务没有待补的文件，请用任务卡片上的「补下失败文件」".to_string())?;
+    let cfg = state.config.lock().unwrap().clone();
+    let progress = begin_job(&state, job_id, "repair", "准备重新获取下载地址…");
+    let failures = modpack::install_specs(
         &app,
         &state.client,
-        batch.tasks,
-        batch.concurrency,
-        batch.use_mirror,
+        &cfg,
+        &pending.instance_id,
+        &[(project_id, file_id)],
         progress.clone(),
     )
     .await;
-
     finish_job(&state, &app, &progress);
-
-    let outcome = result.map_err(err)?;
-    Ok(RetryDownloadsView {
-        failed: outcome.failed.into_iter().map(|(label, _)| label).collect(),
-    })
+    if failures.is_empty() {
+        modpack::remove_pending_spec(&source_job, project_id, file_id);
+    }
+    Ok(RetryDownloadsView::new(failures))
 }
 
 /// 重新检查并补齐某个已装模组的前置；缺前置任务的重试入口。
@@ -2507,6 +2664,9 @@ pub async fn install_java(
     state: State<'_, AppState>,
     major: u32,
     source: Option<String>,
+    // 是否把新装的 Java 设为全局默认。设置页主动安装传 true；
+    // 启动弹窗里的一键安装传 false——用户没要求改其他实例的运行时
+    set_as_default: Option<bool>,
     job_id: Option<String>,
 ) -> CmdResult<JavaInfo> {
     let cfg = state.config.lock().unwrap().clone();
@@ -2519,9 +2679,11 @@ pub async fn install_java(
 
     match result {
         Ok(info) => {
-            let mut cfg = state.config.lock().unwrap();
-            cfg.java_path = Some(info.path.clone());
-            let _ = config::save(&cfg);
+            if set_as_default.unwrap_or(false) {
+                let mut cfg = state.config.lock().unwrap();
+                cfg.java_path = Some(info.path.clone());
+                let _ = config::save(&cfg);
+            }
             Ok(info)
         }
         Err(e) => Err(err(e)),
@@ -2778,6 +2940,13 @@ pub fn server_command(command: String) -> CmdResult<()> {
 #[tauri::command]
 pub fn server_stop() -> CmdResult<()> {
     server::stop().map_err(err)
+}
+
+/// 生成可直接复制的服务端诊断报告。
+#[tauri::command]
+pub fn server_diagnostic(state: State<'_, AppState>) -> CmdResult<String> {
+    let cfg = state.config.lock().unwrap().clone();
+    server::diagnostic(&cfg).map_err(err)
 }
 
 #[tauri::command]

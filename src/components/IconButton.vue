@@ -102,8 +102,8 @@ onBeforeUnmount(() => {
   border-color: transparent;
   color: var(--ink-soft);
   background: transparent;
-  transition: background 150ms ease, color 150ms ease,
-    border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
+  transition: background var(--dur-1) ease, color var(--dur-1) ease,
+    border-color var(--dur-1) ease, transform var(--dur-0) ease, box-shadow var(--dur-0) ease;
 }
 
 .icon-btn:hover:not(:disabled) {
@@ -124,11 +124,11 @@ onBeforeUnmount(() => {
   border-right-color: var(--bevel-hi);
   border-bottom-color: var(--bevel-hi);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.24);
+  box-shadow: var(--shadow-press);
 }
 
 .icon-btn:disabled {
-  opacity: 0.4;
+  opacity: var(--opacity-disabled);
   cursor: not-allowed;
 }
 
@@ -215,11 +215,11 @@ onBeforeUnmount(() => {
   border-radius: 2px;
   background: var(--ink);
   color: var(--paper);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   line-height: 1.4;
   white-space: nowrap;
   pointer-events: none;
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 26%, transparent);
+  box-shadow: var(--shadow-tip);
   border: 1px solid color-mix(in srgb, var(--paper) 22%, transparent);
 }
 
@@ -229,7 +229,7 @@ onBeforeUnmount(() => {
 
 .tip-enter-active,
 .tip-leave-active {
-  transition: opacity 130ms ease, transform 130ms var(--ease-out-expo);
+  transition: opacity var(--dur-1) ease, transform var(--dur-1) var(--ease-out-expo);
 }
 
 .tip-enter-from,

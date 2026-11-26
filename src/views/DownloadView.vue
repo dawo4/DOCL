@@ -224,6 +224,15 @@ async function toggleLoader(loader: string) {
   }
 }
 
+/// 重试版本列表：清掉该加载器的缓存再重新拉取，不能复用已展开状态
+function retryLoader(loader: string) {
+  const map = { ...loaderVersionMap.value };
+  delete map[loader];
+  loaderVersionMap.value = map;
+  expandedLoader.value = null;
+  void toggleLoader(loader);
+}
+
 function launchLoader(id: string | null) {
   if (id) launchVersion(id);
 }
@@ -426,9 +435,22 @@ function launchLoader(id: string | null) {
                   </div>
                   <div
                     v-else-if="versionError"
-                    class="loader-versions__state loader-versions__state--error"
+                    class="state state--error state--inline"
                   >
-                    {{ versionError }}
+                    <span class="state__icon"><AppIcon name="alert" :size="16" /></span>
+                    <div class="state__text">
+                      <p class="state__title">版本列表读取失败</p>
+                      <p class="state__hint">{{ versionError }}</p>
+                      <div class="state__actions">
+                        <WoodButton
+                          variant="soft"
+                          size="sm"
+                          @click="retryLoader(item.loader)"
+                        >
+                          重试
+                        </WoodButton>
+                      </div>
+                    </div>
                   </div>
                   <div
                     v-else-if="!(loaderVersionMap[item.loader] ?? []).length"
@@ -496,7 +518,13 @@ function launchLoader(id: string | null) {
                 <span class="skeleton skeleton-row__btn" />
               </div>
             </div>
-            <div v-else-if="!filtered.length" class="list-empty">没有匹配的版本</div>
+            <div v-else-if="!filtered.length" class="state state--center">
+              <span class="state__icon"><AppIcon name="search" :size="18" /></span>
+              <div class="state__text">
+                <p class="state__title">没有匹配的版本</p>
+                <p class="state__hint">换个筛选条件或关键词再试。</p>
+              </div>
+            </div>
             <div v-else class="version-list">
               <button
                 v-for="(item, index) in filtered"
@@ -573,7 +601,7 @@ function launchLoader(id: string | null) {
   border-radius: 2px;
   background: var(--panel);
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 600;
   box-shadow: 0 2px 6px rgba(40, 28, 16, 0.08);
 }
@@ -607,7 +635,7 @@ function launchLoader(id: string | null) {
 
 .task-pop-enter-active,
 .task-pop-leave-active {
-  transition: opacity 140ms ease, transform 160ms var(--ease-out-expo);
+  transition: opacity var(--dur-1) ease, transform var(--dur-1) var(--ease-out-expo);
 }
 
 .task-pop-enter-from,
@@ -630,14 +658,14 @@ function launchLoader(id: string | null) {
   border-radius: 9px;
   background: var(--moss-soft);
   color: var(--moss);
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
 }
 
 .download-layout {
   display: grid;
   grid-template-columns: 192px minmax(0, 1fr);
-  gap: 16px;
+  gap: var(--space-6);
   align-items: start;
 }
 
@@ -649,7 +677,7 @@ function launchLoader(id: string | null) {
 
 /* 侧栏和联机页一致：整列当托盘，行距收紧、纯色块高亮，不做按键浮雕 */
 .dl-side {
-  padding: 10px;
+  padding: var(--space-4);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -667,7 +695,7 @@ function launchLoader(id: string | null) {
   padding: 0 10px;
   border-radius: 0;
   color: var(--ink-soft);
-  font-size: 13px;
+  font-size: var(--text-lg);
   font-weight: 600;
   text-align: left;
   transition: background var(--dur-1) ease, color var(--dur-1) ease,
@@ -702,7 +730,7 @@ function launchLoader(id: string | null) {
 
 .dl-side__label {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-xs);
   letter-spacing: 0.18em;
   color: var(--muted);
   padding: 12px 10px 4px;
@@ -712,7 +740,7 @@ function launchLoader(id: string | null) {
 .dl-main {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-6);
   min-width: 0;
 }
 
@@ -742,26 +770,26 @@ function launchLoader(id: string | null) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: var(--space-7);
 }
 
 .loader-panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .loader-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
   margin-top: 4px;
 }
 
 .loader-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-5);
   padding: 11px 13px;
   border-radius: 0;
   border-style: solid;
@@ -803,7 +831,7 @@ function launchLoader(id: string | null) {
   border-top: 1px dashed var(--line);
   border-radius: 0;
   background: rgba(var(--glass-rgb), 0.32);
-  padding: 8px;
+  padding: var(--space-3);
   max-height: 260px;
   overflow-y: auto;
 }
@@ -811,10 +839,10 @@ function launchLoader(id: string | null) {
 .loader-versions__state {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 9px 8px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .loader-versions__state .skeleton {
@@ -835,7 +863,7 @@ function launchLoader(id: string | null) {
 .loader-version {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 6px 9px;
   border-radius: 0;
   transition: background var(--dur-1) ease, box-shadow var(--dur-1) ease;
@@ -848,7 +876,7 @@ function launchLoader(id: string | null) {
 
 .loader-version__name {
   flex: 1;
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--ink);
   font-family: var(--font-mono);
 }
@@ -879,7 +907,7 @@ function launchLoader(id: string | null) {
   background: var(--moss-soft);
   color: var(--moss);
   font-family: var(--font-display);
-  font-size: 17px;
+  font-size: var(--text-xl);
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -893,12 +921,12 @@ function launchLoader(id: string | null) {
 }
 
 .loader-row__info strong {
-  font-size: 14px;
+  font-size: var(--text-lg);
   color: var(--walnut-deep);
 }
 
 .loader-row__info span {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -908,12 +936,12 @@ function launchLoader(id: string | null) {
 .loader-row__action {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   flex-shrink: 0;
 }
 
 .loader-row__unsupported {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -947,7 +975,7 @@ function launchLoader(id: string | null) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-6);
   padding: 14px 18px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
@@ -972,10 +1000,10 @@ function launchLoader(id: string | null) {
   border-width: 1px 1px 2px;
   border-color: transparent;
   color: var(--ink-soft);
-  font-size: 12.5px;
+  font-size: var(--text-base);
   font-weight: 700;
-  transition: background 150ms ease, color 150ms ease,
-    border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
+  transition: background var(--dur-1) ease, color var(--dur-1) ease,
+    border-color var(--dur-1) ease, transform var(--dur-0) ease, box-shadow var(--dur-0) ease;
 }
 
 .tab:not(.tab--active):hover {
@@ -995,7 +1023,7 @@ function launchLoader(id: string | null) {
   border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .tab--active {
@@ -1007,7 +1035,7 @@ function launchLoader(id: string | null) {
   border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .toolbar__search {
@@ -1026,13 +1054,13 @@ function launchLoader(id: string | null) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-6);
   padding: 11px 14px 11px 18px;
   border-radius: 0;
   text-align: left;
   color: var(--ink);
   transition: background var(--dur-2) ease;
-  animation: rise-in 460ms var(--ease-out-expo) both;
+  animation: rise-in var(--dur-3) var(--ease-out-expo) both;
   animation-delay: calc(var(--i, 0) * 18ms);
 }
 
@@ -1060,20 +1088,20 @@ function launchLoader(id: string | null) {
 .version-row__main {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   min-width: 0;
 }
 
 .version-row__id {
   font-family: var(--font-display);
-  font-size: 16px;
+  font-size: var(--text-xl);
   color: var(--ink);
   min-width: 128px;
   letter-spacing: 0.01em;
 }
 
 .version-row__date {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
   letter-spacing: 0.06em;
 }
@@ -1085,8 +1113,8 @@ function launchLoader(id: string | null) {
 .version-row__more {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 11.5px;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
   color: var(--muted);
   transition: color var(--dur-2) ease;
 }
@@ -1126,12 +1154,6 @@ function launchLoader(id: string | null) {
   height: 30px;
 }
 
-.list-empty {
-  padding: 46px;
-  text-align: center;
-  color: var(--muted);
-}
-
 .load-more {
   display: flex;
   justify-content: center;
@@ -1142,7 +1164,7 @@ function launchLoader(id: string | null) {
 .download-progress {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 @media (max-width: 1080px) {

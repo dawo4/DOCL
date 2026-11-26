@@ -81,7 +81,7 @@ function reset() {
 .tone {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 10px 12px;
   border-radius: 2px;
   border: 1px solid var(--line);
@@ -92,13 +92,13 @@ function reset() {
 .tone__row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   min-width: 0;
 }
 
 .tone__label {
   flex-shrink: 0;
-  font-size: 12.5px;
+  font-size: var(--text-base);
   font-weight: 700;
   color: var(--ink-soft);
 }
@@ -128,19 +128,19 @@ function reset() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
 .tone__hint {
   margin: 0;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
 /* 展开的调色盘：凹槽面板，和分段控件的底槽一致 */
 .tone__pop {
-  padding: 10px;
+  padding: var(--space-4);
   border-radius: 2px;
   border: 1px solid var(--line);
   background: var(--paper-2);

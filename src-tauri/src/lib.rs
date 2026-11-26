@@ -47,6 +47,7 @@ mod translate;
 mod update;
 mod vibrancy;
 mod world_edit;
+mod ziputil;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -230,6 +231,9 @@ pub fn run() {
             commands::instance_thumb,
             commands::instance_mod_meta,
             commands::instance_open_content,
+            commands::instance_config_tree,
+            commands::instance_read_text,
+            commands::instance_write_text,
             commands::instance_import_files,
             commands::drop_inspect,
             commands::instance_import_mods,
@@ -268,6 +272,7 @@ pub fn run() {
             gameopts::delete_game_options_preset,
             probes::probe_download_sources,
             commands::retry_failed_downloads,
+            commands::modpack_retry_file,
             commands::retry_content_deps,
             commands::play_stats,
             commands::crash_analyze,
@@ -348,6 +353,7 @@ pub fn run() {
             commands::server_pack_remove,
             commands::server_command,
             commands::server_stop,
+            commands::server_diagnostic,
             commands::terracotta_prepare,
             commands::terracotta_status,
             commands::terracotta_host,

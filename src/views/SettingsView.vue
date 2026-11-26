@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -440,6 +440,45 @@ const usedPercent = computed(() =>
   totalMb.value ? Math.min(100, (usedMb.value / totalMb.value) * 100) : 0
 );
 
+/// Java 参数框里由「内存分配 / 内存管理」接管的参数：重复设置会互相覆盖
+const javaArgConflicts = computed(() => {
+  const args = form.java_args ?? "";
+  const issues: string[] = [];
+  if (/(^|\s)-Xm[sx]\S*/i.test(args)) {
+    issues.push("内存大小（-Xms / -Xmx）由上方「内存分配」管理");
+  }
+  if (
+    /(^|\s)-XX:[+-]?Use\w*GC\b/.test(args) ||
+    /(^|\s)-XX:(?:G1|MaxGCPauseMillis|ConcGCThreads|ParallelGCThreads|InitiatingHeapOccupancyPercent)/i.test(
+      args
+    )
+  ) {
+    issues.push("垃圾回收策略由「内存管理」管理");
+  }
+  return issues;
+});
+const hasJavaConflict = computed(() => javaArgConflicts.value.length > 0);
+
+/// 只剥离启动器接管的参数，保留用户自己加的额外项（如 -XX:+AlwaysPreTouch）
+function stripManagedJavaArgs() {
+  form.java_args = (form.java_args ?? "")
+    .split(/\s+/)
+    .filter((arg) => {
+      if (!arg) return false;
+      if (/^-Xm[sx]/i.test(arg)) return false;
+      if (/^-XX:[+-]?Use\w*GC\b/.test(arg)) return false;
+      if (
+        /^-XX:(?:G1|MaxGCPauseMillis|ConcGCThreads|ParallelGCThreads|InitiatingHeapOccupancyPercent)/i.test(
+          arg
+        )
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .join(" ");
+}
+
 function memoryLabel(mb: number) {
   return (mb / 1024).toFixed(1);
 }
@@ -869,11 +908,10 @@ async function initUpdateSection() {
 }
 
 onMounted(() => {
-  // 从启动失败提示跳过来时直接定位到 Java 分类
-  if (store.settingsFocus === "java") {
-    settingsTab.value = "java";
-    store.settingsFocus = null;
-  }
+  // 从启动失败提示或联机页跳过来时，直接定位到对应分类
+  const focus = store.settingsFocus;
+  if (focus === "java" || focus === "performance") settingsTab.value = focus;
+  if (focus) store.settingsFocus = null;
   void initUpdateSection();
   void refreshMemory();
   void loadJavaOptions();
@@ -1820,7 +1858,7 @@ async function removeJava(path: string, source: string) {
           <span>{{ form.glass_opacity }}%，越低越透出背景</span>
         </div>
         <div class="setting__control setting__control--wide">
-          <WoodSlider v-model="form.glass_opacity" :min="30" :max="95" :step="1" />
+          <WoodSlider v-model="form.glass_opacity" :min="12" :max="95" :step="1" />
         </div>
       </div>
 
@@ -2021,7 +2059,7 @@ async function removeJava(path: string, source: string) {
       <div class="setting setting--stack">
         <div class="setting__label">
           <strong>Java 虚拟机参数</strong>
-          <span>追加在内存参数之后，空格分隔；可用引号包住带空格的路径</span>
+          <span>只填额外参数；内存大小与 GC 已由上方滑块和「内存管理」接管，这里重复设置会互相覆盖</span>
         </div>
         <div class="setting__control setting__control--wide">
           <WoodInput
@@ -2029,6 +2067,12 @@ async function removeJava(path: string, source: string) {
             mono
             placeholder="-XX:-OmitStackTraceInFastThrow -Dfml.ignorePatchDiscrepancies=true"
           />
+          <p v-if="hasJavaConflict" class="java-conflict">
+            <span>
+              检测到：{{ javaArgConflicts.join("；") }}。两边同时设置可能互相覆盖，甚至导致启动失败。
+            </span>
+            <button class="java-conflict__fix" @click="stripManagedJavaArgs">一键移除冲突参数</button>
+          </p>
         </div>
       </div>
 
@@ -2375,7 +2419,7 @@ async function removeJava(path: string, source: string) {
 .update-source {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .update-source :deep(.select) {
@@ -2398,7 +2442,7 @@ async function removeJava(path: string, source: string) {
   background: var(--danger-soft);
   box-shadow: inset 0 1px 2px rgba(90, 40, 30, 0.12);
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .update-error .btn {
@@ -2408,7 +2452,7 @@ async function removeJava(path: string, source: string) {
 .update-panel {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 12px 14px;
   border: 2px solid var(--frame);
   border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
@@ -2423,17 +2467,17 @@ async function removeJava(path: string, source: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .update-panel__head strong {
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--ink);
 }
 
 .update-notes {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--ink-soft);
   line-height: 1.6;
   white-space: pre-wrap;
@@ -2442,7 +2486,7 @@ async function removeJava(path: string, source: string) {
 .update-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   flex-wrap: wrap;
 }
 
@@ -2451,7 +2495,7 @@ async function removeJava(path: string, source: string) {
   min-width: 180px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .update-progress__bar {
@@ -2476,7 +2520,7 @@ async function removeJava(path: string, source: string) {
 .settings-layout {
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr);
-  gap: 16px;
+  gap: var(--space-6);
   align-items: start;
 }
 
@@ -2499,7 +2543,7 @@ async function removeJava(path: string, source: string) {
   padding: 0 10px;
   border-radius: 0;
   color: var(--ink-soft);
-  font-size: 12.5px;
+  font-size: var(--text-base);
   font-weight: 600;
   text-align: left;
   transition: background var(--dur-1) ease, color var(--dur-1) ease;
@@ -2541,14 +2585,14 @@ async function removeJava(path: string, source: string) {
 .settings-main {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-6);
   min-width: 0;
 }
 
 .group-head {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-5);
   margin-bottom: 6px;
 }
 
@@ -2569,8 +2613,8 @@ async function removeJava(path: string, source: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
-  padding: 14px 0;
+  gap: var(--space-row-gap);
+  padding: var(--space-row) 0;
   border-bottom: 1px dashed var(--line);
 }
 
@@ -2583,13 +2627,13 @@ async function removeJava(path: string, source: string) {
 .setting--stack {
   flex-direction: column;
   align-items: stretch;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .setting--stack .setting__control {
   flex-direction: column;
   align-items: stretch;
-  gap: 8px;
+  gap: var(--space-3);
   width: 100%;
   max-width: none;
 }
@@ -2610,12 +2654,12 @@ async function removeJava(path: string, source: string) {
 }
 
 .setting__label strong {
-  font-size: 13.5px;
+  font-size: var(--text-lg);
   color: var(--ink);
 }
 
 .setting__label span {
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--muted);
 }
 
@@ -2650,14 +2694,14 @@ async function removeJava(path: string, source: string) {
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .memory__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 /* 与其它分段控件一致：浅凹槽 + 按下键面 */
@@ -2680,7 +2724,7 @@ async function removeJava(path: string, source: string) {
   border-width: 1px 1px 2px;
   border-color: transparent;
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 600;
   transition: background var(--dur-1) ease, color var(--dur-1) ease,
     border-color var(--dur-1) ease, transform var(--dur-1) ease,
@@ -2708,7 +2752,7 @@ async function removeJava(path: string, source: string) {
   border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .memory__alloc {
@@ -2743,19 +2787,19 @@ async function removeJava(path: string, source: string) {
 .memory__legend {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  font-size: 11.5px;
+  gap: var(--space-5);
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
 .resolution__x {
-  font-size: 13px;
+  font-size: var(--text-lg);
 }
 
 .dir-current {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
   width: 100%;
   padding: 12px 14px;
   border: 1px solid var(--line);
@@ -2766,7 +2810,7 @@ async function removeJava(path: string, source: string) {
 .dir-current__path {
   overflow: hidden;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-base);
   text-overflow: ellipsis;
   white-space: nowrap;
   user-select: text;
@@ -2776,17 +2820,17 @@ async function removeJava(path: string, source: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--space-4);
   flex-wrap: wrap;
 }
 
 .dir-link {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   padding: 0;
   color: var(--moss);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 700;
 }
 
@@ -2799,7 +2843,7 @@ async function removeJava(path: string, source: string) {
   flex-direction: column;
   gap: 2px;
   width: 100%;
-  padding: 6px;
+  padding: var(--space-2);
   border: 1px solid var(--line);
   border-radius: 2px;
   background: var(--panel);
@@ -2808,7 +2852,7 @@ async function removeJava(path: string, source: string) {
 .dir-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   padding: 0 2px;
   border: 1px solid transparent;
   border-radius: 0;
@@ -2828,7 +2872,7 @@ async function removeJava(path: string, source: string) {
 .dir-row__count {
   flex-shrink: 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 
 .dir-row__main {
@@ -2853,7 +2897,7 @@ async function removeJava(path: string, source: string) {
 }
 
 .dir-row__text strong {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--walnut-deep);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2861,7 +2905,7 @@ async function removeJava(path: string, source: string) {
 }
 
 .dir-row__text span {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2875,7 +2919,7 @@ async function removeJava(path: string, source: string) {
 .path-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
   width: 100%;
   padding: 10px 12px;
   /* 路径是一段只读信息，做成凹进面板的槽 */
@@ -2893,7 +2937,7 @@ async function removeJava(path: string, source: string) {
 .path-card__text {
   overflow: hidden;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
   user-select: text;
@@ -2903,20 +2947,20 @@ async function removeJava(path: string, source: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .path-card__buttons {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 /* 内置底图改成一排缩略图卡片 */
 .bg-tiles {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
-  gap: 10px;
+  gap: var(--space-4);
   width: 100%;
 }
 
@@ -2924,8 +2968,8 @@ async function removeJava(path: string, source: string) {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 6px;
+  gap: var(--space-2);
+  padding: var(--space-2);
   border-radius: 2px;
   border-style: solid;
   border-width: 2px;
@@ -2954,7 +2998,7 @@ async function removeJava(path: string, source: string) {
   border-left-color: color-mix(in srgb, var(--moss) 46%, #000);
   border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
   border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .bg-tile__thumb {
@@ -2973,7 +3017,7 @@ async function removeJava(path: string, source: string) {
 .bg-tile__label {
   padding-left: 2px;
   color: var(--ink-soft);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 700;
   text-align: left;
 }
@@ -2984,7 +3028,7 @@ async function removeJava(path: string, source: string) {
   flex-direction: column;
   gap: 2px;
   margin: 14px 0;
-  padding: 6px;
+  padding: var(--space-2);
   border: 2px solid var(--frame);
   border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
   border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
@@ -3029,7 +3073,7 @@ async function removeJava(path: string, source: string) {
 }
 
 .java-item__major {
-  font-size: 18px;
+  font-size: var(--text-xl);
   color: var(--walnut-deep);
   min-width: 84px;
 }
@@ -3037,7 +3081,7 @@ async function removeJava(path: string, source: string) {
 .java-item__path {
   flex: 1;
   min-width: 0;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3054,7 +3098,7 @@ async function removeJava(path: string, source: string) {
   background: var(--panel-2);
   border: 1px dashed var(--line-strong);
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--text-base);
   text-align: center;
 }
 
@@ -3074,7 +3118,7 @@ async function removeJava(path: string, source: string) {
 .java-progress {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   margin-top: 10px;
 }
 
@@ -3085,7 +3129,7 @@ async function removeJava(path: string, source: string) {
 .theme-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
-  gap: 10px;
+  gap: var(--space-4);
   width: 100%;
 }
 
@@ -3094,8 +3138,8 @@ async function removeJava(path: string, source: string) {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 6px;
+  gap: var(--space-2);
+  padding: var(--space-2);
   border-radius: 2px;
   border-style: solid;
   border-width: 2px;
@@ -3124,7 +3168,7 @@ async function removeJava(path: string, source: string) {
   border-left-color: color-mix(in srgb, var(--moss) 46%, #000);
   border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
   border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 /* 自定义主题卡：右上角挂编辑 / 删除小方块 */
@@ -3248,7 +3292,7 @@ async function removeJava(path: string, source: string) {
 .theme-card__name {
   padding-left: 2px;
   color: var(--ink-soft);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 700;
   text-align: left;
   overflow: hidden;
@@ -3260,7 +3304,7 @@ async function removeJava(path: string, source: string) {
 .option-cards {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: var(--space-4);
   width: 100%;
 }
 
@@ -3268,9 +3312,9 @@ async function removeJava(path: string, source: string) {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   width: 112px;
-  padding: 6px;
+  padding: var(--space-2);
   border-radius: 2px;
   border-style: solid;
   border-width: 2px;
@@ -3299,7 +3343,7 @@ async function removeJava(path: string, source: string) {
   border-left-color: color-mix(in srgb, var(--moss) 46%, #000);
   border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
   border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 /* 选中的方块卡右上角盖一枚像素阶梯角标，比打勾更像像素画 */
@@ -3321,7 +3365,7 @@ async function removeJava(path: string, source: string) {
 
 .option-card__name {
   color: var(--ink-soft);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 700;
   text-align: left;
 }
@@ -3341,7 +3385,7 @@ async function removeJava(path: string, source: string) {
   justify-content: center;
   background: var(--panel);
   color: var(--walnut-deep);
-  font-size: 17px;
+  font-size: var(--text-xl);
   letter-spacing: 0.02em;
 }
 
@@ -3415,7 +3459,7 @@ async function removeJava(path: string, source: string) {
   width: 100%;
   max-width: 560px;
   height: 156px;
-  padding: 10px;
+  padding: var(--space-4);
   border-radius: 2px;
   border: 1px solid var(--line-strong);
   background-color: var(--panel-2);
@@ -3435,7 +3479,7 @@ async function removeJava(path: string, source: string) {
 .bg-preview__empty {
   padding: 0 14px;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   text-align: center;
 }
 
@@ -3449,7 +3493,7 @@ async function removeJava(path: string, source: string) {
   border: 1px solid rgba(255, 255, 255, 0.6);
   background: rgba(255, 255, 255, 0.82);
   color: var(--walnut-deep);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 700;
   box-shadow: 0 2px 6px rgba(60, 44, 26, 0.16);
 }
@@ -3462,7 +3506,7 @@ async function removeJava(path: string, source: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--space-4);
   width: 100%;
   margin-top: 8px;
   flex-wrap: wrap;
@@ -3471,7 +3515,7 @@ async function removeJava(path: string, source: string) {
 .bg-presets {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-3);
   width: 100%;
 }
 
@@ -3490,7 +3534,7 @@ async function removeJava(path: string, source: string) {
   border-bottom-color: color-mix(in srgb, var(--frame) 72%, #000);
   background: var(--panel-2);
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 600;
   transition: border-color var(--dur-2) ease, transform var(--dur-2) var(--ease-out-expo),
     box-shadow var(--dur-2) ease;
@@ -3514,7 +3558,7 @@ async function removeJava(path: string, source: string) {
   border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
   color: var(--moss);
   transform: translateY(1px);
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .bg-chip__swatch {
@@ -3588,7 +3632,7 @@ async function removeJava(path: string, source: string) {
 .probe {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-4);
   width: 100%;
 }
 
@@ -3596,24 +3640,24 @@ async function removeJava(path: string, source: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
   flex-wrap: wrap;
 }
 
 .probe__groups {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .probe__group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .probe__group-title {
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 800;
   color: var(--walnut-deep);
 }
@@ -3621,13 +3665,13 @@ async function removeJava(path: string, source: string) {
 .probe__row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 6px 9px;
   border: 1px solid var(--line-strong);
   border-radius: 0;
   background: var(--panel-2);
   box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.06);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .probe__dot {
@@ -3653,7 +3697,7 @@ async function removeJava(path: string, source: string) {
 
 .probe__ms {
   flex-shrink: 0;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
 }
 
@@ -3669,7 +3713,7 @@ async function removeJava(path: string, source: string) {
 .profile-bg-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: var(--space-4);
   width: 100%;
 }
 
@@ -3678,7 +3722,7 @@ async function removeJava(path: string, source: string) {
   grid-template-columns: 96px minmax(0, 1fr);
   grid-template-rows: auto auto;
   gap: 8px 12px;
-  padding: 10px;
+  padding: var(--space-4);
   border: 1px solid var(--line-strong);
   border-radius: 2px;
   background: rgba(var(--glass-rgb), 0.82);
@@ -3703,14 +3747,14 @@ async function removeJava(path: string, source: string) {
 }
 
 .profile-bg-card__body strong {
-  font-size: 13.5px;
+  font-size: var(--text-lg);
   color: var(--walnut-deep);
 }
 
 .profile-bg-card__body span {
   overflow: hidden;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3719,7 +3763,35 @@ async function removeJava(path: string, source: string) {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
+}
+
+/* Java 参数与内存/GC 控件冲突提示 */
+.java-conflict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 8px 0 0;
+  padding: 7px 10px;
+  border-left: 2px solid var(--amber);
+  background: color-mix(in srgb, var(--amber) 12%, var(--panel-2));
+  color: color-mix(in srgb, var(--amber) 48%, var(--walnut-deep));
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.java-conflict__fix {
+  padding: 1px 7px;
+  border: 1px dashed currentColor;
+  border-radius: 0;
+  color: var(--moss);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.java-conflict__fix:hover {
+  background: var(--moss-soft);
 }
 
 @media (max-width: 1040px) {

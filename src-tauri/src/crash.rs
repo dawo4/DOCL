@@ -408,7 +408,7 @@ const RULES: &[Rule] = &[
             "has been compiled by a more recent version of the java runtime",
         ],
         advice: &[
-            "在「设置 → Java」里安装或选择匹配的 Java：1.20.5+ 需要 Java 21，1.17+ 需要 17，1.16 及以下用 8。",
+            "在「设置 → Java」里安装或选择该游戏版本要求的 Java，版本号以诊断里的「当前实例」为准。",
             "版本设置里如果手动指定过 java.exe，确认它没有指向旧版。",
             "改完后重新启动游戏。",
         ],
@@ -787,10 +787,13 @@ const RULES: &[Rule] = &[
         id: "authlib-login",
         title: "第三方账号认证失败",
         summary: "皮肤站的登录凭据已过期，或游戏无法连接到该皮肤站。",
+        // 只认真正的认证错误：authlib-injector 每次启动都会打印 INFO 日志，
+        // 不能因为日志里出现了它，就把任意崩溃都判成第三方认证失败
         patterns: &[
-            "authlib-injector",
-            "yggdrasil",
             "failed to authenticate",
+            "authentication failed",
+            "unable to authenticate",
+            "failed to fetch metadata",
         ],
         advice: &[
             "到账号页对第三方账号重新登录一次。",
@@ -1698,6 +1701,8 @@ fn rule_context_ok(id: &str, lowered: &str) -> bool {
         "modernfix-watchdog" => &["modernfix"],
         "connector-incompatible" => &["connector"],
         "rubidium-deprecated" => &["rubidium"],
+        // 认证失败必须确实用了第三方登录，避免把微软账号的报错也算到这里
+        "authlib-login" => &["authlib"],
         _ => &[],
     };
     required.iter().all(|keyword| lowered.contains(keyword))
@@ -3353,6 +3358,29 @@ mod tests {
         let report = matches_in(text);
         assert_eq!(report[0].id, "customskinloader-version-detect");
         assert!(report[0].priority >= 96);
+    }
+
+    /// 只加载了 authlib-injector 的普通崩溃，不能判成第三方认证失败
+    #[test]
+    fn authlib_injector_alone_is_not_auth_failure() {
+        let text = "JVM Flags: 5 total; -XX:HeapDumpPath=MojangTricksIntelDriversForPerformance\n\
+-javaagent:C:\\Users\\x\\authlib-injector.jar=https://littleskin.cn/api/yggdrasil\n\
+[authlib-injector] [INFO] Version: 1.2.5\n\
+[authlib-injector] [INFO] Authentication server: https://littleskin.cn/api/yggdrasil\n\
+---- Minecraft Crash Report ----\njava.lang.NullPointerException: Cannot invoke ...";
+        let matches = matches_in(text);
+        assert!(!matches.iter().any(|item| item.id == "authlib-login"));
+    }
+
+    /// 真正的认证错误仍然要命中，并且保留高优先级
+    #[test]
+    fn authlib_failure_still_detected() {
+        let text = "[authlib-injector] [INFO] Version: 1.2.5\n\
+com.mojang.authlib.exceptions.AuthenticationException: Failed to authenticate";
+        let matches = matches_in(text);
+        let hit = matches.iter().find(|item| item.id == "authlib-login");
+        assert!(hit.is_some());
+        assert_eq!(hit.unwrap().phase, 1);
     }
 
     #[test]

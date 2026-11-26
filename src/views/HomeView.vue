@@ -231,7 +231,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
   height: 100%;
   max-width: 1240px;
   margin: 0 auto;
@@ -241,19 +241,19 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-6);
   flex-shrink: 0;
 }
 
 .home__heading {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: var(--space-4);
   min-width: 0;
 }
 
 .home__title {
-  font-size: 17px;
+  font-size: var(--text-xl);
   font-weight: 800;
   letter-spacing: -0.01em;
   color: var(--walnut-deep);
@@ -261,7 +261,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
 
 .home__sub {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-xs);
   letter-spacing: 0.05em;
   color: var(--muted);
   overflow: hidden;
@@ -276,7 +276,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   padding: 4px 10px;
   border: 1px solid var(--line);
   border-radius: 0;
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   background: rgba(255, 255, 255, 0.03);
   flex-shrink: 0;
@@ -307,9 +307,9 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
 .cover {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-4);
   min-height: 0;
-  padding: 16px;
+  padding: var(--space-6);
   /* 启动台主卡：和按键同源的 2px 浮雕外框 */
   border: 2px solid var(--frame);
   border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
@@ -360,7 +360,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
 }
 
 .cover__id {
-  font-size: 10px;
+  font-size: var(--text-xs);
   letter-spacing: 0.04em;
   color: var(--muted);
   overflow: hidden;
@@ -370,7 +370,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
 
 .cover__facts {
   margin-top: 2px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   letter-spacing: 0.03em;
   color: var(--ink-soft);
 }
@@ -380,7 +380,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--space-3);
   width: 100%;
   height: 44px;
   flex-shrink: 0;
@@ -390,7 +390,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   background: var(--btn-b);
   border-bottom-color: color-mix(in srgb, var(--btn-b) 56%, #000);
   color: var(--btn-fg);
-  font-size: 14px;
+  font-size: var(--text-lg);
   font-weight: 800;
   letter-spacing: 0.04em;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.32);
@@ -431,7 +431,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
 .cover__row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   flex-shrink: 0;
 }
 
@@ -446,7 +446,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-3);
   width: 100%;
   height: 38px;
   padding: 0 11px;
@@ -469,7 +469,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
   display: flex;
   align-items: baseline;
   gap: 7px;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .vpick__text em {
@@ -530,7 +530,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
 
 .vpick__name {
   flex: 1;
-  font-size: 12.5px;
+  font-size: var(--text-base);
   font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -538,7 +538,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
 }
 
 .vpick__kind {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
@@ -549,14 +549,14 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
 .vpick__manage {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   width: 100%;
   height: 32px;
   margin-top: 4px;
   padding: 0 9px;
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   text-align: left;
   transition: color var(--dur-1) ease, background var(--dur-1) ease;
 }
@@ -570,7 +570,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
 .cover__foot {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   padding-top: 10px;
   border-top: 1px solid var(--line);
   flex-shrink: 0;
@@ -605,7 +605,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
 }
 
 .account__text strong {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   font-weight: 700;
   color: var(--walnut-deep);
   overflow: hidden;
@@ -614,13 +614,13 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocClick));
 }
 
 .account__text span {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
 .cover__quick {
   display: flex;
-  gap: 6px;
+  gap: var(--space-2);
   flex-shrink: 0;
 }
 

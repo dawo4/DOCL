@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import ImportFailureList from "./ImportFailureList.vue";
 import WoodButton from "./WoodButton.vue";
 import {
   cancelJob,
@@ -198,6 +199,10 @@ function sizeOf(job: DownloadJob) {
           </div>
         </div>
         <p v-if="job.error" class="task-card__err">{{ job.error }}</p>
+        <ImportFailureList v-if="job.failures?.length" :job="job" />
+        <ul v-if="job.notes?.length" class="task-card__notes">
+          <li v-for="(note, index) in job.notes" :key="index">{{ note }}</li>
+        </ul>
       </article>
     </div>
   </section>
@@ -207,7 +212,7 @@ function sizeOf(job: DownloadJob) {
 .task-board {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 14px;
   min-width: 0;
   background: var(--panel);
@@ -225,30 +230,30 @@ function sizeOf(job: DownloadJob) {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .task-board__title {
-  font-size: 17px;
+  font-size: var(--text-xl);
   font-weight: 700;
   color: var(--ink);
 }
 
 .task-board__speed {
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--moss);
 }
 
 .task-board__tools {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .task-board__group {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
   min-width: 0;
 }
 
@@ -256,9 +261,9 @@ function sizeOf(job: DownloadJob) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-3);
   padding-top: 2px;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--muted);
 }
@@ -284,7 +289,7 @@ function sizeOf(job: DownloadJob) {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-3);
   min-width: 0;
 }
 
@@ -293,14 +298,14 @@ function sizeOf(job: DownloadJob) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
+  font-size: var(--text-base);
   font-weight: 700;
   color: var(--ink);
 }
 
 .task-card__state {
   flex: none;
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   font-weight: 600;
   color: var(--muted);
 }
@@ -330,7 +335,7 @@ function sizeOf(job: DownloadJob) {
   display: block;
   height: 100%;
   background: var(--moss);
-  transition: width 220ms var(--ease-out-quart);
+  transition: width var(--dur-2) var(--ease-out-quart);
 }
 
 .task-card--done .task-card__bar i {
@@ -352,7 +357,7 @@ function sizeOf(job: DownloadJob) {
   align-items: center;
   flex-wrap: wrap;
   gap: 4px 10px;
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
@@ -363,7 +368,7 @@ function sizeOf(job: DownloadJob) {
 .task-card__end {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .task-card__foot em {
@@ -376,7 +381,7 @@ function sizeOf(job: DownloadJob) {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .task-card__act {
@@ -386,7 +391,7 @@ function sizeOf(job: DownloadJob) {
   border: 1px solid var(--line-strong);
   background: var(--panel);
   color: var(--ink-soft);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   font-weight: 600;
 }
 
@@ -404,7 +409,7 @@ function sizeOf(job: DownloadJob) {
   border: 1px solid var(--line-strong);
   background: var(--panel);
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--text-lg);
   line-height: 1;
 }
 
@@ -414,8 +419,20 @@ function sizeOf(job: DownloadJob) {
 }
 
 .task-card__err {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--danger);
   word-break: break-all;
+}
+
+.task-card__notes {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-xs);
+  line-height: var(--leading);
+  color: var(--muted);
 }
 </style>

@@ -42,6 +42,10 @@ pub struct ServerSnapshot {
     pub loader: String,
     pub dir: String,
     pub java: String,
+    /// 正版验证是否开启，前端据此提示离线模式风险
+    pub online_mode: bool,
+    /// 当前白名单里的玩家名
+    pub white_list: Vec<String>,
     pub log: Vec<String>,
 }
 
@@ -71,6 +75,9 @@ pub struct ServerOptions {
     pub online_mode: bool,
     pub white_list: bool,
     pub accept_eula: bool,
+    /// 开服人自己的游戏 ID：白名单开启时自动写入，省掉“开完服进不去”的一步
+    #[serde(default)]
+    pub player_name: String,
 }
 
 impl Default for ServerOptions {
@@ -83,6 +90,7 @@ impl Default for ServerOptions {
             online_mode: true,
             white_list: false,
             accept_eula: false,
+            player_name: String::new(),
         }
     }
 }
@@ -97,6 +105,8 @@ pub struct ServerRuntime {
     started_at: u64,
     dir: PathBuf,
     java: String,
+    online_mode: bool,
+    white_list: Vec<String>,
     log: Arc<Mutex<VecDeque<String>>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     online: Arc<AtomicBool>,
@@ -112,6 +122,15 @@ impl ServerRuntime {
             .lock()
             .map(|lines| lines.iter().cloned().collect())
             .unwrap_or_default();
+        // 运行中可能用 /whitelist add 加了人，每次快照都回读一次，徽章才不会停在旧列表
+        let white_list = {
+            let current = read_whitelist(&self.dir);
+            if current.is_empty() {
+                self.white_list.clone()
+            } else {
+                current
+            }
+        };
         ServerSnapshot {
             version_id: self.version_id.clone(),
             game_version: self.game_version.clone(),
@@ -125,6 +144,8 @@ impl ServerRuntime {
             loader: self.loader.clone(),
             dir: self.dir.to_string_lossy().to_string(),
             java: self.java.clone(),
+            online_mode: self.online_mode,
+            white_list,
             log,
         }
     }
@@ -213,6 +234,7 @@ fn attach_persisted() -> Option<ServerSnapshot> {
         saved.pid
     )])));
     let online = Arc::new(AtomicBool::new(port_open(saved.port)));
+    let dir = PathBuf::from(&saved.dir);
     let runtime = ServerRuntime {
         version_id: saved.version_id,
         game_version: saved.game_version,
@@ -221,8 +243,10 @@ fn attach_persisted() -> Option<ServerSnapshot> {
         lan_address: saved.lan_address,
         local_address: saved.local_address,
         started_at: saved.started_at,
-        dir: PathBuf::from(saved.dir),
         java: saved.java,
+        online_mode: property_bool(&dir, "online-mode", true),
+        white_list: read_whitelist(&dir),
+        dir,
         log,
         stdin: Arc::new(Mutex::new(None)),
         online,
@@ -372,6 +396,8 @@ fn update_properties(dir: &Path, options: &ServerOptions, port: u16) -> Result<(
         ("online-mode", bool_text(options.online_mode).to_string()),
         ("white-list", bool_text(options.white_list).to_string()),
         ("enforce-whitelist", bool_text(options.white_list).to_string()),
+        // 本地开服时不要因为启动瞬间的阻塞被 watchdog 结束进程
+        ("max-tick-time", "-1".to_string()),
     ];
 
     let mut lines: Vec<String> = Vec::new();
@@ -394,6 +420,107 @@ fn update_properties(dir: &Path, options: &ServerOptions, port: u16) -> Result<(
         }
     }
     std::fs::write(&path, format!("{}\n", lines.join("\n")))?;
+    Ok(())
+}
+
+/// 读取 server.properties 到键值对（忽略注释与空行）。
+fn read_properties(dir: &Path) -> Vec<(String, String)> {
+    let text = std::fs::read_to_string(dir.join("server.properties")).unwrap_or_default();
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (key, value) = line.split_once('=')?;
+            Some((key.trim().to_string(), value.trim().to_string()))
+        })
+        .collect()
+}
+
+fn property_value(dir: &Path, key: &str) -> Option<String> {
+    read_properties(dir)
+        .into_iter()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value)
+}
+
+fn property_bool(dir: &Path, key: &str, fallback: bool) -> bool {
+    match property_value(dir, key).as_deref() {
+        Some("true") => true,
+        Some("false") => false,
+        _ => fallback,
+    }
+}
+
+/// 当前白名单里的玩家名（读取失败时按空处理，不影响开服）。
+fn read_whitelist(dir: &Path) -> Vec<String> {
+    let Ok(bytes) = std::fs::read(dir.join("whitelist.json")) else {
+        return Vec::new();
+    };
+    let Ok(list) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|entry| entry.get("name").and_then(|name| name.as_str()))
+        .map(|name| name.to_string())
+        .collect()
+}
+
+/// 开服前把开服人自己的 ID 写进白名单。
+/// 离线模式的 UUID 由用户名推导，所以名字必须与客户端登录名完全一致，这里不做任何变形。
+fn ensure_whitelist(
+    dir: &Path,
+    options: &ServerOptions,
+    log: &Arc<Mutex<VecDeque<String>>>,
+) -> Result<()> {
+    if !options.white_list {
+        return Ok(());
+    }
+    let name = options.player_name.trim();
+    if name.is_empty() {
+        return Ok(());
+    }
+    if !crate::auth::valid_player_name(name) {
+        bail!("玩家 ID 只能用 1-16 位字母、数字或下划线");
+    }
+    let path = dir.join("whitelist.json");
+    let mut list: Vec<serde_json::Value> = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let exists = list.iter().any(|entry| {
+        entry
+            .get("name")
+            .and_then(|value| value.as_str())
+            .map(|value| value.eq_ignore_ascii_case(name))
+            .unwrap_or(false)
+    });
+    if exists {
+        return Ok(());
+    }
+    let uuid = if options.online_mode {
+        // 正版模式下白名单按 Mojang UUID 比对，必须用账号真实 UUID；拿不到就不写，避免写错后把人挡在外面
+        let Some(account) = crate::auth::load_accounts()
+            .into_iter()
+            .find(|account| account.name.eq_ignore_ascii_case(name))
+        else {
+            if let Ok(mut lines) = log.lock() {
+                lines.push_back(format!(
+                    "未自动写入白名单：正版验证需要该账号的 UUID，请进服后执行 /whitelist add {name}"
+                ));
+            }
+            return Ok(());
+        };
+        account.uuid
+    } else {
+        crate::auth::offline_uuid(name)
+    };
+    list.push(serde_json::json!({ "uuid": uuid, "name": name }));
+    std::fs::write(&path, serde_json::to_vec_pretty(&list)?)?;
+    if let Ok(mut lines) = log.lock() {
+        lines.push_back(format!("已把 {name} 加入白名单"));
+    }
     Ok(())
 }
 
@@ -964,6 +1091,19 @@ pub async fn start(
     )
 }
 
+/// 过滤掉由启动器统一管理的 JVM 参数，避免 -Xmx / GC 策略重复出现造成冲突。
+fn server_extra_args(raw: &str) -> Vec<String> {
+    raw.split_whitespace()
+        .filter(|arg| {
+            let lower = arg.to_ascii_lowercase();
+            !(lower.starts_with("-xms")
+                || lower.starts_with("-xmx")
+                || (lower.starts_with("-xx:+use") && lower.ends_with("gc")))
+        })
+        .map(|arg| arg.to_string())
+        .collect()
+}
+
 /// 真正拉起服务端进程：写 eula / server.properties、启动 Java、接管日志与状态。
 #[allow(clippy::too_many_arguments)]
 fn spawn_server(
@@ -980,6 +1120,7 @@ fn spawn_server(
     std::fs::write(dir.join("eula.txt"), "eula=true\n")?;
     let port = pick_port(options.port);
     update_properties(dir, options, port)?;
+    ensure_whitelist(dir, options, &log)?;
 
     let memory = launch::effective_memory_mb(cfg);
     let mut command = Command::new(&java.path);
@@ -991,10 +1132,8 @@ fn spawn_server(
         .arg("-Dfile.encoding=UTF-8")
         .arg("-Dstdout.encoding=UTF-8")
         .arg("-Dstderr.encoding=UTF-8");
-    for extra in cfg.java_args.split_whitespace() {
-        if !extra.trim().is_empty() {
-            command.arg(extra);
-        }
+    for extra in server_extra_args(&cfg.java_args) {
+        command.arg(extra);
     }
     match &mode {
         LaunchMode::Jar(path) => {
@@ -1074,6 +1213,8 @@ fn spawn_server(
         started_at: now_secs(),
         dir: dir.to_path_buf(),
         java: java.path.clone(),
+        online_mode: property_bool(dir, "online-mode", options.online_mode),
+        white_list: read_whitelist(dir),
         log,
         stdin: stdin_slot,
         online,
@@ -1121,6 +1262,14 @@ pub fn send(command: &str) -> Result<()> {
     let line = line.trim();
     if line.is_empty() {
         return Ok(());
+    }
+    let lower = line.to_ascii_lowercase();
+    if lower.starts_with("-xms")
+        || lower.starts_with("-xmx")
+        || lower.starts_with("-xx:")
+        || lower.starts_with("-d")
+    {
+        bail!("这是 Java 虚拟机参数，请在「设置 → 性能与参数 → Java 虚拟机参数」中填写，重启服务端后生效");
     }
     let guard = slot().lock().unwrap();
     let runtime = guard
@@ -1192,8 +1341,96 @@ pub fn stop() -> Result<()> {
     }
 }
 
-/* ---------- 服务端整合包：解压到独立目录后直接启动 ---------- */
+/// 生成一份可直接复制给客服/其它 AI 的诊断报告。
+/// 把版本、内存、关键配置、白名单和最近的日志一次给全，避免来回追问。
+pub fn diagnostic(cfg: &Config) -> Result<String> {
+    use std::fmt::Write as _;
+    let guard = slot().lock().unwrap();
+    let runtime = guard.as_ref().ok_or_else(|| anyhow!("服务端未运行"))?;
+    let dir = runtime.dir.clone();
+    let props = read_properties(&dir);
+    let get = |key: &str| {
+        props
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| "（未设置）".into())
+    };
+    let memory = launch::effective_memory_mb(cfg);
+    let system = crate::system::memory_info();
+    let whitelist = read_whitelist(&dir);
 
+    let mut out = String::new();
+    writeln!(out, "## DOCL 服务端诊断报告")?;
+    writeln!(out)?;
+    writeln!(out, "- 启动器版本：DOCL {}", env!("CARGO_PKG_VERSION"))?;
+    writeln!(
+        out,
+        "- 服务端核心：{}（Minecraft {}）",
+        runtime.loader, runtime.game_version
+    )?;
+    writeln!(out, "- Java：{}", runtime.java)?;
+    writeln!(
+        out,
+        "- 系统：{} / 总内存 {:.1} GB（可用 {:.1} GB）",
+        std::env::consts::OS,
+        system.total_mb as f64 / 1024.0,
+        system.available_mb as f64 / 1024.0
+    )?;
+    writeln!(
+        out,
+        "- 服务端内存分配：{} MB（策略 {}）",
+        memory,
+        if cfg.memory_auto {
+            "自动".to_string()
+        } else {
+            cfg.memory_mode.clone()
+        }
+    )?;
+    writeln!(
+        out,
+        "- 关键配置：online-mode={} · white-list={} · max-tick-time={} · view-distance={} · simulation-distance={} · server-port={}",
+        get("online-mode"),
+        get("white-list"),
+        get("max-tick-time"),
+        get("view-distance"),
+        get("simulation-distance"),
+        get("server-port")
+    )?;
+    writeln!(
+        out,
+        "- 地址：本机 {} · 局域网 {}",
+        runtime.local_address, runtime.lan_address
+    )?;
+    writeln!(
+        out,
+        "- 白名单（{}）：{}",
+        whitelist.len(),
+        if whitelist.is_empty() {
+            "空".to_string()
+        } else {
+            whitelist.join(" / ")
+        }
+    )?;
+    if let Ok(extra) = std::fs::read_to_string(dir.join("eula.txt")) {
+        writeln!(out, "- EULA：{}", extra.trim().replace('\n', " "))?;
+    }
+    writeln!(out)?;
+    writeln!(out, "### 最近日志（最多 40 行）")?;
+    writeln!(out, "```")?;
+    let log = runtime
+        .log
+        .lock()
+        .map(|lines| lines.iter().rev().take(40).rev().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    for line in log {
+        writeln!(out, "{line}")?;
+    }
+    writeln!(out, "```")?;
+    Ok(out)
+}
+
+/* ---------- 服务端整合包：解压到独立目录后直接启动 ---------- */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerPack {
     /// 形如 pack:<slug>，与已安装版本 ID 区分
@@ -2045,6 +2282,7 @@ mod tests {
             online_mode: false,
             white_list: true,
             accept_eula: true,
+            player_name: "Tank".into(),
         };
         update_properties(&dir, &options, 25566).unwrap();
         let content = std::fs::read_to_string(dir.join("server.properties")).unwrap();
@@ -2067,6 +2305,36 @@ mod tests {
     fn ports_are_picked_in_range() {
         let port = pick_port(0);
         assert!(port >= 25565);
+    }
+
+    #[test]
+    fn whitelist_keeps_offline_name_case() {
+        let dir = std::env::temp_dir().join(format!("docl-whitelist-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let options = ServerOptions {
+            port: 25565,
+            motd: "test".into(),
+            max_players: 10,
+            view_distance: 8,
+            online_mode: false,
+            white_list: true,
+            accept_eula: true,
+            player_name: "Tank".into(),
+        };
+        let log = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+        ensure_whitelist(&dir, &options, &log).unwrap();
+        // 重复开服不应重复写入
+        ensure_whitelist(&dir, &options, &log).unwrap();
+
+        assert_eq!(read_whitelist(&dir), vec!["Tank".to_string()]);
+        let bytes = std::fs::read(dir.join("whitelist.json")).unwrap();
+        let entries: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["uuid"], crate::auth::offline_uuid("Tank"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

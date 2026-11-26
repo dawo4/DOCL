@@ -1,7 +1,8 @@
-﻿<script setup lang="ts">
+﻿﻿﻿﻿<script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import AppIcon from "./AppIcon.vue";
 import IconButton from "./IconButton.vue";
+import ImportFailureList from "./ImportFailureList.vue";
 import WoodButton from "./WoodButton.vue";
 import {
   cancelJob,
@@ -313,6 +314,10 @@ onBeforeUnmount(() => {
                 </div>
 
                 <p v-if="job.error" class="dl-card__error">{{ job.error }}</p>
+                <ImportFailureList v-if="job.failures?.length" :job="job" />
+                <ul v-if="job.notes?.length" class="dl-card__notes">
+                  <li v-for="(note, index) in job.notes" :key="index">{{ note }}</li>
+                </ul>
 
                 <footer class="dl-card__actions">
                   <WoodButton
@@ -462,7 +467,7 @@ onBeforeUnmount(() => {
   place-items: center;
   background: rgba(40, 28, 16, 0.34);
   backdrop-filter: blur(4px);
-  animation: dl-fade-in 180ms ease both;
+  animation: dl-fade-in var(--dur-1) ease both;
 }
 
 .dl-panel {
@@ -483,7 +488,7 @@ onBeforeUnmount(() => {
   gap: 14px;
   position: relative;
   overflow: hidden;
-  animation: dl-pop 280ms var(--ease-out-expo) both;
+  animation: dl-pop var(--dur-2) var(--ease-out-expo) both;
 }
 
 .dl-panel::before {
@@ -504,7 +509,7 @@ onBeforeUnmount(() => {
 .dl-panel__heading {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   min-width: 0;
 }
 
@@ -536,7 +541,7 @@ onBeforeUnmount(() => {
 .dl-panel__head-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   flex-shrink: 0;
 }
 
@@ -544,7 +549,7 @@ onBeforeUnmount(() => {
 .dl-board {
   display: grid;
   grid-template-columns: 168px minmax(0, 1fr);
-  gap: 16px;
+  gap: var(--space-6);
   min-height: 0;
   flex: 1;
 }
@@ -568,7 +573,7 @@ onBeforeUnmount(() => {
 .dl-kpi__item {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   padding-bottom: 14px;
   border-bottom: 1px solid var(--line);
 }
@@ -579,7 +584,7 @@ onBeforeUnmount(() => {
 }
 
 .dl-kpi__label {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   letter-spacing: 0.12em;
   color: var(--muted);
 }
@@ -594,7 +599,7 @@ onBeforeUnmount(() => {
 
 .dl-kpi__value em {
   margin-left: 2px;
-  font-size: 12px;
+  font-size: var(--text-base);
   font-style: normal;
   color: var(--muted);
 }
@@ -616,14 +621,14 @@ onBeforeUnmount(() => {
   display: block;
   height: 100%;
   background: linear-gradient(90deg, var(--moss), var(--moss-bright));
-  transition: width 320ms var(--ease-out-quart);
+  transition: width var(--dur-3) var(--ease-out-quart);
 }
 
 /* 排队任务用左栏剩余空间列出来，避免整列留白 */
 .dl-kpi__queue {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .dl-kpi__queue ul {
@@ -632,11 +637,11 @@ onBeforeUnmount(() => {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .dl-kpi__queue li {
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -649,7 +654,7 @@ onBeforeUnmount(() => {
 }
 
 .dl-kpi__more {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
@@ -657,7 +662,7 @@ onBeforeUnmount(() => {
 .dl-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-4);
   min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
@@ -666,7 +671,7 @@ onBeforeUnmount(() => {
 .dl-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 12px 14px 10px;
   border-radius: 2px;
   border-style: solid;
@@ -714,14 +719,14 @@ onBeforeUnmount(() => {
 .dl-card__head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   min-width: 0;
 }
 
 .dl-card__state {
   flex-shrink: 0;
   padding: 1px 6px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.04em;
   color: var(--moss);
@@ -755,14 +760,14 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--text-lg);
   font-weight: 700;
   color: var(--walnut-deep);
 }
 
 .dl-card__pct {
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--moss);
 }
 
@@ -808,7 +813,7 @@ onBeforeUnmount(() => {
   display: block;
   height: 100%;
   background: linear-gradient(90deg, var(--moss), var(--moss-bright));
-  transition: width 320ms var(--ease-out-quart);
+  transition: width var(--dur-3) var(--ease-out-quart);
 }
 
 .dl-card--failed .dl-card__bar i {
@@ -821,7 +826,7 @@ onBeforeUnmount(() => {
 
 .dl-card__note {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -840,8 +845,8 @@ onBeforeUnmount(() => {
 .dl-steps__row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
+  gap: var(--space-3);
+  font-size: var(--text-base);
   color: var(--ink-soft);
   min-width: 0;
 }
@@ -856,7 +861,7 @@ onBeforeUnmount(() => {
 }
 
 .dl-steps__pct {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--moss);
   font-variant-numeric: tabular-nums;
 }
@@ -881,14 +886,14 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 12px;
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
 .dl-card__error {
   margin: 0;
   padding: 7px 9px;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   line-height: 1.45;
   color: var(--danger);
   background: var(--danger-soft);
@@ -896,10 +901,22 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 
+.dl-card__notes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-xs);
+  line-height: var(--leading);
+  color: var(--muted);
+}
+
 .dl-card__actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .dl-card__actions:empty {
@@ -910,7 +927,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 10px;
+  gap: var(--space-4);
   padding-top: 2px;
   border-top: 1px solid var(--line);
 }
@@ -918,7 +935,7 @@ onBeforeUnmount(() => {
 .dl-foot__hint {
   margin-right: auto;
   padding-top: 8px;
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
@@ -930,7 +947,7 @@ onBeforeUnmount(() => {
   .dl-kpi {
     flex-direction: row;
     flex-wrap: wrap;
-    gap: 12px;
+    gap: var(--space-5);
   }
 
   .dl-kpi__item {
@@ -948,7 +965,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 10px;
+  gap: var(--space-4);
   animation: dl-ball-float 4.6s ease-in-out infinite;
 }
 
@@ -975,7 +992,7 @@ onBeforeUnmount(() => {
   background: var(--face);
   box-shadow: 0 12px 26px rgba(40, 28, 16, 0.24), 0 2px 4px rgba(40, 28, 16, 0.12);
   transition: transform var(--dur-2) var(--ease-out-expo), box-shadow var(--dur-2) ease,
-    background 150ms ease;
+    background var(--dur-1) ease;
 }
 
 .dl-ball:hover {
@@ -989,7 +1006,7 @@ onBeforeUnmount(() => {
   border-left-color: var(--bevel-lo);
   border-right-color: var(--bevel-hi);
   border-bottom-color: var(--bevel-hi);
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.24);
+  box-shadow: var(--shadow-press);
 }
 
 /* 外侧柔光：下载中缓慢呼吸，完成/失败时静止 */
@@ -1026,7 +1043,7 @@ onBeforeUnmount(() => {
   bottom: 0;
   height: var(--fill, 0%);
   background: linear-gradient(180deg, var(--water-top), var(--water-bottom));
-  transition: height 360ms var(--ease-out-quart), background 240ms ease;
+  transition: height var(--dur-3) var(--ease-out-quart), background var(--dur-2) ease;
 }
 
 /* 水线：一道受光细边，像水面反光 */
@@ -1082,13 +1099,13 @@ onBeforeUnmount(() => {
 }
 
 .dl-ball__pct {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   font-weight: 700;
   line-height: 1.1;
 }
 
 .dl-ball--done {
-  animation: dl-ball-pop 520ms var(--ease-out-expo);
+  animation: dl-ball-pop var(--dur-3) var(--ease-out-expo);
 }
 
 .dl-ball--done .dl-ball__content {
@@ -1099,7 +1116,7 @@ onBeforeUnmount(() => {
   --water-top: color-mix(in srgb, var(--danger) 40%, var(--danger-soft));
   --water-bottom: color-mix(in srgb, var(--danger) 26%, var(--danger-soft));
   --water-line: color-mix(in srgb, var(--danger) 24%, #fff);
-  animation: dl-ball-shake 460ms ease;
+  animation: dl-ball-shake var(--dur-3) ease;
 }
 
 .dl-ball--failed .dl-ball__content {
@@ -1128,13 +1145,13 @@ onBeforeUnmount(() => {
   border-right-color: color-mix(in srgb, var(--panel) 74%, #000);
   border-bottom-color: color-mix(in srgb, var(--panel) 74%, #000);
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--text-lg);
   line-height: 1;
   display: grid;
   place-items: center;
   margin-right: 4px;
   box-shadow: 0 4px 10px rgba(40, 28, 16, 0.14);
-  animation: dl-ball-pop 360ms var(--ease-out-expo);
+  animation: dl-ball-pop var(--dur-3) var(--ease-out-expo);
 }
 
 .dl-ball__dismiss:hover {
@@ -1235,15 +1252,15 @@ onBeforeUnmount(() => {
   border: 1px solid color-mix(in srgb, var(--paper) 12%, transparent);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .dl-tip__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  font-size: 12.5px;
+  gap: var(--space-3);
+  font-size: var(--text-base);
 }
 
 .dl-tip__bar {
@@ -1258,24 +1275,24 @@ onBeforeUnmount(() => {
   height: 100%;
   border-radius: 0;
   background: linear-gradient(90deg, var(--moss-bright), var(--amber));
-  transition: width 240ms var(--ease-out-quart);
+  transition: width var(--dur-2) var(--ease-out-quart);
 }
 
 .dl-tip__rows {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 12px;
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: color-mix(in srgb, var(--paper) 72%, transparent);
 }
 
 .dl-tip__count {
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: color-mix(in srgb, var(--paper) 66%, transparent);
 }
 
 .dl-tip__err {
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: color-mix(in srgb, var(--danger) 45%, var(--paper));
 }
 
@@ -1284,7 +1301,7 @@ onBeforeUnmount(() => {
   border-radius: 0;
   background: color-mix(in srgb, var(--paper) 12%, transparent);
   color: var(--paper);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   border-style: solid;
   border-width: 1px 1px 2px;
   border-top-color: color-mix(in srgb, var(--paper) 22%, transparent);
@@ -1301,7 +1318,7 @@ onBeforeUnmount(() => {
 
 .dl-tip__open:active {
   transform: translateY(1px);
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-press);
 }
 
 @keyframes dl-fade-in {
@@ -1319,7 +1336,7 @@ onBeforeUnmount(() => {
 
 .dl-fade-enter-active,
 .dl-fade-leave-active {
-  transition: opacity 160ms ease;
+  transition: opacity var(--dur-1) ease;
 }
 
 .dl-fade-enter-from,
@@ -1329,7 +1346,7 @@ onBeforeUnmount(() => {
 
 .dl-tip-enter-active,
 .dl-tip-leave-active {
-  transition: opacity 160ms ease, transform 160ms var(--ease-out-expo);
+  transition: opacity var(--dur-1) ease, transform var(--dur-1) var(--ease-out-expo);
 }
 
 .dl-tip-enter-from,

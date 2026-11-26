@@ -29,7 +29,7 @@ import {
   store,
   toggleFavorite,
 } from "../store";
-import { formatBytes, formatDate } from "../utils";
+import { formatBytes, formatDate, isSupportedLoader, loaderLabel } from "../utils";
 
 const props = defineProps<{ kind: string }>();
 
@@ -60,14 +60,6 @@ const CLASS_IDS: Record<string, number> = {
   datapacks: 6945,
   modpacks: 4471,
   worlds: 17,
-};
-
-const LOADER_LABELS: Record<string, string> = {
-  vanilla: "原版",
-  fabric: "Fabric",
-  quilt: "Quilt",
-  forge: "Forge",
-  neoforge: "NeoForge",
 };
 
 /// CurseForge / Modrinth 分类英文名到中文的映射，未命中的显示原文。
@@ -426,13 +418,14 @@ const queryGameVersion = computed(() => {
   return versionMode.value;
 });
 const loader = computed(() => {
-  if (context.value && context.value.loader !== "vanilla") {
-    return context.value.loader;
-  }
-  if (!instanceId.value && preset?.loader && preset.loader !== "vanilla") {
-    return preset.loader;
-  }
-  return null;
+  const value =
+    context.value && context.value.loader !== "vanilla"
+      ? context.value.loader
+      : !instanceId.value && preset?.loader && preset.loader !== "vanilla"
+        ? preset.loader
+        : null;
+  // 装不了的加载器（例如 Cleanroom）不拿来筛：源站没有对应的筛选项，带上会筛成 0 条
+  return value && isSupportedLoader(value) ? value : null;
 });
 /// 加载器筛选只对 Mod 和整合包有意义；光影/资源包/数据包带上它会被筛成 0 条
 const searchLoader = computed(() =>
@@ -1203,7 +1196,7 @@ async function confirmImport() {
       <div class="cf-search__head">
         <div class="cf-search__title">搜索{{ label }}</div>
         <span v-if="context" class="tag">
-          {{ LOADER_LABELS[context.loader] ?? context.loader }} · {{ context.game_version }}
+          {{ loaderLabel(context.loader) }} · {{ context.game_version }}
         </span>
       </div>
 
@@ -1399,7 +1392,7 @@ async function confirmImport() {
             <p class="muted small">
               {{ queryGameVersion ? `按 ${queryGameVersion} 筛选` : "全部版本" }}
               <template v-if="kind === 'mods' && loader">
-                · {{ LOADER_LABELS[loader] }}
+                · {{ loaderLabel(loader) }}
               </template>
               <template v-if="kind === 'modpacks'"> · 点下载直接安装成新实例</template>
             </p>
@@ -1676,14 +1669,13 @@ async function confirmImport() {
                     覆盖文件 {{ formatBytes(packPreview.override_bytes) }}
                   </span>
                   <span class="tag">
-                    {{
-                      packPreview.loader === "vanilla"
-                        ? "原版"
-                        : packPreview.loader.charAt(0).toUpperCase() + packPreview.loader.slice(1)
-                    }}
-                    <template v-if="packPreview.loader_version">
+                    {{ loaderLabel(packPreview.loader) }}
+                    <template v-if="packPreview.loader_version && packPreview.loader_supported">
                       {{ packPreview.loader_version }}
                     </template>
+                  </span>
+                  <span v-if="packPreview.optional_count" class="tag">
+                    可选模组 {{ packPreview.optional_count }} 个
                   </span>
                 </template>
               </div>
@@ -1698,8 +1690,12 @@ async function confirmImport() {
                 <WoodInput v-model="importForm.id" mono placeholder="用于版本目录名" />
               </label>
 
+              <!-- 装不了的加载器没有版本可选：实例按原版导入，文件保留 -->
               <label
-                v-if="pendingPack || (packPreview && packPreview.loader !== 'vanilla')"
+                v-if="
+                  pendingPack ||
+                  (packPreview && packPreview.loader_supported && packPreview.loader !== 'vanilla')
+                "
                 class="pack-field"
               >
                 <span class="pack-field__label">加载器版本</span>
@@ -1718,10 +1714,16 @@ async function confirmImport() {
                 </span>
               </label>
 
-              <div v-if="pendingPack || packPreview?.format !== 'generic'" class="pack-toggle">
+              <div v-if="pendingPack || packPreview?.optional_count" class="pack-toggle">
                 <div>
                   <strong>安装可选文件</strong>
-                  <span>清单中标记为可选的 Mod，体积可能较大</span>
+                  <span v-if="packPreview?.optional_count">
+                    清单里有 {{ packPreview.optional_count }} 个可选文件，默认不装。可选项常是互斥的备选
+                    （例如两种性能模组二选一），全装可能冲突
+                  </span>
+                  <span v-else>
+                    清单里标记为可选的文件默认不装；可选项常是互斥的备选，全装可能冲突
+                  </span>
                 </div>
                 <WoodToggle v-model="importForm.optional" />
               </div>
@@ -1788,7 +1790,7 @@ async function confirmImport() {
 .cf {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-6);
   container-type: inline-size;
 }
 
@@ -1803,7 +1805,7 @@ async function confirmImport() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .cf-search__title {
@@ -1815,7 +1817,7 @@ async function confirmImport() {
 .cf-fields {
   display: grid;
   grid-template-columns: minmax(230px, 1fr) minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 /* 类型筛选独占第三行，宽度与单个下拉对齐 */
@@ -1826,7 +1828,7 @@ async function confirmImport() {
 .cf-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
@@ -1835,7 +1837,7 @@ async function confirmImport() {
 }
 
 .cf-field__label {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
   letter-spacing: 0.04em;
 }
@@ -1849,7 +1851,7 @@ async function confirmImport() {
 .cf-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   flex-wrap: wrap;
 }
 
@@ -1879,12 +1881,12 @@ async function confirmImport() {
   border-style: solid;
   border-width: 1px 1px 2px;
   border-color: transparent;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 700;
   color: var(--ink-soft);
   white-space: nowrap;
-  transition: background 150ms ease, color 150ms ease,
-    border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
+  transition: background var(--dur-1) ease, color var(--dur-1) ease,
+    border-color var(--dur-1) ease, transform var(--dur-0) ease, box-shadow var(--dur-0) ease;
 }
 
 .cf-source-tab:not(.cf-source-tab--on):hover {
@@ -1904,7 +1906,7 @@ async function confirmImport() {
   border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .cf-source-tab--on {
@@ -1916,7 +1918,7 @@ async function confirmImport() {
   border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 /* 结果列表 */
@@ -1942,7 +1944,7 @@ async function confirmImport() {
   background: var(--panel);
   cursor: pointer;
   transition: background var(--dur-1) ease;
-  animation: rise-in 380ms var(--ease-out-expo) both;
+  animation: rise-in var(--dur-3) var(--ease-out-expo) both;
   animation-delay: calc(var(--i, 0) * 14ms);
 }
 
@@ -2016,19 +2018,19 @@ async function confirmImport() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   opacity: 0.75;
 }
 
 .cf-detail__origin {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   opacity: 0.8;
 }
 
 .cf-row__name {
   min-width: 0;
-  font-size: 14px;
+  font-size: var(--text-lg);
   color: var(--walnut-deep);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2048,7 +2050,7 @@ async function confirmImport() {
 
 .cf-row__summary {
   min-width: 0;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   line-height: 1.45;
   color: var(--ink-soft);
   overflow: hidden;
@@ -2058,7 +2060,7 @@ async function confirmImport() {
 
 .chip {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: var(--text-xs);
   line-height: 1;
   padding: 3px 5px;
   border-radius: 0;
@@ -2071,15 +2073,15 @@ async function confirmImport() {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 72px 86px;
   align-items: center;
-  gap: 10px;
-  font-size: 10.5px;
+  gap: var(--space-4);
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
 .cf-row__stat {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   white-space: nowrap;
 }
@@ -2120,7 +2122,7 @@ async function confirmImport() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-6);
   padding: 34px 26px;
   color: var(--walnut);
 }
@@ -2159,7 +2161,7 @@ async function confirmImport() {
 .cf-detail__title-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   flex-wrap: wrap;
 }
 
@@ -2178,14 +2180,14 @@ async function confirmImport() {
 .cf-detail__links {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-3);
   margin-top: 10px;
 }
 
 .cf-link {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   --face: var(--panel-2);
   height: 30px;
   padding: 0 12px;
@@ -2198,7 +2200,7 @@ async function confirmImport() {
   border-radius: 2px;
   background: var(--face);
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: var(--text-base);
   transition: border-color var(--dur-1) ease, color var(--dur-1) ease,
     background var(--dur-1) ease, transform var(--dur-1) ease,
     box-shadow var(--dur-1) ease;
@@ -2218,14 +2220,14 @@ async function confirmImport() {
   border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .cf-version-tabs {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 8px 10px;
   /* 筛选条做成和分段控件一样的浅凹槽 */
   border: 1px solid var(--line);
@@ -2246,7 +2248,7 @@ async function confirmImport() {
   padding: 0 11px;
   border-radius: 2px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-base);
   transition: background var(--dur-1) ease, color var(--dur-1) ease,
     box-shadow var(--dur-1) ease;
 }
@@ -2269,7 +2271,7 @@ async function confirmImport() {
 .cf-files {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .cf-files__state {
@@ -2278,7 +2280,7 @@ async function confirmImport() {
   gap: 9px;
   padding: 12px 4px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .cf-files__state .skeleton {
@@ -2300,7 +2302,7 @@ async function confirmImport() {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 9px 11px;
   border-radius: 0;
   transition: background var(--dur-1) ease, box-shadow var(--dur-1) ease;
@@ -2320,7 +2322,7 @@ async function confirmImport() {
 }
 
 .cf-file__name {
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2328,13 +2330,13 @@ async function confirmImport() {
 }
 
 .cf-file__meta {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
 .cf-file__size,
 .cf-file__date {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
   flex-shrink: 0;
 }
@@ -2350,7 +2352,7 @@ async function confirmImport() {
 }
 
 .cf-file__hint {
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .cf-file__deps {
@@ -2361,7 +2363,7 @@ async function confirmImport() {
   border: 1px solid var(--line-strong);
   background: var(--panel-2);
   color: var(--muted);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   font-weight: 700;
   transition: border-color var(--dur-1) ease, color var(--dur-1) ease,
     background var(--dur-1) ease;
@@ -2378,7 +2380,7 @@ async function confirmImport() {
   flex: 0 0 100%;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   margin: 2px 0 4px;
   padding: 10px 12px;
   /* 依赖信息是附属内容，做成凹槽嵌在行内 */
@@ -2396,7 +2398,7 @@ async function confirmImport() {
 .shader-loader {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .shader-loader__go {
@@ -2414,20 +2416,20 @@ async function confirmImport() {
 }
 
 .cf-deps__title {
-  font-size: 10px;
+  font-size: var(--text-xs);
   letter-spacing: 0.12em;
   color: var(--muted);
   font-family: var(--font-mono);
 }
 
 .cf-deps__state {
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .cf-deps__list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .cf-dep {
@@ -2479,7 +2481,7 @@ async function confirmImport() {
 }
 
 .cf-dep__text strong {
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2487,7 +2489,7 @@ async function confirmImport() {
 }
 
 .cf-dep__text span {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2534,7 +2536,7 @@ async function confirmImport() {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .pack-modal__title {
@@ -2548,13 +2550,13 @@ async function confirmImport() {
 .pack-modal__body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .pack-summary {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .pack-field {
@@ -2564,7 +2566,7 @@ async function confirmImport() {
 }
 
 .pack-field__label {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
   letter-spacing: 0.04em;
 }
@@ -2579,7 +2581,7 @@ async function confirmImport() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-6);
   padding: 10px 0;
   border-top: 1px dashed var(--line);
   border-bottom: 1px dashed var(--line);
@@ -2587,12 +2589,12 @@ async function confirmImport() {
 
 .pack-toggle strong {
   display: block;
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--walnut-deep);
 }
 
 .pack-toggle span {
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -2603,7 +2605,7 @@ async function confirmImport() {
   background: rgba(var(--accent-rgb), 0.06);
   box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.06);
   color: var(--ink-soft);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   line-height: 1.6;
 }
 
@@ -2611,7 +2613,7 @@ async function confirmImport() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
   margin-top: 12px;
   padding: 10px 12px;
   border: 1px solid #d3dfc8;
@@ -2627,12 +2629,12 @@ async function confirmImport() {
 }
 
 .pack-server-hint strong {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--moss);
 }
 
 .pack-server-hint span {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   line-height: 1.6;
 }
@@ -2653,12 +2655,12 @@ async function confirmImport() {
 
 .pack-modal-enter-active,
 .pack-modal-leave-active {
-  transition: opacity 180ms ease;
+  transition: opacity var(--dur-1) ease;
 }
 
 .pack-modal-enter-active .pack-modal__card,
 .pack-modal-leave-active .pack-modal__card {
-  transition: transform 220ms var(--ease-out-expo);
+  transition: transform var(--dur-2) var(--ease-out-expo);
 }
 
 .pack-modal-enter-from,

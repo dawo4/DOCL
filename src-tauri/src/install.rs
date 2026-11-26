@@ -839,6 +839,71 @@ mod tests {
             ("1.20.1".to_string(), "forge".to_string())
         );
     }
+
+    fn profile(id: &str, main_class: &str, libraries: &[&str]) -> (VersionDetail, Vec<String>) {
+        let mut json = serde_json::json!({ "id": id, "mainClass": main_class });
+        if !libraries.is_empty() {
+            json["libraries"] = libraries
+                .iter()
+                .map(|name| serde_json::json!({ "name": name }))
+                .collect();
+        }
+        (
+            parse(json),
+            vec![id.to_string()],
+        )
+    }
+
+    /// 认不出的加载器要报出真名，不能悄悄当成原版
+    #[test]
+    fn detects_unsupported_loaders_by_main_class() {
+        let (cleanroom, chain) = profile(
+            "Cleanroom",
+            "top.outlands.foundation.boot.Foundation",
+            &["com.cleanroommc:cleanroom-loader:0.7.14-alpha"],
+        );
+        assert_eq!(context_from("Cleanroom", &cleanroom, &chain).1, "cleanroom");
+
+        let (liteloader, chain) = profile(
+            "1.12.2-LiteLoader",
+            "com.mumfrey.liteloader.launch.LiteLoaderTweaker",
+            &["com.mumfrey:liteloader:1.12.2-SNAPSHOT"],
+        );
+        assert_eq!(context_from("1.12.2-LiteLoader", &liteloader, &chain).1, "liteloader");
+    }
+
+    /// 主类不是原版的、又对不上已知加载器：归为 unknown，留给界面提示
+    #[test]
+    fn foreign_main_class_is_unknown_not_vanilla() {
+        let (detail, chain) = profile("Weird Pack", "com.example.launch.Boot", &[]);
+        assert_eq!(context_from("Weird Pack", &detail, &chain).1, "unknown");
+    }
+
+    /// 原版主类（含老版本）与常见加载器的判定不能被上面的改动影响
+    #[test]
+    fn vanilla_and_common_loaders_keep_working() {
+        for main in ["net.minecraft.client.main.Main", "net.minecraft.client.Minecraft"] {
+            let (detail, chain) = profile("1.20.1", main, &[]);
+            assert_eq!(context_from("1.20.1", &detail, &chain).1, "vanilla");
+        }
+        let (knot, chain) = profile("Pack", "net.fabricmc.loader.impl.game.minecraft.knot.KnotClient", &[]);
+        assert_eq!(context_from("Pack", &knot, &chain).1, "fabric");
+
+        // Forge + LiteLoader 组合仍按 Forge 处理
+        let (combo, chain) = profile(
+            "Pack",
+            "net.minecraft.launchwrapper.Launch",
+            &["com.mumfrey:liteloader:1.12.2-SNAPSHOT", "net.minecraftforge:forge:1.12.2-14.23.5.2860"],
+        );
+        assert_eq!(context_from("Pack", &combo, &chain).1, "forge");
+
+        assert!(super::is_supported_loader("forge"));
+        assert!(super::is_supported_loader("vanilla"));
+        assert!(!super::is_supported_loader("cleanroom"));
+        assert!(!super::is_supported_loader("unknown"));
+        assert_eq!(super::loader_display_name("cleanroom"), "Cleanroom");
+        assert_eq!(super::loader_display_name("vanilla"), "原版");
+    }
 }
 
 pub fn is_installed(cfg: &Config, version_id: &str) -> bool {
@@ -1409,34 +1474,98 @@ fn detect_loader(version_id: &str, detail: &VersionDetail) -> String {
     if lower.contains("fabric") {
         return "fabric".into();
     }
-    for lib in &detail.libraries {
-        let name = lib.name.to_ascii_lowercase();
-        if name.starts_with("net.neoforged:") {
-            return "neoforge".into();
-        }
-        if name.starts_with("net.minecraftforge:") {
-            return "forge".into();
-        }
-        if name.starts_with("org.quiltmc:quilt-loader") {
-            return "quilt".into();
-        }
-        if name.starts_with("net.fabricmc:fabric-loader") {
-            return "fabric".into();
-        }
+    loader_of_profile(detail.main_class.as_deref(), |prefix| {
+        detail
+            .libraries
+            .iter()
+            .any(|lib| lib.name.to_ascii_lowercase().starts_with(prefix))
+    })
+}
+
+/// 只凭版本清单内容判断加载器，不看版本 id。
+/// 库坐标用谓词传入：整合包导入时手里只有一段 JSON，不必构造完整清单。
+pub(crate) fn loader_of_profile(
+    main_class: Option<&str>,
+    has_library: impl Fn(&str) -> bool,
+) -> String {
+    if let Some(loader) = loader_from_profile(main_class, has_library) {
+        return loader;
     }
-    if let Some(main) = &detail.main_class {
-        let main = main.to_ascii_lowercase();
-        if main.contains("bootstraplauncher") {
-            return "forge".into();
-        }
-        if main.contains("quilt") {
-            return "quilt".into();
-        }
-        if main.contains("knot") {
-            return "fabric".into();
+    // 主类不是原版的、又对不上任何已知加载器：标成 unknown，
+    // 不能伪装成原版，否则导入后报「原版」却在启动时莫名失败
+    if let Some(main) = main_class.map(str::to_ascii_lowercase) {
+        if !main.is_empty() && !main.starts_with("net.minecraft.") {
+            return "unknown".into();
         }
     }
     "vanilla".into()
+}
+
+/// 启动器能自动安装的加载器；其余的只识别、不安装，导入时给出提示。
+pub fn is_supported_loader(loader: &str) -> bool {
+    loader.is_empty() || matches!(loader, "vanilla" | "forge" | "neoforge" | "fabric" | "quilt")
+}
+
+/// 加载器在界面上的名字：`vanilla` → 原版，`cleanroom` → Cleanroom。
+pub fn loader_display_name(loader: &str) -> String {
+    match loader {
+        "" | "vanilla" => "原版".into(),
+        "forge" => "Forge".into(),
+        "neoforge" => "NeoForge".into(),
+        "fabric" => "Fabric".into(),
+        "quilt" => "Quilt".into(),
+        "cleanroom" => "Cleanroom".into(),
+        "liteloader" => "LiteLoader".into(),
+        "unknown" => "未知加载器".into(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        }
+    }
+}
+
+/// 按库坐标前缀识别加载器。Forge 排在最前：「Forge + LiteLoader」组合仍然算 Forge，
+/// 否则后续按 Forge 规则解析模组前置会全部落空。
+const LOADERS_BY_LIBRARY: &[(&str, &str)] = &[
+    ("net.neoforged:", "neoforge"),
+    ("net.minecraftforge:", "forge"),
+    ("org.quiltmc:quilt-loader", "quilt"),
+    ("net.fabricmc:fabric-loader", "fabric"),
+    ("com.mumfrey:liteloader", "liteloader"),
+    ("top.outlands:", "cleanroom"),
+    ("com.cleanroommc:", "cleanroom"),
+];
+
+/// 从版本清单的主类与库坐标识别加载器，认不出返回 None。
+/// 库坐标用谓词传入，调用方不必为此构造完整清单。
+fn loader_from_profile(
+    main_class: Option<&str>,
+    has_library: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let main = main_class.map(str::to_ascii_lowercase).unwrap_or_default();
+    // 主类是最明确的信号：Cleanroom / LiteLoader 会沿用 Forge 的库，先看主类才不会被盖掉
+    if main.contains("outlands") || main.contains("cleanroom") {
+        return Some("cleanroom".into());
+    }
+    if main.contains("liteloader") {
+        return Some("liteloader".into());
+    }
+    if let Some((_, name)) = LOADERS_BY_LIBRARY.iter().find(|(prefix, _)| has_library(prefix)) {
+        return Some((*name).to_string());
+    }
+    if main.contains("bootstraplauncher") {
+        return Some("forge".into());
+    }
+    if main.contains("quilt") {
+        return Some("quilt".into());
+    }
+    if main.contains("knot") {
+        return Some("fabric".into());
+    }
+    None
 }
 
 pub fn instance_context(cfg: &Config, version_id: &str) -> Result<(String, String)> {

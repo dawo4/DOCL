@@ -30,6 +30,30 @@ export function kindLabel(kind: string): string {
   }
 }
 
+const SUPPORTED_LOADERS = new Set(["vanilla", "forge", "neoforge", "fabric", "quilt"]);
+
+/// 启动器能自动安装的加载器；其余的只识别、不安装
+export function isSupportedLoader(loader?: string | null): boolean {
+  return !loader || SUPPORTED_LOADERS.has(loader);
+}
+
+const LOADER_NAMES: Record<string, string> = {
+  forge: "Forge",
+  neoforge: "NeoForge",
+  fabric: "Fabric",
+  quilt: "Quilt",
+  cleanroom: "Cleanroom",
+  liteloader: "LiteLoader",
+  unknown: "未知加载器",
+};
+
+/// 加载器在界面上的名字。装不了的带「（暂不支持）」，与后端的说明文字一致
+export function loaderLabel(loader?: string | null): string {
+  if (!loader || loader === "vanilla") return "原版";
+  const name = LOADER_NAMES[loader] ?? loader.charAt(0).toUpperCase() + loader.slice(1);
+  return isSupportedLoader(loader) ? name : `${name}（暂不支持）`;
+}
+
 export function formatDate(iso?: string | null): string {
   if (!iso) return "—";
   const date = new Date(iso);

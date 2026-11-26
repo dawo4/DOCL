@@ -159,7 +159,10 @@ onMounted(loadStatus);
 
 <template>
   <div class="ls">
-    <div v-if="loading" class="hint">正在读取 LittleSkin 状态…</div>
+    <div v-if="loading" class="loading-block">
+      <span class="loading-block__bar" />
+      正在读取 LittleSkin 状态…
+    </div>
 
     <template v-else-if="status">
       <section v-if="!status.configured" class="setup">
@@ -230,7 +233,10 @@ onMounted(loadStatus);
           </div>
         </div>
 
-        <div v-if="closetLoading" class="hint">正在读取衣柜…</div>
+        <div v-if="closetLoading" class="loading-block">
+          <span class="loading-block__bar" />
+          正在读取衣柜…
+        </div>
         <div v-else-if="closet && !closet.items.length" class="hint">
           衣柜是空的，可以先去 LittleSkin 收藏一些皮肤。
         </div>
@@ -287,13 +293,13 @@ onMounted(loadStatus);
 .ls {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .setup {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .desc {
@@ -303,14 +309,14 @@ onMounted(loadStatus);
   border: 1px solid var(--line);
   background: var(--panel-2);
   color: var(--ink-soft);
-  font-size: 12.5px;
+  font-size: var(--text-base);
   line-height: 1.75;
 }
 
 .redirect {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 8px 10px;
   border: 1px dashed var(--line-strong);
   border-radius: 2px;
@@ -324,24 +330,24 @@ onMounted(loadStatus);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
 }
 
 .setup__row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .field__label {
-  font-size: 11px;
+  font-size: var(--text-sm);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--muted);
@@ -350,19 +356,19 @@ onMounted(loadStatus);
 .actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .who {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 2px;
   background: var(--panel-2);
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--ink-soft);
 }
 
@@ -373,28 +379,28 @@ onMounted(loadStatus);
 .who__right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .hint {
   padding: 26px 0;
   text-align: center;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .cell {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 8px;
+  gap: var(--space-2);
+  padding: var(--space-3);
   border: 1px solid var(--line);
   border-radius: 2px;
   background: var(--panel-2);
@@ -431,7 +437,7 @@ onMounted(loadStatus);
   border-radius: 2px;
   background: var(--moss);
   color: #fffdf6;
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 
 .cell__name {
@@ -440,7 +446,7 @@ onMounted(loadStatus);
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: center;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
 }
 
@@ -448,7 +454,7 @@ onMounted(loadStatus);
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: var(--space-5);
   margin-top: 4px;
 }
 
@@ -459,7 +465,7 @@ onMounted(loadStatus);
   border: 1px solid color-mix(in srgb, #b65a3c 45%, transparent);
   background: color-mix(in srgb, #b65a3c 10%, transparent);
   color: #8f4126;
-  font-size: 12px;
+  font-size: var(--text-base);
   line-height: 1.6;
 }
 </style>

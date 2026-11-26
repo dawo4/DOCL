@@ -278,7 +278,7 @@ onMounted(load);
 .world-error {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 18px 4px;
   color: var(--muted);
 }
@@ -286,7 +286,7 @@ onMounted(load);
 .world-form {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .world-row {
@@ -299,9 +299,9 @@ onMounted(load);
 .world-row__label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   flex-shrink: 0;
-  font-size: 12.5px;
+  font-size: var(--text-base);
   font-weight: 700;
   color: var(--ink-soft);
 }
@@ -317,14 +317,14 @@ onMounted(load);
   border-radius: 2px;
   border: 1px solid var(--danger);
   color: var(--danger);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   font-weight: 700;
 }
 
 .world-hint,
 .world-note {
   margin: -4px 0 0;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -338,15 +338,15 @@ onMounted(load);
   border-radius: 2px;
   background: var(--danger-soft);
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .world-rules {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   margin-top: 4px;
-  padding: 10px;
+  padding: var(--space-4);
   border-radius: 2px;
   border: 1px solid var(--line);
   background: var(--panel-2);
@@ -360,7 +360,7 @@ onMounted(load);
 }
 
 .world-rules__head strong {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--walnut-deep);
 }
 
@@ -374,7 +374,7 @@ onMounted(load);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   padding-right: 4px;
 }
 
@@ -382,7 +382,7 @@ onMounted(load);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-5);
   min-height: 34px;
 }
 
@@ -395,7 +395,7 @@ onMounted(load);
 }
 
 .rule-row__zh {
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 700;
   color: var(--ink);
   overflow: hidden;
@@ -404,7 +404,7 @@ onMounted(load);
 }
 
 .rule-row__key {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;

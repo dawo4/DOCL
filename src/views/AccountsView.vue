@@ -763,7 +763,11 @@ onMounted(() => {
 .accounts-frame {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
-  min-height: calc(100vh - 168px);
+  /* 固定为视口剩余高度，避免内容把整页撑出滚动条；密度切换时跟着留白变化 */
+  height: calc(
+    100vh - var(--topbar-h) - var(--space-page-y) - var(--space-page-bottom) - 8px
+  );
+  min-height: 420px;
   border-radius: 0;
   overflow: hidden;
 }
@@ -786,20 +790,20 @@ onMounted(() => {
 }
 
 .acc-list__title {
-  font-size: 13px;
+  font-size: var(--text-lg);
   font-weight: 700;
   color: var(--walnut-deep);
 }
 
 .acc-list__count {
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
 .acc-empty {
   padding: 28px 14px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .acc-rows {
@@ -811,7 +815,7 @@ onMounted(() => {
 .acc-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   width: 100%;
   padding: 9px 12px;
   border-bottom: 1px solid var(--line);
@@ -837,7 +841,7 @@ onMounted(() => {
 }
 
 .acc-row__name {
-  font-size: 12.5px;
+  font-size: var(--text-base);
   font-weight: 700;
   color: var(--walnut-deep);
   overflow: hidden;
@@ -854,9 +858,9 @@ onMounted(() => {
 .acc-add {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
   flex-shrink: 0;
-  padding: 12px;
+  padding: var(--space-5);
   border-top: 1px solid var(--line);
 }
 
@@ -881,13 +885,13 @@ onMounted(() => {
 
 .add-type__hint {
   margin-bottom: 10px;
-  font-size: 12.5px;
+  font-size: var(--text-base);
 }
 
 .add-type {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-5);
   width: 100%;
   --face: var(--panel-2);
   padding: 13px 14px;
@@ -919,7 +923,7 @@ onMounted(() => {
   border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .add-type > svg {
@@ -935,12 +939,12 @@ onMounted(() => {
 }
 
 .add-type__body b {
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--walnut-deep);
 }
 
 .add-type__body span {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -948,7 +952,7 @@ onMounted(() => {
 
 .offline-hint {
   margin-bottom: 14px;
-  font-size: 12.5px;
+  font-size: var(--text-base);
   line-height: 1.7;
 }
 
@@ -960,11 +964,11 @@ onMounted(() => {
 .offline-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .offline-field__label {
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--ink-soft);
 }
@@ -972,7 +976,7 @@ onMounted(() => {
 .offline-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--space-3);
   margin-top: 18px;
 }
 
@@ -983,13 +987,13 @@ onMounted(() => {
 }
 
 .offline-field__hint {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .third-presets {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-3);
   margin-bottom: 14px;
 }
 
@@ -997,7 +1001,7 @@ onMounted(() => {
 .third-role-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   max-height: 320px;
   overflow-y: auto;
   margin-bottom: 14px;
@@ -1006,7 +1010,7 @@ onMounted(() => {
 .third-role {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 9px 12px;
   border: 1px solid var(--line);
   border-radius: 2px;
@@ -1031,14 +1035,14 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--ink);
 }
 
 .third-role__uuid {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .third-preset {
@@ -1053,7 +1057,7 @@ onMounted(() => {
   border-radius: 2px;
   background: var(--face);
   color: var(--walnut);
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 700;
   transition: border-color var(--dur-1) ease, background var(--dur-1) ease,
     transform var(--dur-1) ease, box-shadow var(--dur-1) ease;
@@ -1075,13 +1079,13 @@ onMounted(() => {
   border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
   border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.14);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .third-server {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .third-server > :first-child {
@@ -1092,23 +1096,25 @@ onMounted(() => {
 .acc-detail {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-4);
   min-width: 0;
-  padding: 18px 20px;
+  padding: 14px 18px;
+  /* 窗口过矮时只让详情列自己滚，整页不再出现滚动条 */
+  overflow-y: auto;
 }
 
 .acc-detail--empty {
   display: grid;
   place-items: center;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--text-base);
 }
 
 .acc-detail__head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-6);
 }
 
 .acc-detail__id {
@@ -1140,7 +1146,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-3);
   min-width: 0;
 }
 
@@ -1148,7 +1154,7 @@ onMounted(() => {
   padding-bottom: 8px;
   border-bottom: 1px solid var(--line);
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--text-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1158,8 +1164,8 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  flex: 1;
-  min-height: 260px;
+  flex: 1 1 auto;
+  min-height: 180px;
 }
 
 /* BlockHelm 式：预览浮在页面上，不套框不铺底 */
@@ -1167,6 +1173,9 @@ onMounted(() => {
   border: none;
   border-radius: 0;
   background: transparent;
+  /* 高度交给剩余空间，窗口变矮时模型跟着缩小而不是把页面撑高 */
+  height: 100% !important;
+  width: 100%;
 }
 
 .acc-model__loading {
@@ -1174,9 +1183,10 @@ onMounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: var(--space-4);
   width: 100%;
-  height: 360px;
+  height: 100%;
+  min-height: 180px;
   border: 1px solid var(--line);
   background: rgba(var(--glass-rgb), 0.3);
 }
@@ -1190,7 +1200,7 @@ onMounted(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   padding-top: 10px;
   border-top: 1px solid var(--line);
 }
@@ -1208,7 +1218,7 @@ onMounted(() => {
 .acc-csl {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 10px 11px;
   border: 1px solid var(--line);
   border-radius: 2px;
@@ -1219,11 +1229,11 @@ onMounted(() => {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .acc-csl__title {
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 700;
   color: var(--ink);
 }
@@ -1238,13 +1248,13 @@ onMounted(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .acc-csl__target {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
   height: 28px;
   padding: 0 9px;
@@ -1252,7 +1262,7 @@ onMounted(() => {
   border-radius: 2px;
   background: var(--panel);
   color: var(--ink-soft);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 600;
 }
 
@@ -1275,14 +1285,14 @@ onMounted(() => {
 
 .acc-csl__buttons {
   display: flex;
-  gap: 6px;
+  gap: var(--space-2);
   margin-left: auto;
 }
 
 .csl-pick-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   max-height: 320px;
   overflow-y: auto;
 }
@@ -1291,7 +1301,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 9px 10px;
   border: 1px solid var(--line);
   border-radius: 2px;
@@ -1317,13 +1327,13 @@ onMounted(() => {
 }
 
 .csl-pick__meta {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
 .acc-note {
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   line-height: 1.6;
 }
 
@@ -1349,13 +1359,13 @@ onMounted(() => {
 .login-code {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .login-code__row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
 .login-code__code {
@@ -1373,7 +1383,7 @@ onMounted(() => {
 }
 
 .login-code__url {
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--ink-soft);
   word-break: break-all;
   user-select: text;

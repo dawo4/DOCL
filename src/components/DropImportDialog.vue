@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { api, type DroppedItem, type PackPreview } from "../api";
+import { loaderLabel } from "../utils";
 import AppIcon from "./AppIcon.vue";
 import WoodButton from "./WoodButton.vue";
 import WoodModal from "./WoodModal.vue";
 import WoodInput from "./WoodInput.vue";
 import WoodSelect from "./WoodSelect.vue";
+import WoodToggle from "./WoodToggle.vue";
 import {
   enqueueJob,
   importModpack,
@@ -83,8 +85,35 @@ function isServerPack(item: DroppedItem) {
   return packMeta.value[item.path]?.server_like === true;
 }
 
+/// 整合包条目上显示加载器；装不了的带「（暂不支持）」
+function loaderOf(item: DroppedItem): string | null {
+  const preview = packMeta.value[item.path];
+  return preview && !isServerPack(item) ? loaderLabel(preview.loader) : null;
+}
+
 const clientPacks = computed(() => packs.value.filter((item) => !isServerPack(item)));
 const serverPacks = computed(() => packs.value.filter((item) => isServerPack(item)));
+
+/// 清单里标记为可选的文件总数。默认不装：可选项常是互斥的备选，全装可能冲突
+const installOptional = ref(false);
+const optionalTotal = computed(() =>
+  clientPacks.value.reduce(
+    (sum, item) => sum + (packMeta.value[item.path]?.optional_count ?? 0),
+    0
+  )
+);
+
+/// 用了启动器装不了的加载器的包：按原版导入并保留文件，先在这里说清楚
+const unsupportedLoaders = computed(() =>
+  Array.from(
+    new Set(
+      clientPacks.value
+        .map((item) => packMeta.value[item.path])
+        .filter((preview): preview is PackPreview => !!preview && !preview.loader_supported)
+        .map((preview) => loaderLabel(preview.loader))
+    )
+  )
+);
 
 /// 整合包实例名称，默认取清单解析出的名字，用户可以改
 const packNames = ref<Record<string, string>>({});
@@ -170,7 +199,11 @@ async function importPacks() {
       const name = packNames.value[pack.path]?.trim() || "";
       const result = await importModpack(
         pack.path,
-        { parent_version: target.value || null, instance_name: name || null },
+        {
+          parent_version: target.value || null,
+          instance_name: name || null,
+          install_optional: installOptional.value
+        },
         name || pack.file_name
       );
       if (result) last = result.instance_id;
@@ -239,6 +272,7 @@ async function importServerPacks() {
           <strong class="drop-item__name" :title="item.file_name">{{ item.file_name }}</strong>
           <span class="drop-item__meta">
             {{ item.label }}<template v-if="item.detail"> · {{ item.detail }}</template>
+            <template v-if="loaderOf(item)"> · {{ loaderOf(item) }}</template>
             <template v-if="isServerPack(item)"> · 服务端整合包</template>
           </span>
           <div
@@ -261,6 +295,20 @@ async function importServerPacks() {
         </div>
       </li>
     </ul>
+
+    <div v-if="clientPacks.length && optionalTotal" class="optional">
+      <div class="optional__text">
+        <strong>安装可选文件</strong>
+        <span>
+          清单里有 {{ optionalTotal }} 个可选文件，默认不装；可选项常是互斥的备选，全装可能冲突
+        </span>
+      </div>
+      <WoodToggle v-model="installOptional" :disabled="busy" />
+    </div>
+
+    <p v-if="unsupportedLoaders.length" class="warn">
+      其中有整合包使用{{ unsupportedLoaders.join("、") }}，启动器暂不支持自动安装：会按原版导入并保留全部文件，直接启动不会加载模组。
+    </p>
 
     <div v-if="content.length" class="target">
       <span class="target__label">安装到</span>
@@ -317,7 +365,7 @@ async function importServerPacks() {
 <style scoped>
 .hint {
   margin: 0 0 12px;
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--muted);
   line-height: 1.6;
 }
@@ -325,7 +373,7 @@ async function importServerPacks() {
 .drop-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
   margin: 0 0 14px;
   padding: 0;
   max-height: 280px;
@@ -335,7 +383,7 @@ async function importServerPacks() {
 .drop-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 10px 12px;
   border-radius: 0;
   border: 1px solid var(--line);
@@ -375,7 +423,7 @@ async function importServerPacks() {
 }
 
 .drop-item__name {
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--walnut-deep);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -383,7 +431,7 @@ async function importServerPacks() {
 }
 
 .drop-item__meta {
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -399,19 +447,19 @@ async function importServerPacks() {
 .pack-name :deep(.input) {
   height: 30px;
   padding: 0 10px;
-  font-size: 12.5px;
+  font-size: var(--text-base);
 }
 
 .target {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   margin-bottom: 10px;
 }
 
 .target__label {
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 700;
   color: var(--ink-soft);
 }
@@ -423,20 +471,56 @@ async function importServerPacks() {
 
 .supported {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--muted);
   line-height: 1.6;
 }
 
+.optional {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-bottom: 10px;
+}
+
+.optional__text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+
+.optional__text strong {
+  font-size: var(--text-base);
+  color: var(--ink-soft);
+}
+
+.optional__text span {
+  font-size: var(--text-sm);
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.warn {
+  margin: 0 0 10px;
+  padding: 7px 10px;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  line-height: 1.6;
+  background: color-mix(in srgb, var(--amber) 10%, var(--panel));
+  border-left: 2px solid var(--amber);
+}
+
 .footnote {
   flex: 1;
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
 .actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
 }
 </style>

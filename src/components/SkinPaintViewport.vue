@@ -691,13 +691,13 @@ onBeforeUnmount(() => {
   left: 10px;
   bottom: 8px;
   display: flex;
-  gap: 10px;
+  gap: var(--space-4);
   padding: 4px 8px;
   border-radius: 2px;
   border: 1px solid var(--line);
   background: color-mix(in srgb, var(--panel) 82%, transparent);
   color: var(--muted);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   letter-spacing: 0.04em;
   pointer-events: none;
 }

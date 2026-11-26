@@ -24,7 +24,7 @@ import {
   switchGameDir,
   uninstallVersion,
 } from "../store";
-import { ICON_PRESETS, formatBytes, formatDate, kindLabel } from "../utils";
+import { ICON_PRESETS, formatBytes, formatDate, kindLabel, loaderLabel } from "../utils";
 
 const confirmId = ref<string | null>(null);
 let confirmTimer: number | undefined;
@@ -74,7 +74,8 @@ function versionTag(item: { id: string; game_version?: string; loader?: string }
   const parts: string[] = [];
   if (item.game_version && item.game_version !== item.id) parts.push(item.game_version);
   if (item.loader && item.loader !== "vanilla") {
-    parts.push(item.loader.charAt(0).toUpperCase() + item.loader.slice(1));
+    // 装不了的加载器带「（暂不支持）」，列表里一眼能看出这个实例不能直接玩
+    parts.push(loaderLabel(item.loader));
   }
   return parts.join(" · ");
 }
@@ -755,7 +756,7 @@ async function chooseImage(id: string) {
   top: calc(100% + 10px);
   z-index: 21;
   width: 320px;
-  padding: 8px;
+  padding: var(--space-3);
   border: 2px solid var(--frame);
   border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
   border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
@@ -779,7 +780,7 @@ async function chooseImage(id: string) {
 .dir-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   width: 100%;
   padding: 9px 10px;
   border: 1px solid transparent;
@@ -810,7 +811,7 @@ async function chooseImage(id: string) {
 }
 
 .dir-item__body strong {
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--walnut-deep);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -827,7 +828,7 @@ async function chooseImage(id: string) {
 
 .dir-item__count {
   flex-shrink: 0;
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
@@ -840,7 +841,7 @@ async function chooseImage(id: string) {
   border-top: 1px dashed var(--line);
   border-radius: 0 0 8px 8px;
   background: transparent;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   cursor: pointer;
   transition: color var(--dur-2) ease;
@@ -858,7 +859,7 @@ async function chooseImage(id: string) {
 
 .blank__hint {
   margin-top: 10px;
-  font-size: 12.5px;
+  font-size: var(--text-base);
   letter-spacing: 0.06em;
   color: var(--muted);
 }
@@ -880,7 +881,7 @@ async function chooseImage(id: string) {
   --profile-shadow: 0 1px 4px rgba(20, 14, 8, 0.62);
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(260px, 300px);
-  gap: 10px;
+  gap: var(--space-4);
   align-items: stretch;
   text-shadow: var(--profile-shadow);
 }
@@ -912,7 +913,7 @@ async function chooseImage(id: string) {
   z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-6);
 }
 
 .hero-total {
@@ -925,8 +926,8 @@ async function chooseImage(id: string) {
 .hero-total__eyebrow {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
+  gap: var(--space-3);
+  font-size: var(--text-lg);
   font-weight: 800;
   letter-spacing: 0.04em;
   color: var(--profile-ink);
@@ -957,7 +958,7 @@ async function chooseImage(id: string) {
 
 .hero-total__unit {
   margin-right: 6px;
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--profile-soft);
   letter-spacing: 0.02em;
 }
@@ -965,7 +966,7 @@ async function chooseImage(id: string) {
 .hero-total__num--empty {
   padding: 12px 0 6px;
   font-family: var(--font-ui);
-  font-size: 17px;
+  font-size: var(--text-xl);
   font-weight: 600;
   color: var(--profile-muted);
 }
@@ -980,14 +981,14 @@ async function chooseImage(id: string) {
 .hero-facts span {
   display: inline-flex;
   align-items: baseline;
-  gap: 4px;
-  font-size: 11.5px;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
   color: var(--profile-soft);
 }
 
 .hero-facts b {
   font-family: var(--font-display);
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--profile-ink);
 }
 
@@ -997,7 +998,7 @@ async function chooseImage(id: string) {
   align-items: baseline;
   gap: 4px 8px;
   margin-top: 6px;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--profile-soft);
 }
 
@@ -1011,7 +1012,7 @@ async function chooseImage(id: string) {
 
 .hero-recent strong {
   font-family: var(--font-display);
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--profile-ink);
 }
 
@@ -1030,7 +1031,7 @@ async function chooseImage(id: string) {
 
 .week__title {
   display: block;
-  font-size: 12.5px;
+  font-size: var(--text-base);
   font-weight: 800;
   color: var(--profile-ink);
 }
@@ -1038,7 +1039,7 @@ async function chooseImage(id: string) {
 .week__bars {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  gap: 8px;
+  gap: var(--space-3);
   align-items: end;
 }
 
@@ -1046,7 +1047,7 @@ async function chooseImage(id: string) {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 
@@ -1081,7 +1082,7 @@ async function chooseImage(id: string) {
 
 .week__label {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-xs);
   letter-spacing: 0.04em;
   color: var(--profile-soft);
 }
@@ -1096,7 +1097,7 @@ async function chooseImage(id: string) {
   z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   /* 比柱状图略宽，两条长度错开 */
   max-width: 490px;
 }
@@ -1127,9 +1128,9 @@ async function chooseImage(id: string) {
 .hero-dist__item {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--profile-soft);
 }
 
@@ -1152,7 +1153,7 @@ async function chooseImage(id: string) {
 .hero-dist__item em {
   font-style: normal;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--profile-muted);
 }
 
@@ -1160,7 +1161,7 @@ async function chooseImage(id: string) {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  gap: 10px;
+  gap: var(--space-4);
   min-width: 0;
 }
 
@@ -1178,7 +1179,7 @@ async function chooseImage(id: string) {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   overflow: hidden;
   padding: 13px 15px;
@@ -1191,7 +1192,7 @@ async function chooseImage(id: string) {
 .stat-card--top {
   flex: none;
   justify-content: flex-start;
-  gap: 10px;
+  gap: var(--space-4);
   min-height: 200px;
   padding: 18px 20px 16px;
   background-image: var(--card-bg);
@@ -1202,9 +1203,9 @@ async function chooseImage(id: string) {
 .stat-card__label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-xs);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--profile-soft);
@@ -1221,7 +1222,7 @@ async function chooseImage(id: string) {
 
 .stat-empty {
   padding: 6px 0;
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--profile-muted);
 }
 
@@ -1231,13 +1232,13 @@ async function chooseImage(id: string) {
   gap: 4px 14px;
   padding-top: 10px;
   border-top: 1px solid var(--profile-muted);
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--profile-soft);
 }
 
 .top-overview b {
   font-family: var(--font-display);
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--profile-ink);
 }
 
@@ -1245,7 +1246,7 @@ async function chooseImage(id: string) {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 10px;
+  gap: var(--space-4);
   min-width: 0;
   /* 贴底、靠左：图标放到版本名侧边，不再悬在卡片正中 */
   margin: auto 0 0;
@@ -1364,7 +1365,7 @@ async function chooseImage(id: string) {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-5);
   padding: 8px 12px 8px 16px;
   overflow: visible;
   border: 1px solid transparent;
@@ -1446,7 +1447,7 @@ async function chooseImage(id: string) {
 .version-row__title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
@@ -1460,7 +1461,7 @@ async function chooseImage(id: string) {
 }
 
 .version-row__sub {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
   letter-spacing: 0.04em;
   overflow: hidden;
@@ -1474,7 +1475,7 @@ async function chooseImage(id: string) {
   flex-wrap: wrap;
   gap: 4px 16px;
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: var(--text-base);
   white-space: nowrap;
 }
 
@@ -1554,7 +1555,7 @@ async function chooseImage(id: string) {
   top: 46px;
   z-index: 21;
   width: 268px;
-  padding: 12px;
+  padding: var(--space-5);
   border: 2px solid var(--frame);
   border-top-color: color-mix(in srgb, var(--frame) 66%, #fff);
   border-left-color: color-mix(in srgb, var(--frame) 66%, #fff);
@@ -1578,19 +1579,19 @@ async function chooseImage(id: string) {
 .icon-picker__grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .icon-picker__chip {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 6px 2px;
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--ink-soft);
   cursor: pointer;
   transition:
@@ -1621,14 +1622,14 @@ async function chooseImage(id: string) {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-2);
   width: 100%;
   margin-top: 10px;
   padding: 7px 0;
   border: 1px dashed var(--line);
   border-radius: 4px;
   background: transparent;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   cursor: pointer;
   transition:

@@ -2273,10 +2273,11 @@ dependencies = [
 
 [[package]]
 name = "mc-launcher"
-version = "1.7.4"
+version = "1.7.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "crc32fast",
  "dirs 5.0.1",
  "flate2",
  "futures",

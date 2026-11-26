@@ -3,6 +3,8 @@ import {
   formatBytes,
   formatDuration,
   formatSpeed,
+  isSupportedLoader,
+  loaderLabel,
   matchVersionFilter,
 } from "./utils";
 
@@ -49,5 +51,29 @@ describe("matchVersionFilter", () => {
   it("远古版本按 alpha/beta 归类", () => {
     expect(matchVersionFilter("old_beta", "b1.7.3", "legacy")).toBe(true);
     expect(matchVersionFilter("release", "1.21.1", "legacy")).toBe(false);
+  });
+});
+
+describe("loaderLabel", () => {
+  it("原版与常见加载器", () => {
+    expect(loaderLabel(undefined)).toBe("原版");
+    expect(loaderLabel("vanilla")).toBe("原版");
+    expect(loaderLabel("forge")).toBe("Forge");
+    expect(loaderLabel("neoforge")).toBe("NeoForge");
+  });
+
+  it("装不了的加载器带「暂不支持」，不能显示成原版", () => {
+    expect(loaderLabel("cleanroom")).toBe("Cleanroom（暂不支持）");
+    expect(loaderLabel("liteloader")).toBe("LiteLoader（暂不支持）");
+    expect(loaderLabel("unknown")).toBe("未知加载器（暂不支持）");
+  });
+});
+
+describe("isSupportedLoader", () => {
+  it("只有能自动安装的才算支持", () => {
+    expect(isSupportedLoader("forge")).toBe(true);
+    expect(isSupportedLoader("fabric")).toBe(true);
+    expect(isSupportedLoader("cleanroom")).toBe(false);
+    expect(isSupportedLoader("unknown")).toBe(false);
   });
 });

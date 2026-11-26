@@ -100,8 +100,12 @@ async function remove(favorite: Favorite) {
       </button>
     </div>
 
-    <div v-if="loading && !store.favorites.length" class="card card-pad fav-state">
-      <span class="muted small">正在读取收藏…</span>
+    <div v-if="loading && !store.favorites.length" class="card card-pad">
+      <div class="loading-rows">
+        <span class="loading-rows__row" />
+        <span class="loading-rows__row" />
+        <span class="loading-rows__row" />
+      </div>
     </div>
 
     <div v-else-if="!list.length" class="card card-pad fav-state">
@@ -187,14 +191,14 @@ async function remove(favorite: Favorite) {
 .fav {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .fav-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-6);
 }
 
 .fav-filters {
@@ -206,9 +210,9 @@ async function remove(favorite: Favorite) {
 .fav-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   padding: 5px 11px;
-  font-size: 12.5px;
+  font-size: var(--text-base);
   color: var(--ink-soft);
   background: var(--panel);
   border: 2px solid var(--frame);
@@ -229,7 +233,7 @@ async function remove(favorite: Favorite) {
 
 .fav-chip__count {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-sm);
   opacity: 0.7;
 }
 
@@ -317,7 +321,7 @@ async function remove(favorite: Favorite) {
 .fav-row__summary {
   overflow: hidden;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--text-base);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -329,7 +333,7 @@ async function remove(favorite: Favorite) {
   gap: 3px;
   min-width: 0;
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .fav-row__stat {

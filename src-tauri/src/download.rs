@@ -1299,6 +1299,19 @@ pub fn take_failed_batch(job: Option<&str>) -> Option<FailedBatch> {
     list.pop()
 }
 
+/// 只查看不取出：判断某个任务（不传则任意任务）是否还有失败批次。
+/// 整合包补下要区分「解析失败」与「下载失败」两个池子，
+/// 探测用，避免为了一次判断就把批次取走弄丢。
+pub fn has_failed_batch(job: Option<&str>) -> bool {
+    let Ok(list) = failed_batch_slot().lock() else {
+        return false;
+    };
+    match job {
+        Some(job) => list.iter().any(|item| item.job == job),
+        None => !list.is_empty(),
+    }
+}
+
 /// 新任务开始前只清空它自己上一轮的失败批次，
 /// 同一次作业内的多个批次由 store_failed_batch 合并。
 pub fn reset_failed_batch(job: &str) {

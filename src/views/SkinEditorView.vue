@@ -1709,7 +1709,7 @@ const partOptions = [
   /* 标题栏 54 + 主区上下内边距 28/44，让编辑器正好铺满可视高度 */
   height: calc(100vh - 126px);
   min-height: 400px;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .editor-layout {
@@ -1717,16 +1717,16 @@ const partOptions = [
   min-height: 0;
   display: grid;
   grid-template-columns: 182px minmax(0, 1fr) 224px;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 /* 两侧工具列：内容多时自己滚动，不挤压中间画布 */
 .editor-col {
-  padding: 10px;
+  padding: var(--space-4);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   min-height: 0;
 }
 
@@ -1738,7 +1738,7 @@ const partOptions = [
 .side-block {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .side-block + .side-block {
@@ -1747,7 +1747,7 @@ const partOptions = [
 }
 
 .side-title {
-  font-size: 10px;
+  font-size: var(--text-xs);
   letter-spacing: 0.14em;
   color: var(--muted);
   text-transform: uppercase;
@@ -1757,61 +1757,61 @@ const partOptions = [
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .seg-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .tool-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .tool-row .tool {
   padding: 0 2px;
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .opt-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .part-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .part-grid .tool {
   padding: 0 2px;
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .row-inline {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 /* 选项开关：勾选时点亮苔藓色，和工具按钮一致 */
 .switch {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
   height: 28px;
   padding: 0 8px;
   border-radius: 2px;
   border: 1px solid var(--line);
   background: var(--panel-2);
   color: var(--ink-soft);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 600;
   text-align: left;
   transition: border-color var(--dur-1) ease, background var(--dur-1) ease,
@@ -1823,7 +1823,7 @@ const partOptions = [
 }
 
 .switch:disabled {
-  opacity: 0.38;
+  opacity: var(--opacity-disabled);
   cursor: not-allowed;
 }
 
@@ -1848,7 +1848,7 @@ const partOptions = [
 }
 
 .editor-main {
-  padding: 10px;
+  padding: var(--space-4);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1896,7 +1896,7 @@ const partOptions = [
 }
 
 .tool-label {
-  font-size: 10px;
+  font-size: var(--text-xs);
   letter-spacing: 0.12em;
   color: var(--muted);
   text-transform: uppercase;
@@ -1916,11 +1916,11 @@ const partOptions = [
   border-color: transparent;
   background: transparent;
   color: var(--ink-soft);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 600;
   white-space: nowrap;
-  transition: background 150ms ease, color 150ms ease,
-    border-color 150ms ease, transform 100ms ease, box-shadow 100ms ease;
+  transition: background var(--dur-1) ease, color var(--dur-1) ease,
+    border-color var(--dur-1) ease, transform var(--dur-0) ease, box-shadow var(--dur-0) ease;
 }
 
 .tool:not(.tool--active):hover {
@@ -1940,7 +1940,7 @@ const partOptions = [
   border-right-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-color: color-mix(in srgb, var(--face) 52%, #fff);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .tool--active {
@@ -1952,7 +1952,7 @@ const partOptions = [
   border-right-color: color-mix(in srgb, var(--moss) 34%, #fff);
   border-bottom-color: color-mix(in srgb, var(--moss) 34%, #fff);
   border-bottom-width: 1px;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.14);
+  box-shadow: var(--shadow-inset-soft);
 }
 
 .tool--size {
@@ -1967,7 +1967,7 @@ const partOptions = [
 }
 
 .tool:disabled {
-  opacity: 0.38;
+  opacity: var(--opacity-disabled);
   cursor: not-allowed;
 }
 
@@ -1981,7 +1981,7 @@ const partOptions = [
 .color-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .sv-area {
@@ -2049,7 +2049,7 @@ const partOptions = [
 .preset-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .preset {
@@ -2100,8 +2100,8 @@ const partOptions = [
 .template {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px;
+  gap: var(--space-4);
+  padding: var(--space-3);
   border-radius: 2px;
   border: 1px solid var(--line);
   background: var(--panel-2);
@@ -2137,7 +2137,7 @@ const partOptions = [
 }
 
 .template-name {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 700;
   color: var(--ink-soft);
 }
@@ -2152,14 +2152,14 @@ const partOptions = [
 .template-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .template--compact {
   flex-direction: column;
   align-items: stretch;
   gap: 5px;
-  padding: 6px;
+  padding: var(--space-2);
 }
 
 .template--compact .template-face {
@@ -2168,7 +2168,7 @@ const partOptions = [
 }
 
 .template--compact .template-name {
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .template--compact .template-hint {
@@ -2179,7 +2179,7 @@ const partOptions = [
 }
 
 .template:disabled {
-  opacity: 0.42;
+  opacity: var(--opacity-disabled);
   cursor: not-allowed;
 }
 
@@ -2196,7 +2196,7 @@ const partOptions = [
 .layer-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 28px;
-  gap: 4px;
+  gap: var(--space-1);
   align-items: center;
 }
 
@@ -2224,7 +2224,7 @@ const partOptions = [
 
 .layer-warn {
   margin: 2px 0 0;
-  font-size: 10px;
+  font-size: var(--text-xs);
   line-height: 1.4;
   color: var(--danger);
 }
@@ -2240,7 +2240,7 @@ const partOptions = [
   border-radius: 2px;
   background: var(--danger-soft);
   color: var(--danger);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   pointer-events: none;
 }
 
@@ -2249,7 +2249,7 @@ const partOptions = [
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .canvas-wrap .canvas-scroll {
@@ -2267,7 +2267,7 @@ const partOptions = [
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 8px;
+  gap: var(--space-3);
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 2px;
@@ -2278,7 +2278,7 @@ const partOptions = [
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .cape-preview__model {
@@ -2295,7 +2295,7 @@ const partOptions = [
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .cape-actions .input {
@@ -2317,7 +2317,7 @@ const partOptions = [
 .cape-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
-  gap: 8px;
+  gap: var(--space-3);
   margin-top: 4px;
 }
 
@@ -2325,7 +2325,7 @@ const partOptions = [
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .cape-item__face {
@@ -2343,7 +2343,7 @@ const partOptions = [
 }
 
 .cape-item__name {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
   text-align: center;
   overflow: hidden;
@@ -2363,7 +2363,7 @@ const partOptions = [
   border: 1px solid var(--line-strong);
   background: var(--panel);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-base);
   line-height: 1;
 }
 
@@ -2388,12 +2388,12 @@ const partOptions = [
 .library-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   margin-bottom: 10px;
 }
 
 .library-field__label {
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 700;
   color: var(--ink-soft);
   letter-spacing: 0.04em;
@@ -2412,7 +2412,7 @@ const partOptions = [
 .palette {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 
@@ -2448,7 +2448,7 @@ const partOptions = [
   box-shadow: inset 0 1px 2px rgba(60, 40, 20, 0.08);
   padding: 0 8px;
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .canvas-scroll {
@@ -2499,7 +2499,7 @@ const partOptions = [
   background: var(--danger-soft);
   border: 1px solid #e7cfc5;
   color: var(--danger);
-  font-size: 12.5px;
+  font-size: var(--text-base);
   line-height: 1.6;
   margin-bottom: 12px;
 }
@@ -2508,7 +2508,7 @@ const partOptions = [
 @media (max-width: 1100px) {
   .editor-layout {
     grid-template-columns: 160px minmax(0, 1fr) 206px;
-    gap: 10px;
+    gap: var(--space-4);
   }
 }
 </style>
