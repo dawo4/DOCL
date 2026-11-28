@@ -651,6 +651,169 @@ mod tests {
     }
 
     #[test]
+    fn loader_version_match_is_exact() {
+        // contains 会把 47.4.2 当成 47.4.28，更新加载器时会静默复用旧实例
+        assert!(!super::version_matches_request(
+            Some("47.4.28"),
+            "1.20.1",
+            "47.4.2"
+        ));
+        assert!(super::version_matches_request(
+            Some("47.4.28"),
+            "1.20.1",
+            "47.4.28"
+        ));
+        // 清单里带游戏版本前缀的写法也要能对上
+        assert!(super::version_matches_request(
+            Some("47.1.106"),
+            "1.20.1",
+            "1.20.1-47.1.106"
+        ));
+        assert!(super::version_matches_request(
+            Some("0.16.9"),
+            "1.21.1",
+            "0.16.9"
+        ));
+        // 认不出实际版本时不复用
+        assert!(!super::version_matches_request(None, "1.20.1", "47.4.28"));
+    }
+
+    #[test]
+    fn installed_version_prefers_manifest_over_directory_name() {
+        let mut cfg = crate::config::Config::default();
+        let root = std::env::temp_dir().join("docl-installed-loader-version-test");
+        let _ = std::fs::remove_dir_all(&root);
+        cfg.game_dir = root.to_string_lossy().to_string();
+        let dir = root.join("versions").join("1.20.1-forge-47.2.0");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("1.20.1-forge-47.2.0.json"),
+            br#"{
+                "id": "1.20.1-forge-47.2.0",
+                "inheritsFrom": "1.20.1",
+                "libraries": [{ "name": "net.minecraftforge:fmlloader:1.20.1-47.4.28" }]
+            }"#,
+        )
+        .unwrap();
+
+        // 目录名是 47.2.0，清单实际已是 47.4.28
+        assert_eq!(
+            super::installed_loader_version(&cfg, "1.20.1-forge-47.2.0", "forge", "1.20.1")
+                .as_deref(),
+            Some("47.4.28")
+        );
+        // 清单缺失时退回目录名
+        assert_eq!(
+            super::installed_loader_version(&cfg, "1.20.1-forge-47.5.0", "forge", "1.20.1")
+                .as_deref(),
+            Some("47.5.0")
+        );
+        // 整合包的改名目录即使带加载器库，也不能被当成标准加载器目录
+        let pack = root.join("versions").join("GTO");
+        std::fs::create_dir_all(&pack).unwrap();
+        std::fs::write(
+            pack.join("GTO.json"),
+            br#"{
+                "id": "GTO",
+                "inheritsFrom": "1.20.1",
+                "libraries": [{ "name": "net.minecraftforge:fmlloader:1.20.1-47.2.0" }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::installed_loader_version(&cfg, "GTO", "forge", "1.20.1"),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// PCL 等启动器会把 Forge 清单合并成自包含版本（没有 inheritsFrom），
+    /// 这种目录也要允许原地更新/重装加载器；没有加载器库的普通自包含版本仍然拒绝
+    #[test]
+    fn updatable_loader_version_accepts_self_contained_profiles() {
+        let forge: crate::models::VersionDetail = serde_json::from_str(
+            r#"{
+                "id": "DeceasedCraft_Beta",
+                "type": "release",
+                "mainClass": "cpw.mods.bootstraplauncher.BootstrapLauncher",
+                "clientVersion": "1.20.1",
+                "libraries": [{ "name": "net.minecraftforge:fmlloader:1.20.1-47.4.0" }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::updatable_loader_version(&forge, "forge", "1.20.1", "DeceasedCraft_Beta")
+                .as_deref(),
+            Some("47.4.0")
+        );
+
+        // 标准子清单
+        let child: crate::models::VersionDetail = serde_json::from_str(
+            r#"{
+                "id": "1.20.1-forge-47.2.0",
+                "inheritsFrom": "1.20.1",
+                "libraries": [{ "name": "net.minecraftforge:fmlloader:1.20.1-47.2.0" }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::updatable_loader_version(&child, "forge", "1.20.1", "1.20.1-forge-47.2.0")
+                .as_deref(),
+            Some("47.2.0")
+        );
+
+        // 自包含但没有加载器库：普通版本 / 自包含整合包，不能动
+        let plain: crate::models::VersionDetail = serde_json::from_str(
+            r#"{
+                "id": "MyPack",
+                "mainClass": "net.minecraft.client.main.Main",
+                "libraries": [{ "name": "com.example:custom:1.0" }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::updatable_loader_version(&plain, "forge", "1.20.1", "MyPack"),
+            None
+        );
+    }
+
+    #[test]
+    fn loader_version_from_detail_reads_library_coordinate() {
+        let detail: crate::models::VersionDetail = serde_json::from_str(
+            r#"{
+                "id": "1.20.1-forge-47.2.0",
+                "libraries": [
+                    { "name": "net.minecraftforge:fmlloader:1.20.1-47.4.28" }
+                ]
+            }"#,
+        )
+        .unwrap();
+        // 目录名还是 47.2.0，实际装的已是 47.4.28
+        assert_eq!(
+            super::loader_version_from_detail(&detail, "forge", "1.20.1").as_deref(),
+            Some("47.4.28")
+        );
+        let fabric: crate::models::VersionDetail = serde_json::from_str(
+            r#"{
+                "id": "fabric-loader-0.16.9-1.21.1",
+                "libraries": [
+                    { "name": "net.fabricmc:fabric-loader:0.16.9" }
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::loader_version_from_detail(&fabric, "fabric", "1.21.1").as_deref(),
+            Some("0.16.9")
+        );
+        // 没有对应库坐标时返回 None，由目录名兜底
+        assert_eq!(
+            super::loader_version_from_detail(&fabric, "forge", "1.21.1"),
+            None
+        );
+    }
+
+    #[test]
     fn official_installer_url_rewrites_mirror_hosts() {
         assert_eq!(
             official_installer_url(
@@ -718,6 +881,89 @@ mod tests {
         assert!(cernet_installer_mirror("https://example.com/x.jar").is_none());
     }
 
+    /// 竞速下载：坏源和好源同时跑，好源给出完整安装器后立即采用，并清掉临时文件
+    #[tokio::test]
+    async fn installer_race_prefers_the_complete_source() {
+        use std::io::Write as _;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        /// 极简 HTTP 服务：读一次请求，返回固定响应后断开
+        async fn serve(response: Vec<u8>) -> std::net::SocketAddr {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    let response = response.clone();
+                    tokio::spawn(async move {
+                        let mut buffer = [0u8; 4096];
+                        let _ = socket.read(&mut buffer).await;
+                        let _ = socket.write_all(&response).await;
+                        let _ = socket.flush().await;
+                    });
+                }
+            });
+            addr
+        }
+
+        // 坏源固定 500
+        let bad_addr = serve(
+            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_vec(),
+        )
+        .await;
+
+        // 好源返回带 install_profile.json 的压缩包
+        let mut zip = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip));
+            writer
+                .start_file(
+                    "install_profile.json",
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            writer.write_all(&vec![b' '; 512]).unwrap();
+            writer.finish().unwrap();
+        }
+        let mut good = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            zip.len()
+        )
+        .into_bytes();
+        good.extend_from_slice(&zip);
+        let good_addr = serve(good).await;
+
+        let dir = std::env::temp_dir().join("docl-installer-race-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("forge-1.20.1-47.4.22-installer.jar");
+        let progress = crate::download::ProgressState::new("install");
+        let candidates = [
+            format!("http://{bad_addr}/installer.jar"),
+            format!("http://{good_addr}/installer.jar"),
+        ];
+
+        super::race_installer(
+            &reqwest::Client::new(),
+            "forge",
+            &candidates,
+            &target,
+            &progress,
+        )
+        .await
+        .unwrap();
+
+        assert!(crate::forge_native::installer_usable(&target));
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains(".race-"))
+            .collect();
+        assert!(leftovers.is_empty(), "残留临时文件：{leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn clearing_loader_files_keeps_instance_content() {
         let dir = std::env::temp_dir().join("docl-clear-loader-test");
@@ -767,6 +1013,92 @@ mod tests {
 
         clean_partial_loader_dir(&cfg, None);
         assert!(other.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adopt_loader_profile_rewrites_id_and_replaces_jar() {
+        let mut cfg = crate::config::Config::default();
+        let root = std::env::temp_dir().join("docl-adopt-loader-test");
+        let _ = std::fs::remove_dir_all(&root);
+        cfg.game_dir = root.to_string_lossy().to_string();
+        let versions = root.join("versions");
+        let from = versions.join("1.20.1-forge-47.4.28");
+        let to = versions.join("1.20.1-forge-47.2.0");
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(
+            from.join("1.20.1-forge-47.4.28.json"),
+            br#"{"id":"1.20.1-forge-47.4.28","inheritsFrom":"1.20.1","libraries":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(from.join("1.20.1-forge-47.4.28.jar"), b"new jar").unwrap();
+        std::fs::write(
+            to.join("1.20.1-forge-47.2.0.json"),
+            br#"{"id":"1.20.1-forge-47.2.0","inheritsFrom":"1.20.1","libraries":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(to.join("1.20.1-forge-47.2.0.jar"), b"old jar").unwrap();
+
+        super::adopt_loader_profile(&cfg, "1.20.1-forge-47.4.28", "1.20.1-forge-47.2.0")
+            .unwrap();
+
+        let text = std::fs::read_to_string(to.join("1.20.1-forge-47.2.0.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["id"], "1.20.1-forge-47.2.0");
+        assert_eq!(value["inheritsFrom"], "1.20.1");
+        assert_eq!(
+            std::fs::read(to.join("1.20.1-forge-47.2.0.jar")).unwrap(),
+            b"new jar"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adopt_loader_profile_drops_stale_jar_when_new_one_missing() {
+        let mut cfg = crate::config::Config::default();
+        let root = std::env::temp_dir().join("docl-adopt-loader-nojar-test");
+        let _ = std::fs::remove_dir_all(&root);
+        cfg.game_dir = root.to_string_lossy().to_string();
+        let versions = root.join("versions");
+        let from = versions.join("1.12.2-forge-14.23.5.2860");
+        let to = versions.join("1.12.2-forge-14.23.5.2859");
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(from.join("1.12.2-forge-14.23.5.2860.json"), b"{}").unwrap();
+        std::fs::write(to.join("1.12.2-forge-14.23.5.2859.json"), b"{}").unwrap();
+        std::fs::write(to.join("1.12.2-forge-14.23.5.2859.jar"), b"stale").unwrap();
+
+        super::adopt_loader_profile(&cfg, "1.12.2-forge-14.23.5.2860", "1.12.2-forge-14.23.5.2859")
+            .unwrap();
+
+        // 旧补丁 jar 绑着旧加载器版本，不能留在原实例目录里
+        assert!(!to.join("1.12.2-forge-14.23.5.2859.jar").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pristine_loader_dir_is_removed_instance_dir_is_kept() {
+        let mut cfg = crate::config::Config::default();
+        let root = std::env::temp_dir().join("docl-pristine-loader-test");
+        let _ = std::fs::remove_dir_all(&root);
+        cfg.game_dir = root.to_string_lossy().to_string();
+        let versions = root.join("versions");
+        let pristine = versions.join("1.20.1-forge-47.4.28");
+        let instance = versions.join("1.20.1-forge-47.4.27");
+        std::fs::create_dir_all(pristine.join("natives")).unwrap();
+        std::fs::write(pristine.join("1.20.1-forge-47.4.28.json"), b"{}").unwrap();
+        std::fs::write(pristine.join("1.20.1-forge-47.4.28.jar"), b"jar").unwrap();
+        std::fs::create_dir_all(instance.join("mods")).unwrap();
+        std::fs::write(instance.join("1.20.1-forge-47.4.27.json"), b"{}").unwrap();
+        std::fs::write(instance.join("mods").join("a.jar"), b"mod").unwrap();
+
+        super::remove_pristine_loader_dir(&cfg, "1.20.1-forge-47.4.28");
+        super::remove_pristine_loader_dir(&cfg, "1.20.1-forge-47.4.27");
+
+        assert!(!pristine.exists());
+        // 有用户内容的目录必须原样保留
+        assert!(instance.join("mods").join("a.jar").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1760,6 +2092,50 @@ pub(crate) fn verify_loader_manifest(
     );
 }
 
+/// 已安装实例的真实加载器版本：清单里的库坐标优先，目录名兜底。
+/// 只认标准加载器目录名，避免把整合包的改名目录当成可复用 / 可重装的加载器。
+fn installed_loader_version(
+    cfg: &Config,
+    id: &str,
+    loader: &str,
+    game_version: &str,
+) -> Option<String> {
+    let from_id = loader_version_from_id(id, loader, game_version)?;
+    read_installed_detail(cfg, id)
+        .ok()
+        .and_then(|detail| loader_version_from_detail(&detail, loader, game_version))
+        .or(Some(from_id))
+}
+
+/// 判断一个版本能否原地更新 / 重装加载器，返回当前加载器版本。
+///
+/// 标准子清单（`inheritsFrom` 指向原版）直接可以；
+/// 自包含清单（PCL 等启动器会把 Forge 清单合并进版本 json，没有 `inheritsFrom`）
+/// 只要确实带着对应加载器的库坐标也认，避免把普通整合包误判成加载器。
+fn updatable_loader_version(
+    detail: &VersionDetail,
+    loader: &str,
+    game_version: &str,
+    version_id: &str,
+) -> Option<String> {
+    let derived = loader_version_from_detail(detail, loader, game_version);
+    let standard = detail.inherits_from.as_deref() == Some(game_version);
+    let self_contained = detail.inherits_from.is_none() && derived.is_some();
+    if !standard && !self_contained {
+        return None;
+    }
+    derived.or_else(|| loader_version_from_id(version_id, loader, game_version))
+}
+
+/// 加载器版本精确匹配：`contains` 会把 47.4.2 当成 47.4.28 复用旧实例。
+/// 清单里偶尔带游戏版本前缀（如 NeoForge 的 `1.20.1-47.1.106`），比对前先剥掉。
+fn version_matches_request(actual: Option<&str>, game_version: &str, requested: &str) -> bool {
+    let requested = requested
+        .strip_prefix(&format!("{game_version}-"))
+        .unwrap_or(requested);
+    actual == Some(requested)
+}
+
 /// 安装器见到已存在的版本目录会跳过重写直接返回成功码，残缺清单会一直
 /// 留在盘上。所以装前先体检：完整的同名加载器直接复用，残缺的当场删掉。
 fn check_existing_loader(
@@ -1773,7 +2149,12 @@ fn check_existing_loader(
         if name != loader {
             continue;
         }
-        let version_matches = requested.map(|v| id.contains(v)).unwrap_or(true);
+        let version_matches = requested
+            .map(|version| {
+                let actual = installed_loader_version(cfg, &id, loader, game_version);
+                version_matches_request(actual.as_deref(), game_version, version)
+            })
+            .unwrap_or(true);
         if verify_loader_manifest(cfg, &id, loader, game_version).is_ok() {
             if version_matches && reuse.is_none() {
                 reuse = Some(id);
@@ -1979,7 +2360,15 @@ fn cernet_installer_mirror(url: &str) -> Option<String> {
     Some(format!("https://mirrors.cernet.edu.cn/bmclapi/{rest}"))
 }
 
-/// 确保安装器缓存完整可用：坏包直接删掉重下，镜像失败再走官方源。
+/// 安装器下载串行化：两个任务同时需要同一版本的安装器时，后到的等前一个下完
+/// 直接命中缓存，避免两边抢同一组竞速临时文件。
+fn installer_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// 确保安装器缓存完整可用：坏包直接删掉重下。
+/// 镜像与官方源并发竞速，谁先给出完整安装器就用谁。
 /// 只看文件存在就复用会把损坏的安装器交给官方流程，最终只报退出码 1。
 async fn ensure_installer(
     app: &AppHandle,
@@ -1989,6 +2378,7 @@ async fn ensure_installer(
     file_name: &str,
     progress: &Arc<ProgressState>,
 ) -> Result<PathBuf> {
+    let _guard = installer_lock().lock().await;
     let cache = crate::config::data_dir().join("installers");
     tokio::fs::create_dir_all(&cache).await?;
     let path = cache.join(file_name);
@@ -1996,8 +2386,7 @@ async fn ensure_installer(
         return Ok(path);
     }
     let _ = tokio::fs::remove_file(&path).await;
-    let part = PathBuf::from(format!("{}.part", path.display()));
-    let _ = tokio::fs::remove_file(&part).await;
+    let _ = tokio::fs::remove_file(format!("{}.part", path.display())).await;
 
     // 国内优先走 CERNET 静态镜像，再接 BMCLAPI 新旧入口，最后回退官方源
     let mut candidates = Vec::new();
@@ -2017,83 +2406,140 @@ async fn ensure_installer(
     }
     candidates.dedup();
 
-    // 每个候选的失败原因都保留：界面直接展示最后一个 URL 会让人误以为是官方源的问题
-    let mut errors: Vec<String> = Vec::new();
-    let mut last_err: Option<anyhow::Error> = None;
-    // 镜像会 302 到轮换的 CDN 节点，同一个地址再试一轮往往能拿到另一个节点
-    const ROUNDS: usize = 2;
-    for round in 0..ROUNDS {
-        for (index, url) in candidates.iter().enumerate() {
-            progress.files_total.store(1, Ordering::Relaxed);
-            progress.files_done.store(0, Ordering::Relaxed);
-            progress.bytes_done.store(0, Ordering::Relaxed);
-            progress.bytes_total.store(0, Ordering::Relaxed);
-            let official = url.contains("minecraftforge.net") || url.contains("neoforged.net");
-            download::begin_stage(
-                app,
-                progress,
-                if round == 0 && index == 0 {
-                    format!("正在下载 {loader} 安装器…")
-                } else if official {
-                    format!("镜像不可用，改用官方源下载 {loader} 安装器…")
-                } else {
-                    format!("安装器下载失败，换源重试第 {} 次…", round + 1)
-                },
-            );
+    // 并发竞速：所有源同时下载，第一个拿到完整安装器的胜出，其余连接立即取消。
+    // 逐个源串行等待时，一个坏节点要拖满连接超时才会轮到下一个。
+    let mut last_error: Option<anyhow::Error> = None;
+    for round in 0..2 {
+        progress.files_total.store(1, Ordering::Relaxed);
+        progress.files_done.store(0, Ordering::Relaxed);
+        progress.bytes_done.store(0, Ordering::Relaxed);
+        progress.bytes_total.store(0, Ordering::Relaxed);
+        download::begin_stage(
+            app,
+            progress,
+            if round == 0 {
+                format!("正在并发下载 {loader} 安装器…")
+            } else {
+                format!("{loader} 安装器下载失败，正在重新竞速…")
+            },
+        );
 
-            let mut on_progress = |done: u64, total: u64| {
-                progress.bytes_done.store(done, Ordering::Relaxed);
-                progress.bytes_total.store(total, Ordering::Relaxed);
+        match race_installer(client, loader, &candidates, &path, progress).await {
+            Ok(()) => {
+                progress.files_done.store(1, Ordering::Relaxed);
                 download::emit_now(app, progress);
+                return Ok(path);
+            }
+            Err(err) => last_error = Some(err),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("下载 {loader} 安装器失败")))
+}
+
+/// 单路竞速下载的结果：成功时带回（源地址, 临时文件），失败时带回（源地址, 原因）。
+type RaceResult = Result<(String, PathBuf), (String, anyhow::Error)>;
+/// 一路竞速下载任务，放进 `select_all` 里等第一个完成的。
+type RaceTask = std::pin::Pin<Box<dyn std::future::Future<Output = RaceResult> + Send>>;
+
+/// 多源并发竞速下载安装器：每个源写自己的临时文件，第一个下完且校验通过的胜出，
+/// 其余下载在胜出瞬间丢弃（连接随之关闭）。失败原因按主机汇总给界面。
+async fn race_installer(
+    client: &reqwest::Client,
+    loader: &str,
+    candidates: &[String],
+    path: &Path,
+    progress: &Arc<ProgressState>,
+) -> Result<()> {
+    let cache = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "installer.jar".to_string());
+
+    let mut temps: Vec<PathBuf> = Vec::new();
+    let mut tasks: Vec<RaceTask> = Vec::new();
+    for (index, url) in candidates.iter().enumerate() {
+        // 每个源用独立临时文件，避免抢同一个 .part
+        let dest = cache.join(format!("{file_name}.race-{index}"));
+        let part = PathBuf::from(format!("{}.part", dest.display()));
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+        temps.push(dest.clone());
+        temps.push(part);
+        let client = client.clone();
+        let url = url.clone();
+        let progress = progress.clone();
+        tasks.push(Box::pin(async move {
+            let mut on_progress = |done: u64, total: u64| {
+                // 多路同时报进度，界面展示跑得最快的那一路
+                progress.bytes_done.fetch_max(done, Ordering::Relaxed);
+                if total > 0 {
+                    progress.bytes_total.fetch_max(total, Ordering::Relaxed);
+                }
             };
             match download::download_stream(
-                client,
-                std::slice::from_ref(url),
-                &path,
+                &client,
+                std::slice::from_ref(&url),
+                &dest,
                 &mut on_progress,
             )
             .await
             {
+                Ok(()) if crate::forge_native::installer_usable(&dest) => Ok((url, dest)),
                 Ok(()) => {
-                    if crate::forge_native::installer_usable(&path) {
-                        progress.files_done.store(1, Ordering::Relaxed);
-                        download::emit_now(app, progress);
-                        return Ok(path);
+                    let _ = std::fs::remove_file(&dest);
+                    Err((url, anyhow!("返回的安装器包不完整")))
+                }
+                Err(err) => Err((url, err)),
+            }
+        }));
+    }
+
+    let mut pending = tasks;
+    let mut errors: Vec<String> = Vec::new();
+    while !pending.is_empty() {
+        let (result, _finished, rest) = futures::future::select_all(pending).await;
+        pending = rest;
+        match result {
+            Ok((_url, temp)) => {
+                // 其余源还在下载，丢弃 future 直接关闭连接
+                pending.clear();
+                if std::fs::rename(&temp, path).is_err() {
+                    // Windows 上 rename 不能覆盖已有文件，退回复制
+                    let _ = std::fs::copy(&temp, path);
+                    let _ = std::fs::remove_file(&temp);
+                    if !crate::forge_native::installer_usable(path) {
+                        cleanup_race_files(&temps);
+                        return Err(anyhow!("保存 {loader} 安装器失败"));
                     }
-                    let _ = tokio::fs::remove_file(&path).await;
-                    let message = format!("{} 返回的安装器包不完整", url_host(url));
-                    errors.push(message.clone());
-                    last_err = Some(anyhow!(message));
                 }
-                Err(err) => {
-                    let _ = tokio::fs::remove_file(&path).await;
-                    let _ = tokio::fs::remove_file(&part).await;
-                    // 下载错误里可能带着很长的地址，只留一行给界面
-                    let text = err.to_string();
-                    let text: String = text.chars().take(120).collect();
-                    errors.push(format!("{}：{text}", url_host(url)));
-                    last_err = Some(err.context(format!("下载 {loader} 安装器失败：{url}")));
-                }
+                cleanup_race_files(&temps);
+                return Ok(());
+            }
+            Err((url, err)) => {
+                let text: String = err.to_string().chars().take(120).collect();
+                errors.push(format!("{}：{text}", url_host(&url)));
             }
         }
     }
-    let detail = {
-        // 多轮重试会产生重复候选，按主机去重后最多列 4 条
-        let mut unique: Vec<String> = Vec::new();
-        for item in errors.iter().rev() {
-            if !unique.iter().any(|existing| existing == item) {
-                unique.push(item.clone());
-            }
-            if unique.len() >= 4 {
-                break;
-            }
+
+    cleanup_race_files(&temps);
+    let mut unique: Vec<String> = Vec::new();
+    for item in errors {
+        if !unique.contains(&item) {
+            unique.push(item);
         }
-        unique.join("；")
-    };
-    if detail.is_empty() {
-        Err(last_err.unwrap_or_else(|| anyhow!("下载 {loader} 安装器失败")))
-    } else {
-        Err(anyhow!("下载 {loader} 安装器失败：{detail}"))
+        if unique.len() >= 4 {
+            break;
+        }
+    }
+    Err(anyhow!("下载 {loader} 安装器失败：{}", unique.join("；")))
+}
+
+/// 清掉竞速下载留下的临时文件。
+fn cleanup_race_files(files: &[PathBuf]) {
+    for file in files {
+        let _ = std::fs::remove_file(file);
     }
 }
 
@@ -2745,8 +3191,8 @@ pub async fn install_loader(
     })
 }
 
-/// 从标准加载器版本目录名里取回加载器版本号，用于一键重装。
-fn loader_version_from_id(version_id: &str, loader: &str, game_version: &str) -> Option<String> {
+/// 从标准加载器版本目录名里取回加载器版本号，用于一键重装与版本更新。
+pub fn loader_version_from_id(version_id: &str, loader: &str, game_version: &str) -> Option<String> {
     // 版本号必须以数字开头，避免把 "MyForgePack" 之类整合包名当成加载器版本
     let clean = |rest: &str| {
         let rest = rest.trim_start_matches('-');
@@ -2772,6 +3218,38 @@ fn loader_version_from_id(version_id: &str, loader: &str, game_version: &str) ->
     }
 }
 
+/// 从版本清单的库坐标取真实加载器版本。
+/// 更新加载器时目录名会保留旧版本号，只有清单里的库坐标是准的。
+pub fn loader_version_from_detail(
+    detail: &VersionDetail,
+    loader: &str,
+    game_version: &str,
+) -> Option<String> {
+    let prefixes: &[&str] = match loader {
+        "forge" => &["net.minecraftforge:fmlloader:", "net.minecraftforge:forge:"],
+        // 1.20.1 的 NeoForge 走 net.neoforged:forge
+        "neoforge" => &[
+            "net.neoforged:neoforge:",
+            "net.neoforged:forge:",
+            "net.neoforged:fmlloader:",
+        ],
+        "fabric" => &["net.fabricmc:fabric-loader:"],
+        "quilt" => &["org.quiltmc:quilt-loader:"],
+        _ => return None,
+    };
+    let raw = detail.libraries.iter().find_map(|lib| {
+        let lower = lib.name.to_ascii_lowercase();
+        if prefixes.iter().any(|prefix| lower.starts_with(prefix)) {
+            lib.name.rsplit(':').next()
+        } else {
+            None
+        }
+    })?;
+    let raw = raw.strip_prefix(&format!("{game_version}-")).unwrap_or(raw);
+    (!raw.is_empty() && raw.chars().all(|c| c.is_ascii_digit() || c == '.'))
+        .then(|| raw.to_string())
+}
+
 /// 一键自愈的「重装加载器」：删掉损坏的版本目录，按原加载器和版本重新安装。
 pub async fn reinstall_loader(
     app: &AppHandle,
@@ -2785,15 +3263,25 @@ pub async fn reinstall_loader(
     if !matches!(loader.as_str(), "forge" | "neoforge" | "fabric" | "quilt") {
         bail!("{loader} 版本不需要重装加载器");
     }
-    let Some(loader_version) = loader_version_from_id(version_id, &loader, &game_version) else {
+    // 整合包清单由打包方生成，重装会破坏包内版本约束
+    if crate::instance::get(cfg, version_id).category == "modpack" {
+        bail!("整合包实例不支持单独重装加载器，请重新导入整合包");
+    }
+    // 标准子清单和自包含加载器清单（PCL 等）都能重装
+    let own = read_installed_detail(cfg, version_id).context("读取实例清单失败")?;
+    let Some(loader_version) =
+        updatable_loader_version(&own, &loader, &game_version, version_id)
+    else {
         bail!("这个实例不是标准加载器目录（可能是整合包），请重新导入整合包");
     };
 
     // 只清加载器产物，保留实例的 mods/存档；否则 check_existing_loader 会复用残留清单
     clear_loader_version(cfg, version_id);
 
+    // 更新过加载器的实例目录名还是旧版本号，重装会落到新目录，需要再接管回来
+    let before = version_ids(cfg);
     progress.set_message(format!("正在重装 {loader} {loader_version}…"));
-    install_loader(
+    let installed = install_loader(
         app,
         client,
         cfg,
@@ -2802,5 +3290,146 @@ pub async fn reinstall_loader(
         Some(&loader_version),
         progress,
     )
-    .await
+    .await?;
+    if installed.id == version_id {
+        return Ok(installed);
+    }
+    adopt_loader_profile(cfg, &installed.id, version_id)?;
+    if !before.contains(&installed.id) {
+        remove_pristine_loader_dir(cfg, &installed.id);
+    }
+    finish_loader_install(cfg, &game_version, version_id)
+}
+
+/// 升级实例的加载器版本：先按新版本安装，再把新清单接管到原实例目录。
+/// 实例 id 不变，mods / 存档 / 配置都留在原目录里，不会被搬动。
+pub async fn update_loader(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &Config,
+    version_id: &str,
+    requested: Option<&str>,
+    progress: Arc<ProgressState>,
+) -> Result<InstalledVersion> {
+    let (game_version, loader) = instance_context(cfg, version_id)
+        .with_context(|| format!("无法识别实例 {version_id} 的游戏版本与加载器"))?;
+    if !matches!(loader.as_str(), "forge" | "neoforge" | "fabric" | "quilt") {
+        bail!("{loader} 版本不支持更新加载器");
+    }
+    // 整合包的清单是打包方生成的，换加载器会破坏包内版本约束
+    if crate::instance::get(cfg, version_id).category == "modpack" {
+        bail!("整合包实例不支持单独更新加载器，请导入新版整合包");
+    }
+    // 标准子清单与自包含加载器清单（PCL 等把 Forge 清单合并进版本 json）都能原地更新；
+    // 自包含但没有加载器库的普通版本仍然拒绝，避免覆盖别人的清单
+    let own = read_installed_detail(cfg, version_id).context("读取实例清单失败")?;
+    let Some(current) = updatable_loader_version(&own, &loader, &game_version, version_id) else {
+        bail!("这个版本不是标准加载器目录（可能是整合包或自包含版本），请重新导入整合包");
+    };
+
+    let target = match requested.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(version) => version.to_string(),
+        None => {
+            let list = loader_versions(client, cfg, &game_version, &loader).await?;
+            list.iter()
+                .find(|item| item.recommended)
+                .or_else(|| list.first())
+                .map(|item| item.version.clone())
+                .ok_or_else(|| anyhow!("没有找到适配 {game_version} 的 {loader} 版本"))?
+        }
+    };
+    if target == current {
+        return finish_loader_install(cfg, &game_version, version_id);
+    }
+
+    // 记下安装前的版本目录，用来判断新装的目录能否安全清理
+    let before = version_ids(cfg);
+    progress.set_message(format!("正在安装 {loader} {target}…"));
+    let installed = install_loader(
+        app,
+        client,
+        cfg,
+        &game_version,
+        &loader,
+        Some(&target),
+        progress.clone(),
+    )
+    .await?;
+    if installed.id == version_id {
+        // 目标版本号与原目录同名，安装器已在原目录里原地重装，无需接管
+        return Ok(installed);
+    }
+
+    // 新清单接管到原实例：改写 id 后落盘，补丁 jar 一起替换
+    adopt_loader_profile(cfg, &installed.id, version_id)?;
+    resolve_detail(cfg, version_id).context("更新后的加载器清单无法解析")?;
+    // 只清理本次新建、且只有加载器产物的目录；已有实例目录一律保留
+    if !before.contains(&installed.id) {
+        remove_pristine_loader_dir(cfg, &installed.id);
+    }
+    finish_loader_install(cfg, &game_version, version_id)
+}
+
+/// 现有的版本目录 id 集合。
+fn version_ids(cfg: &Config) -> HashSet<String> {
+    let dir = cfg.game_root().join("versions");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return HashSet::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect()
+}
+
+/// 把新装加载器的清单接管到原实例 id：改写 `id` 字段后写入原目录，
+/// 并同步替换补丁版客户端 jar（1.17+ 的 jar 与加载器版本绑定）。
+fn adopt_loader_profile(cfg: &Config, from_id: &str, to_id: &str) -> Result<()> {
+    let versions = cfg.game_root().join("versions");
+    let from_dir = versions.join(from_id);
+    let to_dir = versions.join(to_id);
+    let bytes = std::fs::read(from_dir.join(format!("{from_id}.json")))
+        .with_context(|| format!("读取新加载器清单失败：{from_id}"))?;
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&bytes).context("解析新加载器清单失败")?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("新加载器清单格式不正确"))?;
+    object.insert("id".into(), serde_json::Value::String(to_id.to_string()));
+
+    // 先换补丁 jar：正在运行的游戏会锁住它，失败时原清单还没动，实例仍可启动
+    let from_jar = from_dir.join(format!("{from_id}.jar"));
+    let to_jar = to_dir.join(format!("{to_id}.jar"));
+    if from_jar.exists() {
+        std::fs::copy(&from_jar, &to_jar).context("复制加载器补丁客户端失败")?;
+    } else {
+        // 旧加载器的补丁 jar 不能留，否则启动会加载到旧客户端类
+        let _ = std::fs::remove_file(&to_jar);
+    }
+
+    std::fs::create_dir_all(&to_dir)?;
+    std::fs::write(
+        to_dir.join(format!("{to_id}.json")),
+        serde_json::to_vec(&value)?,
+    )?;
+    Ok(())
+}
+
+/// 目录里只有清单 / 补丁 jar / natives 时才算「纯加载器产物」，可以删；
+/// 出现 mods、存档等任何用户内容就保持原样。
+fn remove_pristine_loader_dir(cfg: &Config, version_id: &str) {
+    let dir = cfg.game_root().join("versions").join(version_id);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let manifest = format!("{version_id}.json");
+    let jar = format!("{version_id}.jar");
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name != manifest && name != jar && name != "natives" {
+            return;
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

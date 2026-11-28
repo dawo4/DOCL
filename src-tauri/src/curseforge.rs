@@ -971,34 +971,34 @@ fn unique_world_name(saves: &Path, name: &str) -> String {
     format!("{name} ({})", std::process::id())
 }
 
-/// 存档根目录：优先根上的 level.dat，其次子目录，最后再深一层（World/World/level.dat）。
+/// 存档根目录：优先根上的 level.dat，其次逐层向下找，最多三层
+/// （地图 zip 常见「说明目录 / 世界目录」的套法，有的作者还会再套一层）。
+/// 每层内按目录名排序，保证同一层有多个候选时结果可复现。
 fn find_world_root(staging: &Path) -> Result<std::path::PathBuf> {
     if staging.join("level.dat").is_file() {
         return Ok(staging.to_path_buf());
     }
-    let mut dirs: Vec<std::path::PathBuf> = std::fs::read_dir(staging)?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .collect();
-    dirs.sort();
-    for dir in &dirs {
-        if dir.join("level.dat").is_file() {
-            return Ok(dir.clone());
-        }
-    }
-    for dir in &dirs {
-        if let Ok(nested) = std::fs::read_dir(dir) {
-            let mut inner: Vec<std::path::PathBuf> = nested
-                .filter_map(|entry| entry.ok())
+    let mut queue: Vec<std::path::PathBuf> = vec![staging.to_path_buf()];
+    for _ in 0..3 {
+        let mut next: Vec<std::path::PathBuf> = Vec::new();
+        for dir in &queue {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                continue;
+            };
+            let mut dirs: Vec<std::path::PathBuf> = entries
+                .flatten()
                 .map(|entry| entry.path())
-                .filter(|path| path.is_dir() && path.join("level.dat").is_file())
+                .filter(|path| path.is_dir())
                 .collect();
-            inner.sort();
-            if let Some(found) = inner.into_iter().next() {
-                return Ok(found);
+            dirs.sort();
+            for dir in dirs {
+                if dir.join("level.dat").is_file() {
+                    return Ok(dir);
+                }
+                next.push(dir);
             }
         }
+        queue = next;
     }
     Err(anyhow!("压缩包里没有找到存档（缺少 level.dat）"))
 }
@@ -1063,6 +1063,19 @@ mod tests {
         let world = root.join("outer").join("inner");
         std::fs::create_dir_all(&world).unwrap();
         std::fs::write(world.join("level.dat"), b"data").unwrap();
+        assert_eq!(find_world_root(&root).unwrap(), world);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 有的作者把世界套三层目录（说明 / 世界集 / 世界），也要能认到
+    #[test]
+    fn finds_deeply_nested_world_dir() {
+        let root = temp_dir("world-deep");
+        let world = root.join("Pack").join("Worlds").join("Adventure");
+        std::fs::create_dir_all(&world).unwrap();
+        std::fs::write(world.join("level.dat"), b"data").unwrap();
+        // 同层另一个目录没有 level.dat，排序后不干扰结果
+        std::fs::create_dir_all(root.join("Pack").join("Docs")).unwrap();
         assert_eq!(find_world_root(&root).unwrap(), world);
         std::fs::remove_dir_all(&root).ok();
     }

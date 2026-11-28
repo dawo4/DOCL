@@ -218,6 +218,7 @@ pub fn run() {
             commands::loader_versions,
             commands::install_loader,
             commands::reinstall_loader,
+            commands::update_loader,
             commands::delete_version,
             commands::instance_info,
             commands::instance_metas,

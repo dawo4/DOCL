@@ -174,6 +174,100 @@ fn decode_base64(raw: &str) -> Result<Vec<u8>> {
     STANDARD.decode(value).context("皮肤 base64 解码失败")
 }
 
+/// 把任意颜色类型的 PNG 统一展成 8 位 RGBA。
+fn frame_rgba(frame: &png::OutputInfo, bytes: &[u8]) -> Vec<u8> {
+    let pixels = (frame.width as usize) * (frame.height as usize);
+    let mut out = vec![0u8; pixels * 4];
+    match frame.color_type {
+        png::ColorType::Rgba => {
+            let len = (pixels * 4).min(bytes.len());
+            out[..len].copy_from_slice(&bytes[..len]);
+        }
+        png::ColorType::Rgb => {
+            for index in 0..pixels {
+                let src = index * 3;
+                if src + 3 > bytes.len() {
+                    break;
+                }
+                out[index * 4] = bytes[src];
+                out[index * 4 + 1] = bytes[src + 1];
+                out[index * 4 + 2] = bytes[src + 2];
+                out[index * 4 + 3] = 255;
+            }
+        }
+        png::ColorType::GrayscaleAlpha => {
+            for index in 0..pixels {
+                let src = index * 2;
+                if src + 2 > bytes.len() {
+                    break;
+                }
+                let value = bytes[src];
+                out[index * 4] = value;
+                out[index * 4 + 1] = value;
+                out[index * 4 + 2] = value;
+                out[index * 4 + 3] = bytes[src + 1];
+            }
+        }
+        // 索引色在 EXPAND 之后不会出现；灰度按不透明处理，至少不产生乱码
+        png::ColorType::Grayscale | png::ColorType::Indexed => {
+            for index in 0..pixels {
+                if index >= bytes.len() {
+                    break;
+                }
+                let value = bytes[index];
+                out[index * 4] = value;
+                out[index * 4 + 1] = value;
+                out[index * 4 + 2] = value;
+                out[index * 4 + 3] = 255;
+            }
+        }
+    }
+    out
+}
+
+/// 把一块矩形从源图搬到目标图；`flip_x` 时水平翻转（镜像四肢用）。
+/// 矩形为 (源 x, 源 y, 宽, 高, 目标 x, 目标 y)。
+fn blit_rgba(
+    src: &[u8],
+    src_width: u32,
+    dst: &mut [u8],
+    dst_width: u32,
+    rect: (u32, u32, u32, u32, u32, u32),
+    flip_x: bool,
+) {
+    let (sx, sy, w, h, dx, dy) = rect;
+    for y in 0..h {
+        for x in 0..w {
+            let target_x = if flip_x { w - 1 - x } else { x };
+            let from = (((sy + y) as usize * src_width as usize) + (sx + x) as usize) * 4;
+            let to = (((dy + y) as usize * dst_width as usize) + (dx + target_x) as usize) * 4;
+            if from + 4 <= src.len() && to + 4 <= dst.len() {
+                dst[to..to + 4].copy_from_slice(&src[from..from + 4]);
+            }
+        }
+    }
+}
+
+/// 64×32 旧皮肤的四肢镜像表：逐面水平翻转，并让内外侧互换。
+/// 与前端 `skin.ts` 的 `mirrorLegacyLimbs`、skinview-utils 的 `convertSkinTo1_8` 一致。
+/// (源 x, 源 y, 宽, 高, 目标 x, 目标 y)
+const LEGACY_MIRROR: [(u32, u32, u32, u32, u32, u32); 12] = [
+    // 右腿 → 左腿
+    (4, 16, 4, 4, 20, 48),
+    (8, 16, 4, 4, 24, 48),
+    (0, 20, 4, 12, 24, 52),
+    (4, 20, 4, 12, 20, 52),
+    (8, 20, 4, 12, 16, 52),
+    (12, 20, 4, 12, 28, 52),
+    // 右臂 → 左臂
+    (44, 16, 4, 4, 36, 48),
+    (48, 16, 4, 4, 40, 48),
+    (40, 20, 4, 12, 40, 52),
+    (44, 20, 4, 12, 36, 52),
+    (48, 20, 4, 12, 32, 52),
+    (52, 20, 4, 12, 44, 52),
+];
+
 /// 校验 PNG 并统一为 64×64。64×32 旧皮肤会补成现代布局。
 pub fn normalize_png(bytes: Vec<u8>) -> Result<Vec<u8>> {
     if bytes.len() > MAX_SKIN_BYTES {
@@ -182,10 +276,15 @@ pub fn normalize_png(bytes: Vec<u8>) -> Result<Vec<u8>> {
     if bytes.len() < 33 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" {
         bail!("不是有效的 PNG 图片");
     }
-    let decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
+    // 索引色 / 16 位 / 无 alpha 的 PNG 都统一展开成 8 位 RGBA，
+    // 否则按 4 字节步长读源图会整张错位（帽子和四肢会变成透明或乱码）
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().context("解码 PNG 失败")?;
-    let info = reader.info();
-    let (width, height) = (info.width, info.height);
+    let (width, height) = {
+        let info = reader.info();
+        (info.width, info.height)
+    };
     if width != SKIN_SIZE || (height != SKIN_SIZE && height != 32) {
         bail!("皮肤尺寸必须是 64×64 或 64×32，当前为 {width}×{height}");
     }
@@ -195,42 +294,21 @@ pub fn normalize_png(bytes: Vec<u8>) -> Result<Vec<u8>> {
 
     let mut buffer = vec![0; reader.output_buffer_size()];
     let frame = reader.next_frame(&mut buffer)?;
-    buffer.truncate(frame.buffer_size());
-    let source = buffer;
+    let source = frame_rgba(&frame, &buffer[..frame.buffer_size()]);
 
     let mut out = vec![0u8; (SKIN_SIZE * SKIN_SIZE * 4) as usize];
-    let copy_rect = |out: &mut Vec<u8>, sx: u32, sy: u32, w: u32, h: u32, dx: u32, dy: u32| {
-        for y in 0..h {
-            for x in 0..w {
-                let src = ((sy + y) * width + sx + x) as usize * 4;
-                let dst = ((dy + y) * SKIN_SIZE + dx + x) as usize * 4;
-                if src + 3 < source.len() && dst + 3 < out.len() {
-                    out[dst..dst + 4].copy_from_slice(&source[src..src + 4]);
-                }
-            }
-        }
-    };
-    // 64×32 的头部/帽子/身体/右臂/右腿平移到现代布局
-    copy_rect(&mut out, 0, 0, 32, 16, 0, 0);
-    // 帽子图层（头发、头盔等）在旧版布局里同样位于 (32,0)，之前漏掉会让皮肤看起来像换了个人
-    copy_rect(&mut out, 32, 0, 32, 16, 32, 0);
-    copy_rect(&mut out, 16, 16, 24, 16, 16, 16);
-    copy_rect(&mut out, 40, 16, 16, 16, 40, 16);
-    copy_rect(&mut out, 0, 16, 16, 16, 0, 16);
-    // 左腿/左臂由右腿/右臂水平镜像生成
-    for y in 0..16u32 {
-        for x in 0..16u32 {
-            let src = ((16 + y) * width + x) as usize * 4;
-            let dst = ((48 + y) * SKIN_SIZE + (16 + (15 - x))) as usize * 4;
-            if src + 3 < source.len() && dst + 3 < out.len() {
-                out[dst..dst + 4].copy_from_slice(&source[src..src + 4]);
-            }
-            let src_arm = ((16 + y) * width + 40 + x) as usize * 4;
-            let dst_arm = ((48 + y) * SKIN_SIZE + (32 + (15 - x))) as usize * 4;
-            if src_arm + 3 < source.len() && dst_arm + 3 < out.len() {
-                out[dst_arm..dst_arm + 4].copy_from_slice(&source[src_arm..src_arm + 4]);
-            }
-        }
+    // 原样保留：头部、帽子、身体、右臂、右腿
+    for rect in [
+        (0, 0, 32, 16, 0, 0),
+        (32, 0, 32, 16, 32, 0),
+        (16, 16, 24, 16, 16, 16),
+        (40, 16, 16, 16, 40, 16),
+        (0, 16, 16, 16, 0, 16),
+    ] {
+        blit_rgba(&source, width, &mut out, SKIN_SIZE, rect, false);
+    }
+    for rect in LEGACY_MIRROR {
+        blit_rgba(&source, width, &mut out, SKIN_SIZE, rect, true);
     }
 
     let mut encoded = Vec::new();
@@ -1123,6 +1201,91 @@ mod tests {
         buffer.truncate(frame.buffer_size());
         let idx = ((64 + 33) * 4) as usize;
         assert_eq!(&buffer[idx..idx + 4], &[255, 0, 0, 255]);
+    }
+
+    fn encode_png(width: u32, height: u32, color: png::ColorType, data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, width, height);
+            encoder.set_color(color);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(data).unwrap();
+        }
+        out
+    }
+
+    fn decode_png(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
+        let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        let mut reader = decoder.read_info().unwrap();
+        let mut buffer = vec![0; reader.output_buffer_size()];
+        let frame = reader.next_frame(&mut buffer).unwrap();
+        buffer.truncate(frame.buffer_size());
+        (frame.width, frame.height, buffer)
+    }
+
+    fn set_pixel(data: &mut [u8], width: u32, x: u32, y: u32, color: [u8; 4]) {
+        let index = ((y * width + x) * 4) as usize;
+        data[index..index + 4].copy_from_slice(&color);
+    }
+
+    fn pixel(data: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+        let index = ((y * width + x) * 4) as usize;
+        data[index..index + 4].try_into().unwrap()
+    }
+
+    /// 64×32 → 64×64 的左臂/左腿必须逐面水平翻转并互换内外侧；
+    /// 整块 16×16 翻转会把顶面/底面与内外侧面全搬错，表现就是手脚贴图错乱
+    #[test]
+    fn legacy_skin_mirrors_left_limbs_by_face() {
+        let mut data = vec![0u8; (64 * 32 * 4) as usize];
+        set_pixel(&mut data, 64, 4, 20, [10, 20, 30, 255]); // 右腿正面
+        set_pixel(&mut data, 64, 8, 20, [40, 50, 60, 255]); // 右腿内侧
+        set_pixel(&mut data, 64, 44, 20, [70, 80, 90, 255]); // 右臂正面
+        set_pixel(&mut data, 64, 40, 20, [11, 22, 33, 255]); // 右臂外侧
+
+        let normalized = normalize_png(encode_png(64, 32, png::ColorType::Rgba, &data)).unwrap();
+        let (width, height, out) = decode_png(&normalized);
+        assert_eq!((width, height), (64, 64));
+        // 正面落到左腿正面并左右翻转：源 x=4 → 目标 x=23
+        assert_eq!(pixel(&out, width, 23, 52), [10, 20, 30, 255]);
+        assert_eq!(pixel(&out, width, 20, 52), [0, 0, 0, 0]);
+        // 右腿内侧 → 左腿外侧
+        assert_eq!(pixel(&out, width, 19, 52), [40, 50, 60, 255]);
+        // 右臂正面 → 左臂正面
+        assert_eq!(pixel(&out, width, 39, 52), [70, 80, 90, 255]);
+        // 右臂外侧 → 左臂内侧
+        assert_eq!(pixel(&out, width, 43, 52), [11, 22, 33, 255]);
+    }
+
+    /// RGB（无 alpha）的旧皮肤也要正确转换，帽子不能因步长错位而变成透明
+    #[test]
+    fn legacy_rgb_skin_is_expanded() {
+        let mut data = vec![0u8; (64 * 32 * 3) as usize];
+        let index = ((64 + 33) * 3) as usize;
+        data[index..index + 3].copy_from_slice(&[200, 10, 20]);
+        let normalized = normalize_png(encode_png(64, 32, png::ColorType::Rgb, &data)).unwrap();
+        let (width, _, out) = decode_png(&normalized);
+        assert_eq!(pixel(&out, width, 33, 1), [200, 10, 20, 255]);
+    }
+
+    /// 索引色 PNG（pngquant 之类压缩过的皮肤很常见）同样要按 RGBA 正确展开
+    #[test]
+    fn legacy_indexed_skin_is_expanded() {
+        let mut data = vec![0u8; (64 * 32) as usize];
+        data[(64 + 33) as usize] = 1;
+        let mut raw = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut raw, 64, 32);
+            encoder.set_color(png::ColorType::Indexed);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_palette(vec![0, 0, 0, 200, 10, 20]);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&data).unwrap();
+        }
+        let normalized = normalize_png(raw).unwrap();
+        let (width, _, out) = decode_png(&normalized);
+        assert_eq!(pixel(&out, width, 33, 1), [200, 10, 20, 255]);
     }
 
     /// 联网实测：能从官方档案解析出皮肤与模型。

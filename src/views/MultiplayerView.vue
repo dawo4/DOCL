@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
@@ -126,6 +126,8 @@ const tcBusy = ref(false);
 const tcPlayer = ref(selectedAccount.value?.name ?? "");
 const tcRoomInput = ref("");
 let tcTimer: number | undefined;
+/// 轮询开关：采用「上次请求结束再排下一次」，避免组件卡住时请求堆叠
+let tcPolling = false;
 /// 连续读取失败次数，达到阈值才把界面切成错误页，避免瞬时抖动打断房间
 let tcFailures = 0;
 /// 正在进行中的准备任务，重复调用直接复用
@@ -308,6 +310,8 @@ const tcDifficulty = computed(() => {
 });
 
 const tcTough = computed(() => tc.value?.state?.difficulty === "TOUGH");
+/// 断线重试用的房间码：异常状态里可能还留着，页面输入框兜底
+const tcRetryRoom = computed(() => (tc.value?.state?.room || tcRoomInput.value).trim());
 
 /// 本地「最近一起玩的人」：陶瓦没有好友接口，只能自己记
 interface TcRecent {
@@ -351,6 +355,7 @@ function rememberPlayers(state: TcState) {
   if (!room) return;
   const selfKind = state.state === "guest-ok" ? "LOCAL" : "HOST";
   const ts = Date.now();
+  let changed = false;
   for (const profile of state.profiles ?? []) {
     if (!profile.machine_id) continue;
     if (profile.kind === selfKind || profile.kind === "LOCAL") continue;
@@ -361,11 +366,22 @@ function rememberPlayers(state: TcState) {
       ts,
     };
     const index = recents.value.findIndex((item) => item.machine_id === profile.machine_id);
-    if (index >= 0) recents.value[index] = entry;
-    else recents.value.unshift(entry);
+    if (index >= 0) {
+      // 状态会持续轮询，只有名字或房间变化时才写 localStorage
+      const prev = recents.value[index];
+      if (prev.name !== entry.name || prev.room !== entry.room) {
+        recents.value[index] = entry;
+        changed = true;
+      }
+    } else {
+      recents.value.unshift(entry);
+      changed = true;
+    }
   }
-  recents.value = recents.value.slice(0, 12);
-  saveRecents();
+  if (changed) {
+    recents.value = recents.value.slice(0, 12);
+    saveRecents();
+  }
 }
 
 /// 写入新状态，顺带处理成员变动提示与本地记录
@@ -850,6 +866,10 @@ function prepareTc(): Promise<void> {
   tcPrepareTask = (async () => {
     try {
       tc.value = await api.terracottaPrepare();
+      if (tc.value.running) {
+        startTcPolling();
+        if (tab.value === "room" && tcStateName.value === "host-scanning") startScanClock();
+      }
     } catch (err) {
       tcError.value = String(err);
     } finally {
@@ -858,6 +878,23 @@ function prepareTc(): Promise<void> {
     }
   })();
   return tcPrepareTask;
+}
+
+/// 进入房间页时同步一次状态：已有实例（含其他启动器启动的）直接展示，
+/// 不触发组件下载和进程启动；真正的启动要等用户点「启动陶瓦联机」。
+async function syncTc() {
+  // 正在准备组件时不要用旧状态覆盖进度
+  if (tcPrepareTask) return;
+  try {
+    const next = await api.terracottaStatus();
+    applyTcState(next);
+    if (next.running) {
+      startTcPolling();
+      if (tab.value === "room" && tcStateName.value === "host-scanning") startScanClock();
+    }
+  } catch {
+    // 读不到状态不打扰用户，点「启动陶瓦联机」时会再走一次准备流程
+  }
 }
 
 async function refreshTc() {
@@ -880,15 +917,39 @@ async function refreshTc() {
 }
 
 function startTcPolling() {
-  if (tcTimer) return;
-  tcTimer = window.setInterval(skipWhenHidden(() => void refreshTc()), 700);
+  if (tcPolling) return;
+  tcPolling = true;
+  if (!tcTimer) tcTimer = window.setTimeout(() => void pollTc(), 0);
 }
 
 function stopTcPolling() {
+  tcPolling = false;
   if (tcTimer) {
-    window.clearInterval(tcTimer);
+    window.clearTimeout(tcTimer);
     tcTimer = undefined;
   }
+}
+
+/// 连接 / 扫描阶段要快速反馈，稳定状态放慢，减少本地状态请求
+function tcPollDelay() {
+  switch (tcStateName.value) {
+    case "guest-connecting":
+    case "guest-starting":
+    case "host-starting":
+    case "host-scanning":
+    case "exception":
+      return 700;
+    default:
+      return 1800;
+  }
+}
+
+/// 上一次请求结束后再排下一次：组件卡住时不会越堆越多
+async function pollTc() {
+  tcTimer = undefined;
+  if (!tcPolling) return;
+  if (!document.hidden) await refreshTc();
+  if (tcPolling) tcTimer = window.setTimeout(() => void pollTc(), tcPollDelay());
 }
 
 async function hostTc() {
@@ -933,6 +994,25 @@ async function leaveTc() {
   }
 }
 
+/// 断线后一键重试：先回到空闲状态，再用同一房间码重新加入
+async function retryTc() {
+  if (tcBusy.value) return;
+  const room = tcRetryRoom.value;
+  if (!room) return;
+  tcBusy.value = true;
+  tcError.value = "";
+  try {
+    await api.terracottaReset().catch(() => {});
+    tcRoomInput.value = room;
+    await api.terracottaJoin(room, tcPlayer.value.trim() || null);
+  } catch (err) {
+    notify(`重新加入失败：${String(err)}`, "err");
+  } finally {
+    tcBusy.value = false;
+    await refreshTc();
+  }
+}
+
 watch(
   () => serverStatus.value?.log.length,
   async () => {
@@ -951,8 +1031,7 @@ watch(tab, (value) => {
     void refreshServer();
   }
   if (value === "room") {
-    void prepareTc();
-    startTcPolling();
+    void syncTc();
     // 回到房间页时如果还在扫描，重新开始倒计时（离开期间暂停）
     if (tcStateName.value === "host-scanning") startScanClock();
   } else {
@@ -1364,6 +1443,14 @@ onBeforeUnmount(() => {
 
         <div v-else-if="tcStateName === 'exception'" class="tc-alert">
           <span class="tc-alert__text">{{ tcExceptionText }}</span>
+          <WoodButton
+            variant="primary"
+            size="sm"
+            :disabled="tcBusy || !tcRetryRoom"
+            @click="retryTc"
+          >
+            重新加入
+          </WoodButton>
           <WoodButton variant="ghost" size="sm" @click="leaveTc">返回</WoodButton>
         </div>
 

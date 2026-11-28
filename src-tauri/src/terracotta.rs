@@ -70,6 +70,18 @@ fn local_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+/// 状态轮询专用：本地回环 1.2 秒还没响应就按失败处理，别让前端干等。
+fn state_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(1200))
+            .build()
+            .unwrap_or_else(|_| local_client())
+    })
+}
+
 fn hide_console(command: &mut Command) {
     #[cfg(windows)]
     {
@@ -253,6 +265,40 @@ async fn fetch_state(port: u16, client: &reqwest::Client) -> Option<serde_json::
         .ok()
 }
 
+async fn fetch_meta(port: u16, client: &reqwest::Client) -> Option<String> {
+    let response = client
+        .get(format!("http://127.0.0.1:{port}/meta"))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    response.json::<Meta>().await.ok().map(|meta| meta.version)
+}
+
+/// 复用其他启动器（HMCL / PCL-CE）已经启动的陶瓦实例。
+/// 不拥有进程：应用退出时不会给别人的房间发 /panic。
+async fn attach_external() -> Option<String> {
+    let port = lock_port()?;
+    // 锁文件可能来自已崩溃的进程，先确认 /state 真的能读
+    fetch_state(port, state_client()).await?;
+    let client = local_client();
+    // /meta 也只用轮询超时，避免识别一个半死的实例时卡 4 秒
+    let version = fetch_meta(port, state_client()).await.unwrap_or_default();
+    let mut guard = slot().lock().unwrap();
+    if guard.is_none() {
+        *guard = Some(TcRuntime {
+            port,
+            version: version.clone(),
+            client,
+            owned: false,
+            child: None,
+        });
+    }
+    Some(version)
+}
+
 fn current() -> Result<(u16, reqwest::Client)> {
     let guard = slot().lock().unwrap();
     let runtime = guard
@@ -278,13 +324,8 @@ fn lock_port() -> Option<u16> {
 /// 探测组件是否真的活着；本地回环请求很快，连续三次失败才判定为不可用，
 /// 避免系统瞬时卡顿被误判成进程死亡而重启房间
 async fn reachable(port: u16) -> bool {
-    let probe = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_millis(1500))
-        .build()
-        .unwrap_or_else(|_| local_client());
     for _ in 0..3 {
-        if fetch_state(port, &probe).await.is_some() {
+        if fetch_state(port, state_client()).await.is_some() {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -307,12 +348,13 @@ pub async fn prepare(
         *slot().lock().unwrap() = None;
     }
 
-    // 启动前已有别的启动器在跑陶瓦时，本实例只是附属进程，
-    // 退出时不能发 /panic，否则会把别人的房间一起关掉
-    let shared = match lock_port() {
-        Some(port) => reachable(port).await,
-        None => false,
-    };
+    // 其他启动器（HMCL / PCL-CE）已经在跑陶瓦时直接复用它的端口。
+    // 陶瓦有单实例锁，再启动一个进程只会立即退出，最终表现为「启动超时」。
+    if let Some(port) = lock_port() {
+        if reachable(port).await && attach_external().await.is_some() {
+            return Ok(status().await);
+        }
+    }
 
     let exe = ensure_binary(client, progress.as_ref()).await?;
     if let Some(progress) = progress.as_ref() {
@@ -320,18 +362,7 @@ pub async fn prepare(
     }
     let (port, child) = start_process(&exe)?;
     let http = local_client();
-    let version = match http
-        .get(format!("http://127.0.0.1:{port}/meta"))
-        .send()
-        .await
-    {
-        Ok(response) if response.status().is_success() => response
-            .json::<Meta>()
-            .await
-            .map(|meta| meta.version)
-            .unwrap_or_default(),
-        _ => String::new(),
-    };
+    let version = fetch_meta(port, &http).await.unwrap_or_default();
 
     {
         let mut guard = slot().lock().unwrap();
@@ -339,7 +370,7 @@ pub async fn prepare(
             port,
             version,
             client: http,
-            owned: !shared,
+            owned: true,
             child: Some(child),
         });
     }
@@ -347,8 +378,13 @@ pub async fn prepare(
 }
 
 pub async fn status() -> TcStatus {
+    // 刚打开页面时陶瓦可能由其他启动器（HMCL / PCL-CE）启动，
+    // 识别到就直接只读展示，不再要求用户先点「启动」。
+    if current().is_err() {
+        attach_external().await;
+    }
     let current = { current() };
-    let Ok((port, client)) = current else {
+    let Ok((port, _client)) = current else {
         return TcStatus::default();
     };
     let version = slot()
@@ -357,7 +393,7 @@ pub async fn status() -> TcStatus {
         .as_ref()
         .map(|runtime| runtime.version.clone())
         .unwrap_or_default();
-    let state = fetch_state(port, &client).await;
+    let state = fetch_state(port, state_client()).await;
     TcStatus {
         running: true,
         port,

@@ -820,6 +820,25 @@ export async function reinstallLoader(versionId: string) {
   return result === true;
 }
 
+/// 升级加载器版本：实例 id 与目录不变，mods / 存档 / 配置都不搬动
+export async function updateLoader(versionId: string, loaderVersion?: string) {
+  const result = await enqueueJob<boolean>({
+    title: "更新加载器",
+    stage: "install",
+    message: "准备更新加载器…",
+    doneMessage: "加载器已更新",
+    errorPrefix: "更新加载器失败",
+    key: `loadup:${versionId}`,
+    run: async (jobId) => {
+      await api.updateLoader(versionId, loaderVersion, jobId);
+      await refreshInstalled();
+      await refreshConfig();
+      return true;
+    },
+  });
+  return result === true;
+}
+
 export function installCfFile(
   versionId: string,
   kind: string,

@@ -666,6 +666,8 @@ export interface InstanceInfo extends InstanceMeta {
   id: string;
   game_version: string;
   loader: string;
+  /// 加载器版本号，非标准加载器目录时为空字符串
+  loader_version: string;
   kind: string;
   java_major: number;
   path: string;
@@ -1239,6 +1241,8 @@ export const api = {
     invoke<InstalledVersion>("install_loader", { versionId, loader, loaderVersion, jobId }),
   reinstallLoader: (versionId: string, jobId?: string) =>
     invoke<InstalledVersion>("reinstall_loader", { versionId, jobId }),
+  updateLoader: (versionId: string, loaderVersion?: string, jobId?: string) =>
+    invoke<InstalledVersion>("update_loader", { versionId, loaderVersion, jobId }),
   instanceContext: (versionId: string) =>
     invoke<InstanceContext>("instance_context", { versionId }),
   checkInstanceFiles: (versionId: string) =>

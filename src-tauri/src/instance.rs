@@ -303,6 +303,8 @@ pub struct InstanceInfo {
     pub isolated: Option<bool>,
     pub game_version: String,
     pub loader: String,
+    /// 加载器版本号，非标准加载器目录时为空
+    pub loader_version: String,
     pub kind: String,
     pub java_major: u32,
     pub path: String,
@@ -648,7 +650,8 @@ fn expand_rgba(src: &[u8], channels: usize) -> Vec<u8> {
 fn png_thumb_data_url(path: &Path, max: u32) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
-    decoder.set_transformations(png::Transformations::EXPAND);
+    // 16 位图标不剥成 8 位的话，下面按每像素 4 字节展开会整张错位
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
     let mut buf = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buf).ok()?;
@@ -1230,8 +1233,11 @@ pub fn info(cfg: &Config, version_id: &str) -> Result<InstanceInfo> {
         },
         favorite: meta.favorite,
         isolated: meta.isolated,
-        game_version,
-        loader,
+        game_version: game_version.clone(),
+        loader: loader.clone(),
+        loader_version: install::loader_version_from_detail(&merged.detail, &loader, &game_version)
+            .or_else(|| install::loader_version_from_id(version_id, &loader, &game_version))
+            .unwrap_or_default(),
         kind: merged.detail.kind.clone(),
         java_major: merged.detail.required_java(),
         path: install::resolve_version_dir(cfg, version_id)
@@ -1333,5 +1339,46 @@ mod tests {
         assert!(read_config_text(&cfg, id, "C:/Windows/win.ini").is_err());
 
         let _ = std::fs::remove_dir_all(&cfg.game_dir);
+    }
+
+    /// 16 位 PNG 图标要先剥成 8 位再展开，否则缩略图会整张错位或直接生成失败
+    #[test]
+    fn png_thumb_handles_16bit_image() {
+        use base64::Engine;
+
+        let dir = std::env::temp_dir().join(format!("docl-thumb-16bit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("icon.png");
+
+        let mut raw = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut raw, 2, 2);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Sixteen);
+            let mut writer = encoder.write_header().unwrap();
+            // 2×2 纯红（16 位大端）
+            let mut data = Vec::new();
+            for _ in 0..4 {
+                data.extend_from_slice(&[0xff, 0xff, 0x00, 0x00, 0x00, 0x00]);
+            }
+            writer.write_image_data(&data).unwrap();
+        }
+        std::fs::write(&path, raw).unwrap();
+
+        let url = png_thumb_data_url(&path, 32).expect("缩略图生成失败");
+        let payload = url.split_once(',').map(|(_, rest)| rest).unwrap_or("");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .unwrap();
+        let decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
+        let mut reader = decoder.read_info().unwrap();
+        let mut buffer = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buffer).unwrap();
+        assert_eq!(info.color_type, png::ColorType::Rgba);
+        assert_eq!((info.width, info.height), (2, 2));
+        assert_eq!(&buffer[0..4], &[255, 0, 0, 255]);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

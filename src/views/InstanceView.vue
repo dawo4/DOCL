@@ -18,6 +18,7 @@ import {
   type InstanceMeta,
   type InstanceModMeta,
   type InstancePaths,
+  type LoaderVersion,
   type RepairReport,
   type RepairPreview,
   type RepairBackup,
@@ -53,6 +54,7 @@ import {
   restoreRepairBackup,
   stopGame,
   store,
+  updateLoader,
   updateModpack,
 } from "../store";
 import {
@@ -998,6 +1000,74 @@ async function reinstallCurrentLoader() {
   }
 }
 
+/// 加载器版本更新：列表与选择状态
+const loaderUpdateOpen = ref(false);
+const loaderUpdateLoading = ref(false);
+const loaderUpdateError = ref("");
+const loaderUpdateTarget = ref("");
+const loaderUpdateVersions = ref<LoaderVersion[]>([]);
+const updatingLoader = ref(false);
+/// 版本列表按「游戏版本:加载器」缓存，切换实例后不会串用
+const loaderUpdateKey = ref("");
+
+// 切换实例时关掉更新弹窗，避免把 A 实例的选择应用到 B 实例
+watch(
+  () => store.instanceId,
+  () => {
+    loaderUpdateOpen.value = false;
+  }
+);
+
+async function openLoaderUpdate() {
+  const value = info.value;
+  if (!value || !canReinstallLoader.value) return;
+  loaderUpdateOpen.value = true;
+  loaderUpdateError.value = "";
+  loaderUpdateTarget.value = "";
+  const key = `${value.game_version}:${value.loader}`;
+  if (loaderUpdateVersions.value.length && loaderUpdateKey.value === key) {
+    pickDefaultLoaderVersion();
+    return;
+  }
+  loaderUpdateLoading.value = true;
+  try {
+    loaderUpdateVersions.value = await api.loaderVersions(value.game_version, value.loader);
+    loaderUpdateKey.value = key;
+    pickDefaultLoaderVersion();
+  } catch (err) {
+    loaderUpdateError.value = String(err);
+  } finally {
+    loaderUpdateLoading.value = false;
+  }
+}
+
+/// 默认选推荐版本；没有推荐时取最新（列表已按版本倒序）
+function pickDefaultLoaderVersion() {
+  const list = loaderUpdateVersions.value;
+  const pick = list.find((item) => item.recommended) ?? list[0];
+  loaderUpdateTarget.value = pick?.version ?? "";
+}
+
+async function applyLoaderUpdate() {
+  const versionId = store.instanceId;
+  if (!versionId || !loaderUpdateTarget.value || updatingLoader.value) return;
+  // 运行中的游戏会锁住补丁 jar，替换必然失败
+  if (store.gameRunning && store.runningVersionId === versionId) {
+    notify("请先关闭游戏，再更新加载器", "err");
+    return;
+  }
+  updatingLoader.value = true;
+  try {
+    const done = await updateLoader(versionId, loaderUpdateTarget.value);
+    if (done) {
+      loaderUpdateOpen.value = false;
+      await loadAll();
+    }
+  } finally {
+    updatingLoader.value = false;
+  }
+}
+
 /// 一键自愈：修清单、补缺失文件、重解本地库、禁用重复模组
 async function runRepair() {
   const versionId = store.instanceId;
@@ -1775,7 +1845,7 @@ function launchOrStop() {
         <h1 class="page-title">{{ info?.display_name ?? "版本设置" }}</h1>
         <p class="page-sub">
           {{ info?.id }}
-          <template v-if="info"> · {{ info.game_version }} · {{ kindLabel(info.kind) }} · {{ loaderLabel }}</template>
+          <template v-if="info"> · {{ info.game_version }} · {{ kindLabel(info.kind) }} · {{ loaderLabel }}<template v-if="info.loader_version"> {{ info.loader_version }}</template></template>
         </p>
       </div>
       <div class="row ins-head__actions">
@@ -1998,7 +2068,18 @@ function launchOrStop() {
               </div>
               <div class="detail">
                 <span class="detail__label">加载器</span>
-                <span class="detail__value">{{ loaderLabel }}</span>
+                <span class="detail__value detail__value--row">
+                  {{ loaderLabel }}
+                  <template v-if="info.loader_version">{{ info.loader_version }}</template>
+                  <button
+                    v-if="canReinstallLoader"
+                    class="detail__action"
+                    :disabled="updatingLoader"
+                    @click="openLoaderUpdate"
+                  >
+                    更新
+                  </button>
+                </span>
               </div>
               <div class="detail">
                 <span class="detail__label">类型</span>
@@ -3089,6 +3170,67 @@ function launchOrStop() {
     </WoodModal>
 
     <WoodModal
+      v-if="loaderUpdateOpen"
+      title="更新加载器"
+      :width="420"
+      @close="loaderUpdateOpen = false"
+    >
+      <div class="check-body">
+        <p class="muted small">
+          当前 {{ loaderLabel }} {{ info?.loader_version || "未知" }} · 游戏版本
+          {{ info?.game_version }}
+        </p>
+        <p v-if="loaderUpdateLoading" class="muted small">正在获取可用版本…</p>
+        <div v-else-if="loaderUpdateError" class="state state--error state--inline">
+          <span class="state__icon"><AppIcon name="alert" :size="16" /></span>
+          <div class="state__text">
+            <p class="state__title">版本列表读取失败</p>
+            <p class="state__hint">{{ loaderUpdateError }}</p>
+            <div class="state__actions">
+              <WoodButton variant="soft" size="sm" @click="loaderUpdateVersions = []; openLoaderUpdate()">
+                重试
+              </WoodButton>
+            </div>
+          </div>
+        </div>
+        <p v-else-if="!loaderUpdateVersions.length" class="muted small">
+          没有找到适配当前游戏版本的 {{ loaderLabel }}。
+        </p>
+        <div v-else class="loader-update">
+          <button
+            v-for="version in loaderUpdateVersions"
+            :key="version.version"
+            class="loader-update__item"
+            :class="{ 'loader-update__item--active': loaderUpdateTarget === version.version }"
+            @click="loaderUpdateTarget = version.version"
+          >
+            <span class="mono">{{ version.version }}</span>
+            <span v-if="version.version === info?.loader_version" class="tag">当前</span>
+            <span v-else-if="version.recommended" class="tag tag--grass">推荐</span>
+          </button>
+        </div>
+        <p class="muted small">
+          更新只替换加载器清单与相关库，mods、存档和配置都保留；新加载器可能与旧模组不兼容。
+        </p>
+      </div>
+      <template #footer>
+        <WoodButton variant="ghost" size="sm" @click="loaderUpdateOpen = false">取消</WoodButton>
+        <WoodButton
+          variant="primary"
+          size="sm"
+          :disabled="
+            updatingLoader ||
+            !loaderUpdateTarget ||
+            loaderUpdateTarget === info?.loader_version
+          "
+          @click="applyLoaderUpdate"
+        >
+          {{ updatingLoader ? "正在更新…" : "更新到此版本" }}
+        </WoodButton>
+      </template>
+    </WoodModal>
+
+    <WoodModal
       v-if="historyOpen"
       title="修复历史"
       :width="540"
@@ -3744,6 +3886,69 @@ function launchOrStop() {
 .detail__value {
   font-size: var(--text-lg);
   color: var(--ink);
+}
+
+.detail__value--row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.detail__action {
+  font-size: var(--text-sm);
+  font-family: inherit;
+  color: var(--moss);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.detail__action:hover {
+  color: var(--ink);
+}
+
+.detail__action:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.loader-update {
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.loader-update__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: none;
+  border: 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: var(--text-base);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.loader-update__item:last-child {
+  border-bottom: 0;
+}
+
+.loader-update__item:hover {
+  background: var(--panel-2);
+}
+
+.loader-update__item--active {
+  background: var(--moss-soft);
 }
 
 .count-strip {

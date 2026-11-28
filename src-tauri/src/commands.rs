@@ -573,6 +573,32 @@ pub async fn reinstall_loader(
     }
 }
 
+#[tauri::command]
+pub async fn update_loader(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    version_id: String,
+    loader_version: Option<String>,
+    job_id: Option<String>,
+) -> CmdResult<InstalledVersion> {
+    let cfg = state.config.lock().unwrap().clone();
+    let progress = begin_job(&state, job_id, "install", "准备更新加载器…".to_string());
+    download::reset_failed_batch(&progress.job);
+
+    let result = install::update_loader(
+        &app,
+        &state.client,
+        &cfg,
+        &version_id,
+        loader_version.as_deref(),
+        progress.clone(),
+    )
+    .await;
+
+    finish_job(&state, &app, &progress);
+    result.map_err(err)
+}
+
 /// 取消任务；不传 id 时取消全部（兼容旧调用）
 #[tauri::command]
 pub fn cancel_install(state: State<'_, AppState>, job_id: Option<String>) {

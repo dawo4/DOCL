@@ -954,7 +954,7 @@ async function applyPreset(preset: DefaultSkin) {
   const doc = docs.skin.canvas;
   if (!doc) return;
   try {
-    const base = await canvasFromSource(preset.data_url);
+    const base = await skinCanvasFromSource(preset.data_url);
     const target = doc.getContext("2d");
     if (!target) return;
     target.clearRect(0, 0, SKIN_SIZE, SKIN_SIZE);
@@ -981,7 +981,7 @@ async function applyLibrary(item: SkinLibraryItem) {
   const doc = docs.skin.canvas;
   if (!doc) return;
   try {
-    const base = await canvasFromSource(item.data_url);
+    const base = await skinCanvasFromSource(item.data_url);
     const target = doc.getContext("2d");
     if (!target) return;
     target.clearRect(0, 0, SKIN_SIZE, SKIN_SIZE);

@@ -477,6 +477,19 @@ fn download_file_name(file: &curseforge::FileDownload) -> String {
         .to_string()
 }
 
+/// 同一批下载里目标路径撞名时的兜底名：原名后带 `-文件ID`。
+/// 下载层按目标路径去重会悄悄丢掉后一个文件，两张同名地图就是这么丢的。
+fn unique_dest_file_name(dest: &Path, file_id: i64) -> String {
+    let stem = dest
+        .file_stem()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".into());
+    match dest.extension().map(|value| value.to_string_lossy().to_string()) {
+        Some(ext) => format!("{stem}-{file_id}.{ext}"),
+        None => format!("{stem}-{file_id}"),
+    }
+}
+
 /// CurseForge 项目大类 → 实例子目录。
 /// 整合包清单里的光影、资源包、数据包必须分开放：全塞进 mods 不但不会生效，
 /// 还会让光影列表里看不到（个别整合包就是这样把光影下进 mods 的）。
@@ -506,6 +519,12 @@ fn infer_subdir(file_name: &str, modules: &[String]) -> &'static str {
         return "mods";
     }
     let has = |name: &str| modules.iter().any(|item| item.eq_ignore_ascii_case(name));
+    // 地图特征最优先：level.dat / session.lock 只出现在存档里，
+    // 有的地图还附带 pack.mcmeta（内置资源包），必须放在 pack.mcmeta 判断之前，
+    // 否则会被误判成资源包——用户看到的正是「材质导入了、地图没了」
+    if has("level.dat") || has("level.dat_old") || has("session.lock") {
+        return "saves";
+    }
     if file_name.to_ascii_lowercase().ends_with(".jar")
         || has("META-INF")
         || has("mcmod.info")
@@ -522,9 +541,130 @@ fn infer_subdir(file_name: &str, modules: &[String]) -> &'static str {
     "saves"
 }
 
+/// 扫一遍 zip 条目（三层以内），判断散落的压缩包属于哪类内容。
+/// 返回 None 表示看起来就是个 Mod（带 META-INF 的老式 coremod zip）或认不出，留在原地。
+/// 判定顺序与 infer_subdir 一致：地图最优先，其次光影，最后按 pack.mcmeta 分资源包 / 数据包。
+fn stray_zip_target(path: &std::path::Path) -> Option<&'static str> {
+    let Ok(mut archive) = crate::ziputil::open(path) else {
+        return None;
+    };
+    let mut has_level_dat = false;
+    let mut has_shaders = false;
+    let mut has_pack_mcmeta = false;
+    let mut has_data = false;
+    for index in 0..archive.len() {
+        let Ok(entry) = archive.by_index(index) else {
+            continue;
+        };
+        let name = entry.name();
+        if name.matches('/').count() > 3 {
+            continue;
+        }
+        let lower = name.to_ascii_lowercase();
+        let base = lower.rsplit('/').next().unwrap_or_default();
+        if base == "level.dat" || base == "level.dat_old" || base == "session.lock" {
+            has_level_dat = true;
+        } else if lower.starts_with("shaders/")
+            || base.ends_with(".fsh")
+            || base.ends_with(".vsh")
+        {
+            has_shaders = true;
+        } else if base == "pack.mcmeta" {
+            has_pack_mcmeta = true;
+        } else if lower.starts_with("data/") {
+            has_data = true;
+        }
+    }
+    if has_level_dat {
+        return Some("saves");
+    }
+    if has_shaders {
+        return Some("shaderpacks");
+    }
+    if has_pack_mcmeta {
+        return Some(if has_data { "datapacks" } else { "resourcepacks" });
+    }
+    None
+}
+
+/// 目标目录里没有同名文件时原样返回，有则加「 (2)」序号，避免覆盖已下载的内容
+fn unique_file_path(dir: &std::path::Path, file_name: &str) -> std::path::PathBuf {
+    let first = dir.join(file_name);
+    if !first.exists() {
+        return first;
+    }
+    let stem = std::path::Path::new(file_name)
+        .file_stem()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".into());
+    let ext = std::path::Path::new(file_name)
+        .extension()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "zip".into());
+    for index in 2..1000 {
+        let candidate = dir.join(format!("{stem} ({index}).{ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    dir.join(format!("{stem} ({}){ext}", std::process::id()))
+}
+
+/// 下载后的兜底分类：清单大类可能拿不到（接口被拦、镜像缺 classId 返回 0），
+/// modules 也可能为空，此时所有非 Mod 内容都会落进 mods——地图、光影、
+/// 资源包、数据包都可能错位。扫 mods / 资源包目录，按 zip 内容特征挪回
+/// 应在的目录，交给收尾阶段（sync_content_dirs）统一安置。
+/// 返回（旧相对路径 → 新相对路径），调用方同步更新整合包清单，
+/// 否则下次更新会把挪过的文件当成「包外文件」处理。
+fn relocate_misplaced_archives(root: &std::path::Path) -> Vec<(String, String)> {
+    let mut moved = Vec::new();
+    for dir_name in ["mods", "resourcepacks"] {
+        let dir = root.join(dir_name);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_zip = path
+                .extension()
+                .map(|ext| ext.eq_ignore_ascii_case("zip"))
+                .unwrap_or(false);
+            if !is_zip || !path.is_file() {
+                continue;
+            }
+            let Some(target) = stray_zip_target(&path) else {
+                continue;
+            };
+            let Some(file_name) =
+                path.file_name().map(|value| value.to_string_lossy().to_string())
+            else {
+                continue;
+            };
+            let old_rel = format!("{dir_name}/{file_name}");
+            let dest_dir = root.join(target);
+            let dest = unique_file_path(&dest_dir, &file_name);
+            // 目标目录可能不存在（saves 由下载阶段创建，shaderpacks / datapacks 不会），
+            // rename 到不存在的父目录会失败
+            let _ = std::fs::create_dir_all(&dest_dir);
+            if std::fs::rename(&path, &dest).is_ok() {
+                let new_name = dest
+                    .file_name()
+                    .map(|value| value.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                moved.push((old_rel, format!("{target}/{new_name}")));
+            }
+        }
+    }
+    moved
+}
+
 /// 整合包收尾：解压 saves 里的地图 zip，并把数据包放到真正会被加载的位置。
 /// 原版只从 world/datapacks 读取数据包；装了 Open Loader / Paxi 时改放它们的全局目录。
 fn sync_content_dirs(root: &std::path::Path) -> Result<()> {
+    // 0) 兜底分类：老版本导入的实例可能把地图 zip 错放进 mods / 资源包目录，
+    //    更新整合包时顺带挪回 saves（清单路径不改是安全的：新路径下文件已存在、
+    //    校验和一致，下载层会直接跳过）
+    let _ = relocate_misplaced_archives(root);
     let saves = root.join("saves");
     // 1) 地图：清单里下载的是 zip，解压成存档文件夹。
     // zip 必须保留：更新时 plan_update 按「文件是否存在」判断，删掉会导致每次更新都重下。
@@ -3306,6 +3446,7 @@ pub async fn import(
             let root = instance::game_dir(cfg, &instance_id);
             let mut pack_paths: Vec<String> = Vec::new();
             let mut planned: Vec<Planned> = Vec::new();
+            let mut seen_dests: HashSet<String> = HashSet::new();
             for (project_id, file_id, outcome) in results {
                 let file = match outcome {
                     Ok(file) => file,
@@ -3328,7 +3469,15 @@ pub async fn import(
                     }
                     None => None,
                 };
-                let item = curse_task(&file, file_id, class_id, &root);
+                let mut item = curse_task(&file, file_id, class_id, &root);
+                // 不同项目的文件可能同名（两张 map.zip、两个 config.zip）：
+                // 下载层按目标路径去重会悄悄丢掉后一个，落盘名里带上文件 ID 区分开
+                if !seen_dests.insert(item.task.dest.to_string_lossy().to_lowercase()) {
+                    let unique = unique_dest_file_name(&item.task.dest, file_id);
+                    let dir = item.relative.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+                    item.task.dest = item.task.dest.with_file_name(&unique);
+                    item.relative = format!("{dir}/{unique}");
+                }
                 pack_paths.push(item.relative.clone());
                 planned.push(item);
             }
@@ -3354,6 +3503,17 @@ pub async fn import(
             let broken =
                 repair_broken_jars(client, cfg, &root, &tasks, progress.as_ref()).await;
             push_broken_files(&mut failures, &mut warnings, &planned, broken);
+
+            // 下载后的兜底分类：清单大类和内容推断都可能拿不到（接口被拦、镜像缺
+            // classId、modules 为空），非 Mod 内容会被错放进 mods / 资源包目录。
+            // 挪回应在的目录，收尾阶段统一安置；整合包清单同步改路径，
+            // 否则下次更新会把挪过的文件当成「包外文件」删掉
+            let moved_archives = relocate_misplaced_archives(&root);
+            for (old_rel, new_rel) in &moved_archives {
+                if let Some(slot) = pack_paths.iter().position(|item| item == old_rel) {
+                    pack_paths[slot] = new_rel.clone();
+                }
+            }
 
             download::begin_stage(app, &progress, "正在解压整合包覆盖文件…");
             let path_owned = path.to_string();
@@ -3630,12 +3790,12 @@ mod tests {
         add_pack_paths, broken_jars, detect_loader, extract_entries, generic_loader,
         global_datapack_dir, infer_subdir, memory_hint, mmc_loader, mrpack_candidate,
         normalize_loader_version, old_pack_manifest, pack_subdir, parse_pack, plan_update,
-        sha1_file, sync_content_dirs, unsupported_loader_warning, write_pack_record, PackPreview,
-        UpdateFile,
+        relocate_misplaced_archives, sha1_file, sync_content_dirs, unique_dest_file_name,
+        unsupported_loader_warning, write_pack_record, PackPreview, UpdateFile,
     };
     use crate::download::ProgressState;
     use std::io::Write;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     /// 在临时目录里打一个 zip，条目按「路径 → 内容」顺序写入
     fn make_zip_bytes(label: &str, entries: &[(&str, &[u8])]) -> PathBuf {
@@ -3971,6 +4131,100 @@ mod tests {
 
         let jar = vec!["META-INF".to_string(), "mezz".to_string()];
         assert_eq!(infer_subdir("jei.jar", &jar), "mods");
+    }
+
+    /// 冒险地图常带 pack.mcmeta（内置资源包）：地图特征必须优先，
+    /// 否则会被当成资源包导入——用户反馈的「材质导入了、地图没了」就是这种
+    #[test]
+    fn map_with_pack_mcmeta_still_goes_to_saves() {
+        let map = vec![
+            "level.dat".to_string(),
+            "region".to_string(),
+            "pack.mcmeta".to_string(),
+        ];
+        assert_eq!(infer_subdir("adventure.zip", &map), "saves");
+        let old = vec!["level.dat_old".to_string(), "session.lock".to_string()];
+        assert_eq!(infer_subdir("world.zip", &old), "saves");
+    }
+
+    /// 下载后的兜底搬移：错放进 mods / 资源包目录的内容 zip 按特征挪回
+    /// 应在的目录；看起来像 Mod（META-INF）或认不出的 zip 原地不动；撞名加序号
+    #[test]
+    fn relocates_misplaced_archives_to_right_dirs() {
+        let root = temp_dir("relocate");
+        let mods = root.join("mods");
+        std::fs::create_dir_all(&mods).unwrap();
+        std::fs::create_dir_all(root.join("resourcepacks")).unwrap();
+        std::fs::create_dir_all(root.join("saves")).unwrap();
+
+        let write_zip = |path: &PathBuf, entries: &[(&str, &str)]| {
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+            for (name, body) in entries {
+                zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(body.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+        };
+
+        // 两层嵌套的地图 + 普通资源包 + 光影 + 数据包 + coremod 形态的 zip，全落在 mods
+        write_zip(
+            &mods.join("adventure.zip"),
+            &[("World/level.dat", "level"), ("World/region/x.mca", "r")],
+        );
+        write_zip(&mods.join("texture.zip"), &[("assets/a.png", "png")]);
+        write_zip(
+            &mods.join("shader.zip"),
+            &[("shaders/deferred/comp.fsh", "fsh")],
+        );
+        write_zip(
+            &mods.join("datapack.zip"),
+            &[("pack.mcmeta", "meta"), ("data/mc/functions/a.mcfunction", "fn")],
+        );
+        write_zip(
+            &mods.join("legacy-coremod.zip"),
+            &[("META-INF/MANIFEST.MF", "manifest")],
+        );
+        // 一张落在资源包目录的地图
+        write_zip(
+            &root.join("resourcepacks").join("map-pack.zip"),
+            &[("level.dat", "level")],
+        );
+        // saves 里已有同名 zip：搬移要加序号，不能覆盖
+        std::fs::write(root.join("saves").join("adventure.zip"), b"old").unwrap();
+
+        let moved = relocate_misplaced_archives(&root);
+        let pairs: Vec<(String, String)> = moved;
+        assert_eq!(pairs.len(), 4, "{pairs:?}");
+        assert!(pairs.contains(&("mods/adventure.zip".into(), "saves/adventure (2).zip".into())));
+        assert!(pairs.contains(&("mods/shader.zip".into(), "shaderpacks/shader.zip".into())));
+        assert!(pairs.contains(&("mods/datapack.zip".into(), "datapacks/datapack.zip".into())));
+        assert!(pairs.contains(&("resourcepacks/map-pack.zip".into(), "saves/map-pack.zip".into())));
+
+        assert!(!mods.join("adventure.zip").exists(), "地图应从 mods 挪走");
+        assert!(mods.join("texture.zip").exists(), "认不出的 zip 应留在 mods");
+        assert!(
+            mods.join("legacy-coremod.zip").exists(),
+            "带 META-INF 的 zip 可能是老式 coremod，不能搬"
+        );
+        assert!(!root.join("resourcepacks").join("map-pack.zip").exists());
+        assert!(root.join("saves").join("adventure.zip").exists());
+        assert!(root.join("saves").join("adventure (2).zip").exists());
+        assert!(root.join("saves").join("map-pack.zip").exists());
+        assert!(root.join("shaderpacks").join("shader.zip").exists());
+        assert!(root.join("datapacks").join("datapack.zip").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 撞名兜底名：原名后带文件 ID，扩展名保留
+    #[test]
+    fn unique_dest_name_appends_file_id() {
+        assert_eq!(
+            unique_dest_file_name(Path::new("saves/map.zip"), 4728761),
+            "map-4728761.zip"
+        );
+        assert_eq!(unique_dest_file_name(Path::new("mods/noext"), 7), "noext-7");
     }
 
     /// 收尾：数据包复制进每个已有存档，没有存档时保留在实例根目录
